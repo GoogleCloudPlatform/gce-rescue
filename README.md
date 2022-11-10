@@ -12,7 +12,7 @@ The main advantage to using this approach, rather than creating a 2nd instance, 
 > Note that this is not an officially supported Google product, but a community effort. The Google Cloud Support team maintains this code and we do our best to avoid causing any problems in your projects, but we give no guarantees to that end.
 
 
-## Instalation ##
+## Installation ##
 
 ```shellscript
 $ git clone <repo url>
@@ -163,7 +163,9 @@ user@test:~>
 
 ## Authentication ##
 
-This script make use of ADC via gcloud to authenticate. Make sure you have gcloud installed and your ADC updated.
+This script makes use of ADC via gcloud to authenticate. Make sure you have gcloud installed and your ADC updated.
+
+You can find more information on: https://cloud.google.com/docs/authentication/provide-credentials-adc
 
 ## Permissions ##
 
