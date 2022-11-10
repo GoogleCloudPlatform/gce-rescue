@@ -1,0 +1,105 @@
+{
+  "kind": "compute#instance",
+  "id": "6394883706914300232",
+  "creationTimestamp": "2022-10-13T03:59:53.163-07:00",
+  "name": "mock-vm",
+  "tags": {
+    "fingerprint": "42WmSpB8rSM="
+  },
+  "machineType": "https://www.googleapis.com/compute/v1/projects/mock-project/zones/europe-central2-a/machineTypes/e2-micro",
+  "status": "RUNNING",
+  "zone": "https://www.googleapis.com/compute/v1/projects/mock-project/zones/europe-central2-a",
+  "canIpForward": false,
+  "networkInterfaces": [
+    {
+      "kind": "compute#networkInterface",
+      "network": "https://www.googleapis.com/compute/v1/projects/mock-project/global/networks/default",
+      "subnetwork": "https://www.googleapis.com/compute/v1/projects/mock-project/regions/europe-central2/subnetworks/default",
+      "networkIP": "10.186.15.205",
+      "name": "nic0",
+      "accessConfigs": [
+        {
+          "kind": "compute#accessConfig",
+          "type": "ONE_TO_ONE_NAT",
+          "name": "external-nat",
+          "natIP": "34.116.148.131",
+          "networkTier": "PREMIUM"
+        }
+      ],
+      "fingerprint": "F3xfxCSwYrM=",
+      "stackType": "IPV4_ONLY"
+    }
+  ],
+  "disks": [
+    {
+      "kind": "compute#attachedDisk",
+      "type": "PERSISTENT",
+      "mode": "READ_WRITE",
+      "source": "https://www.googleapis.com/compute/v1/projects/mock-project/zones/europe-central2-a/disks/mock-vm",
+      "deviceName": "persistent-disk-0",
+      "index": 0,
+      "boot": true,
+      "autoDelete": false,
+      "licenses": [
+        "https://www.googleapis.com/compute/v1/projects/debian-cloud/global/licenses/debian-11-bullseye"
+      ],
+      "interface": "SCSI",
+      "guestOsFeatures": [
+        {
+          "type": "UEFI_COMPATIBLE"
+        },
+        {
+          "type": "VIRTIO_SCSI_MULTIQUEUE"
+        },
+        {
+          "type": "GVNIC"
+        }
+      ],
+      "diskSizeGb": "10",
+      "architecture": "X86_64"
+    }
+  ],
+  "metadata": {
+    "kind": "compute#metadata",
+    "fingerprint": "cRcIE4_rlPM=",
+    "items": [
+      {
+        "key": "ssh-keys",
+        "value": "user:ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItCmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBNitICWa0efr5+N7NqTk9ZzguMVSB3K3NJmrWfMMxjgHq9MbNreFeq2swNsn7xdqe3jmWeN3TDXb25DDNiShvTU= google-ssh {\"userName\":\"user@domain.com\",\"expireOn\":\"2022-10-14T14:10:09+0000\"}\nuser:ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAHGMiJuSziloDPdOP1q/V2Wg5iNqJefuuXuWjv+QBu2okFhnc10cPMub87QFlQ5lvZ/Av7gy521dY+E6jyPx4i3UQfHg5mt2K/14zMkzDnRcrW0zSFU41AUqHVq8YFmWaDw4xPnuHW8kAj9F0Bf/zws+MoDaqfS0HOFtsO8RugBxR/PxGn2E4lAKFMmcutDG5s7bSt2j8rhmAQV0y9HeodwMXNYUdBBzSfSCbbh+SgiWDaS3qLRbsojmcRFGX/ZH+9Q5KDldEq08ZDUgCE+2Mt3EvbAkAtP32DFodHQG85glS3lD9Aq/6Y2k26d0PCfktBKlZ8M5w+1iKvk8iekRQd8= google-ssh {\"userName\":\"user@domain.com\",\"expireOn\":\"2022-10-14T14:10:24+0000\"}"
+      }
+    ]
+  },
+  "serviceAccounts": [
+    {
+      "email": "139403882410-compute@developer.gserviceaccount.com",
+      "scopes": [
+        "https://www.googleapis.com/auth/devstorage.read_only",
+        "https://www.googleapis.com/auth/logging.write",
+        "https://www.googleapis.com/auth/monitoring.write",
+        "https://www.googleapis.com/auth/pubsub",
+        "https://www.googleapis.com/auth/service.management.readonly",
+        "https://www.googleapis.com/auth/servicecontrol",
+        "https://www.googleapis.com/auth/trace.append"
+      ]
+    }
+  ],
+  "selfLink": "https://www.googleapis.com/compute/v1/projects/mock-project/zones/europe-central2-a/instances/mock-vm",
+  "scheduling": {
+    "onHostMaintenance": "MIGRATE",
+    "automaticRestart": true,
+    "preemptible": false,
+    "provisioningModel": "STANDARD"
+  },
+  "cpuPlatform": "Intel Broadwell",
+  "labelFingerprint": "42WmSpB8rSM=",
+  "startRestricted": false,
+  "deletionProtection": false,
+  "shieldedInstanceConfig": {
+    "enableSecureBoot": false,
+    "enableVtpm": true,
+    "enableIntegrityMonitoring": true
+  },
+  "fingerprint": "hIffY-4QCcs=",
+  "lastStartTimestamp": "2022-10-17T07:34:39.081-07:00",
+  "lastStopTimestamp": "2022-10-17T07:33:46.980-07:00"
+}

@@ -1,0 +1,39 @@
+#!/bin/bash
+
+ts=GOOGLE_TS
+sed -i "s/$(hostname)/$(hostname)-rescue/g" /etc/hosts
+
+cat > /sbin/rescue-automoun.sh << "EOF"
+disk=GOOGLE_DISK_NAME
+hostname ${HOSTNAME}-rescue
+while [ true ]; do
+    [[ -e /dev/disk/by-id/google-${disk} ]] && {
+        mkdir -p /mnt/sysroot
+        disk_p=$(lsblk -rf /dev/disk/by-id/google-${disk} | egrep -i 'ext[3-4]|xfs|microsoft')
+        [[ /dev/${disk_p%% *} ]] && mount /dev/${disk_p%% *} /mnt/sysroot
+
+        [[ -d /mnt/sysroot/proc ]] && mount -t proc proc /mnt/sysroot/proc
+        [[ -d /mnt/sysroot/sys ]] && mount -t sysfs sys /mnt/sysroot/sys
+        [[ -d /mnt/sysroot/dev ]] && mount -o bind /dev /mnt/sysroot/dev
+        exit 0
+    }
+    sleep 5
+done
+EOF
+
+cat > /etc/systemd/system/rescue_automount.service << EOF
+[Unit]
+Description=Rescue disk automount script. 
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /sbin/rescue-automoun.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+chmod 644 /etc/systemd/system/rescue_automount.service
+systemctl enable rescue_automount.service
+systemctl start rescue_automount.service
+echo "END:${ts}" 2>&1

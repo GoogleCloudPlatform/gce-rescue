@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+
+""" Install GCE Rescue """
+
+from setuptools import setup, find_packages
+from os import path
+
+my_pwd = path.abspath(path.dirname(__file__))
+
+# Get the long description from the README file
+with open(path.join(my_pwd, 'README.md'), encoding='utf-8') as f:
+  long_description_readme = f.read()
+
+# Get requirements
+with open(path.join(my_pwd, 'requirements.txt'), encoding='utf-8') as f:
+  list_requirements = f.readlines()
+
+setup(
+  name = 'gce-rescue',
+  version = '0.0.1',
+  url = 'http://www.github.com/google/gce-rescue',
+  author = 'Halley de Souza',
+  author_email = 'gce-rescue-dev@google.com',
+  license = 'Apache-2.0',
+  long_description = long_description_readme,
+  long_description_content_type = 'text/markdown',
+  install_requires = list_requirements,
+  zip_safe = False,
+  packages = find_packages(exclude=['test', '*_test.py']),
+  package_dir = {'': '.'},
+  package_data = {'': ['startup-script.txt']},
+  include_package_data = True,
+  entry_points={
+        'console_scripts': [
+            'gce-rescue = gce_rescue.bin.rescue:run_script',
+        ],
+    },
+)

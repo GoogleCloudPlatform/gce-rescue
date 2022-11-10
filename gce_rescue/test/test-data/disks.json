@@ -1,0 +1,48 @@
+{
+  "kind": "compute#diskList",
+  "id": "projects/mock-project/zones/us-central1-a/disks",
+  "items": [
+    {
+      "kind": "compute#disk",
+      "id": "2807180985373828906",
+      "creationTimestamp": "2022-10-13T02:26:31.199-07:00",
+      "name": "mock-vm",
+      "sizeGb": "10",
+      "zone": "https://www.googleapis.com/compute/v1/projects/mock-project/zones/us-central1-a",
+      "status": "READY",
+      "selfLink": "https://www.googleapis.com/compute/v1/projects/mock-project/zones/us-central1-a/disks/test-x86",
+      "sourceImage": "https://www.googleapis.com/compute/v1/projects/ubuntu-os-pro-cloud/global/images/ubuntu-pro-1604-xenial-v20220810",
+      "sourceImageId": "2560324673679702641",
+      "type": "https://www.googleapis.com/compute/v1/projects/mock-project/zones/us-central1-a/diskTypes/pd-balanced",
+      "licenses": [
+        "https://www.googleapis.com/compute/v1/projects/ubuntu-os-pro-cloud/global/licenses/ubuntu-pro-1604-lts"
+      ],
+      "guestOsFeatures": [
+        {
+          "type": "VIRTIO_SCSI_MULTIQUEUE"
+        },
+        {
+          "type": "UEFI_COMPATIBLE"
+        },
+        {
+          "type": "GVNIC"
+        }
+      ],
+      "lastAttachTimestamp": "2022-10-13T06:17:13.150-07:00",
+      "lastDetachTimestamp": "2022-10-13T06:16:54.731-07:00",
+      "users": [
+        "https://www.googleapis.com/compute/v1/projects/mock-project/zones/us-central1-a/instances/mock-vm"
+      ],
+      "labels": {
+        "rescue": "1665666907"
+      },
+      "labelFingerprint": "pub7yNyLGn0=",
+      "licenseCodes": [
+        "8045211386737108299"
+      ],
+      "physicalBlockSizeBytes": "4096",
+      "architecture": "X86_64"
+    }
+  ],
+  "selfLink": "https://www.googleapis.com/compute/v1/projects/mock-project/zones/us-central1-a/disks"
+}
