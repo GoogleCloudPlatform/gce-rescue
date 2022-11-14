@@ -4,7 +4,7 @@ on:
 env:
   PIPENV_VENV_IN_PROJECT: enabled
 jobs:
-  make-test:
+  check-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
