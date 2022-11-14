@@ -20,15 +20,7 @@ jobs:
     - name: Install pipenv
       run: python -m pip install --upgrade pipenv==2021.5.29 wheel
 
-    - name: Restore pipenv cache
-      id: cache-pipenv
-      uses: actions/cache@v2
-      with:
-        path: ./.venv
-        key: test-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-pipenv-${{ hashFiles('Pipfile.lock') }}
-
     - name: Install dependencies
-      if: steps.cache-pipenv.outputs.cache-hit != 'true'
       run: pipenv install pylint
 
     - name: Check code
