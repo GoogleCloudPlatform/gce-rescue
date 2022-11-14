@@ -15,7 +15,7 @@ The main advantage to using this approach, rather than creating a 2nd instance, 
 ## Installation ##
 
 ```shellscript
-$ git clone https://github.com/google/gce-rescue.git
+$ git clone https://github.com/googlecloudplatform/gce-rescue.git
 $ cd gce-rescue/
 $ sudo python3 setup.py install
 ```
