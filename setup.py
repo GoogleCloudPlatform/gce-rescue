@@ -32,7 +32,7 @@ with open(path.join(my_pwd, 'requirements.txt'), encoding='utf-8') as f:
 setup(
   name = 'gce-rescue',
   version = '0.0.1',
-  url = 'http://www.github.com/google/gce-rescue',
+  url = 'https://github.com/googlecloudplatform/gce-rescue',
   author = 'Halley de Souza',
   author_email = 'gce-rescue-dev@google.com',
   license = 'Apache-2.0',
