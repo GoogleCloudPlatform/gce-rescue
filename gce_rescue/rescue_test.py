@@ -25,12 +25,12 @@ from gce_rescue.test.mocks import (
 class RescueTest(absltest.TestCase):
   vm: Instance
 
-  
+
   def setUp(self):
     self.vm = Instance(test_mode=True, **MOCK_TEST_VM)
     self.instance_data =  self.vm.data
 
-  
+
   def test_instance(self):
     """Compare the properties values with the fixed values in instances.json."""
 
@@ -63,7 +63,7 @@ class RescueTest(absltest.TestCase):
       }
     )
 
-  
+
   def test_refresh_fingerprint(self):
     """Validate the refresh fingerprint function by resetting the value,
     calling the function and comparing the hearded code in instances.json."""

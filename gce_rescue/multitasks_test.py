@@ -55,7 +55,7 @@ class MultitasksTest(absltest.TestCase):
     output1 = t1.result()
     output2 = t2.result()
     self.assertEqual(output1, OUTPUT1)
-    self.assertEqual(output1, OUTPUT2)
+    self.assertEqual(output2, OUTPUT2)
     self.assertTrue(MultitasksTest.status['task1_done'])
     self.assertTrue(MultitasksTest.status['task2_done'])
 
