@@ -10,7 +10,6 @@ google-auth = "*"
 
 [dev-packages]
 bump2version = "*"
-pylint = "*"
 
 [requires]
 python_version = "3.9"
