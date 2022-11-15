@@ -12,7 +12,7 @@ After you’ve fixed the faulty disk, you can then restore the original configur
 
 The advantage of using GCE Rescue is that it uses the resources already configured on the VM instance, such as networking, VPC firewalls or routes, to restore the faulty boot disk instead of creating a duplicate VM instance to restore the faulty boot disk. 
 
-> Note: GCE Rescue is not an officially supported Google Cloud product. The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
+>Note: **`GCE Rescue is not an officially supported Google Cloud product`**. The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
 
 
 ## Installation ##
