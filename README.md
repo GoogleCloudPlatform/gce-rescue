@@ -4,7 +4,9 @@ This page shows you how to rescue a virtual machine (VM) instance by using GCE R
 
 With GCE Rescue, you can boot the VM instance using a temporary boot disk to fix any problem that may be stopping the VM instance. Specifically, GCE Rescue uses a temporary Linux image as the VM instance’s boot disk to let you do maintenance on the faulty boot disk while it is in rescue mode.
 
-When running GCE Rescue, it creates a snapshot of the existing boot disk for backup. After you’ve restored the faulty disk, you can then restore the original configuration by running GCE Rescue again and rebooting your VM instance.
+When running GCE Rescue, it creates a snapshot of the existing boot disk for backup. 
+
+After you’ve fixed the faulty disk, you can then restore the original configuration by running GCE Rescue again to reboot the VM instance in normal mode again.
 
 The advantage of using GCE Rescue is that it uses the resources already configured on the VM instance, such as networking, VPC firewalls or routes, to restore the faulty boot disk instead of creating a duplicate VM instance to restore the faulty boot disk. 
 
