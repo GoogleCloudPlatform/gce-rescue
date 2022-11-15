@@ -32,6 +32,7 @@ with open(path.join(my_pwd, 'requirements.txt'), encoding='utf-8') as f:
 setup(
   name = 'gce-rescue',
   version = '0.0.1',
+  description='GCE Rescue - Boot your GCE VM in rescue mode.',
   url = 'https://github.com/googlecloudplatform/gce-rescue',
   author = 'Halley de Souza',
   author_email = 'gce-rescue-dev@google.com',
@@ -49,4 +50,15 @@ setup(
             'gce-rescue = gce_rescue.bin.rescue:run_script',
         ],
     },
+  classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Boot",
+    "Topic :: System :: Boot :: Init",
+    "Topic :: System :: Recovery Tools",
+    "Topic :: System :: System Shells",
+    "Topic :: System :: Systems Administration",
+  ]
 )
