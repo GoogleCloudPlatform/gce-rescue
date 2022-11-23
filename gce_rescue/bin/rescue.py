@@ -17,21 +17,36 @@
 """ Main script to be used to set/reset rescue mode. """
 
 from datetime import datetime
+import argparse
 
-from absl import app, flags, logging
+from absl import app, logging # ,flags
 from gce_rescue import messages
 from gce_rescue.rescue import Instance
 from gce_rescue.tasks.actions import call_tasks
 from gce_rescue.utils import log_to_file, read_input
 
-FLAGS = flags.FLAGS
-flags.DEFINE_string('project', None, 'The project-id that has the instance.')
-flags.DEFINE_string('zone', None, 'Zone where the instance is created.')
-flags.DEFINE_string('name', None, 'Instance name.')
-flags.DEFINE_boolean('debug', False, 'Print to the log file in debug level.')
-flags.DEFINE_boolean('force', False, 'Don\'t ask for confirmation.')
-flags.mark_flag_as_required('zone')
-flags.mark_flag_as_required('name')
+
+# FLAGS = flags.FLAGS
+# flags.DEFINE_string('project', None, 'The project-id that has the instance.')
+# flags.DEFINE_string('zone', None, 'Zone where the instance is created.')
+# flags.DEFINE_string('name', None, 'Instance name.')
+# flags.DEFINE_boolean('debug', False, 'Print to the log file in debug level.')
+# flags.DEFINE_boolean('force', False, 'Don\'t ask for confirmation.')
+# flags.mark_flag_as_required('zone')
+# flags.mark_flag_as_required('name')
+
+
+parser = argparse.ArgumentParser(description='say something')
+parser.add_argument('-p', '--project', type=int,
+                    help='The project-id that has the instance.')
+parser.add_argument('-z', '--zone', help='Zone where the instance is created.',
+                    required=True)
+parser.add_argument('-n', '--name', help='Instance name.', required=True)
+parser.add_argument('-d', '--debug', action='store_true',
+                    help='Print to the log file in debug leve')
+parser.add_argument('-f', '--force', action='store_true',
+                    help='Don\'t ask for confirmation.')
+FLAGS = parser.parse_args()
 
 
 def main(argv):
