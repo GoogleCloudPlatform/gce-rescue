@@ -17,9 +17,9 @@
 
 from gce_rescue.utils import wait_for_operation
 from typing import Dict, List
-from absl import logging
+import logging
 
-_logger = logging
+_logger = logging.getLogger(__name__)
 
 def backup_metadata_items(data: Dict) -> List:
   """ Returns the "items" content (ssh-keys, scripts, etc) to be restored
