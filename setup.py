@@ -31,7 +31,7 @@ with open(path.join(my_pwd, 'requirements.txt'), encoding='utf-8') as f:
 
 setup(
   name = 'gce-rescue',
-  version = '0.0.1',
+  version = '0.0.2',
   description='GCE Rescue - Boot your GCE VM in rescue mode.',
   url = 'https://github.com/googlecloudplatform/gce-rescue',
   author = 'Halley de Souza',
