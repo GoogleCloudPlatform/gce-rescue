@@ -17,44 +17,55 @@
 """ Main script to be used to set/reset rescue mode. """
 
 from datetime import datetime
+import argparse
+import logging
 
-from absl import app, flags, logging
 from gce_rescue import messages
 from gce_rescue.rescue import Instance
 from gce_rescue.tasks.actions import call_tasks
-from gce_rescue.utils import log_to_file, read_input
+from gce_rescue.utils import read_input, set_logging
 
-FLAGS = flags.FLAGS
-flags.DEFINE_string('project', None, 'The project-id that has the instance.')
-flags.DEFINE_string('zone', None, 'Zone where the instance is created.')
-flags.DEFINE_string('name', None, 'Instance name.')
-flags.DEFINE_boolean('debug', False, 'Print to the log file in debug level.')
-flags.DEFINE_boolean('force', False, 'Don\'t ask for confirmation.')
-flags.mark_flag_as_required('zone')
-flags.mark_flag_as_required('name')
+def usage():
+  """ Print usage options. """
+  parser = argparse.ArgumentParser(description='GCE Rescue v0.0.2 - Set/Reset\
+    GCE instances to boot in rescue mode.')
+  parser.add_argument('-p', '--project',
+                      help='The project-id that has the instance.')
+  parser.add_argument('-z', '--zone', help='Zone where the instance \
+    is created.',
+                      required=True)
+  parser.add_argument('-n', '--name', help='Instance name.', required=True)
+  parser.add_argument('-d', '--debug', action='store_true',
+                      help='Print to the log file in debug leve')
+  parser.add_argument('-f', '--force', action='store_true',
+                      help='Don\'t ask for confirmation.')
 
+  return parser
 
-def main(argv):
-  del argv
+def main():
+  """ Main script function. """
+  parser = usage()
+  args = parser.parse_args()
 
-  if FLAGS.debug:
+  if args.debug:
     log_level = 'DEBUG'
   else:
     log_level = 'INFO'
-  log_to_file(log_file_name=FLAGS.name, level=log_level)
+
+  set_logging(vm_name=args.name, level=log_level)
 
   parse_kwargs = {
-      'zone': FLAGS.zone,
-      'name': FLAGS.name,
+      'zone': args.zone,
+      'name': args.name,
   }
 
-  if FLAGS.project:
-    parse_kwargs['project'] = FLAGS.project
+  if args.project:
+    parse_kwargs['project'] = args.project
 
   vm = Instance(test_mode=False, **parse_kwargs)
   rescue_on = vm.rescue_mode_status['rescue-mode']
   if not rescue_on:
-    if not FLAGS.force:
+    if not args.force:
       info = (f'This option will boot the instance {vm.name} in '
               'RESCUE MODE. \nIf your instance is running it will be rebooted. '
               '\nDo you want to continue [y/N]: ')
@@ -70,7 +81,7 @@ def main(argv):
     rescue_ts = vm.rescue_mode_status['ts']
     rescue_date = datetime.fromtimestamp(int(rescue_ts))
 
-    if not FLAGS.force:
+    if not args.force:
       info = (f'The instance \"{vm.name}\" is currently configured '
               f'to boot as rescue mode since {rescue_date}.\nWould you like to'
               ' restore the original configuration ? [y/N]: ')
@@ -83,9 +94,6 @@ def main(argv):
   call_tasks(vm=vm, action=action)
   print(msg)
 
-def run_script():
-  """ Function to be called as script. """
-  app.run(main)
 
 if __name__ == '__main__':
-  run_script()
+  main()

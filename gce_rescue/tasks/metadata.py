@@ -17,9 +17,9 @@
 from gce_rescue.config import get_config
 from gce_rescue.utils import wait_for_operation, wait_for_os_boot
 from typing import Dict
-from absl import logging
+import logging
 
-_logger = logging
+_logger = logging.getLogger(__name__)
 
 def set_metadata(vm) -> Dict:
   """Configure Instance custom metadata.

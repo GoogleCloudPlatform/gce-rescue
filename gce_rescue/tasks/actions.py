@@ -15,7 +15,7 @@
 """ List of ordered tasks to be executed when set/reset VM rescue mode. """
 
 from typing import Dict
-from absl import logging
+import logging
 
 from gce_rescue.rescue import Instance
 from gce_rescue.tasks.disks import (
@@ -33,7 +33,7 @@ from gce_rescue.tasks.metadata import (
 )
 from gce_rescue.utils import Tracker
 
-_logger = logging
+_logger = logging.getLogger(__name__)
 
 def _list_tasks(vm: Instance, action: str) -> Dict:
   """ List tasks, by order, per operation

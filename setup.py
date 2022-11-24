@@ -47,18 +47,18 @@ setup(
   include_package_data = True,
   entry_points={
         'console_scripts': [
-            'gce-rescue = gce_rescue.bin.rescue:run_script',
+            'gce-rescue = gce_rescue.bin.rescue:main',
         ],
     },
   classifiers = [
-    "Development Status :: 3 - Alpha",
-    "License :: OSI Approved :: Apache Software License",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Topic :: System :: Boot",
-    "Topic :: System :: Boot :: Init",
-    "Topic :: System :: Recovery Tools",
-    "Topic :: System :: System Shells",
-    "Topic :: System :: Systems Administration",
+    'Development Status :: 3 - Alpha',
+    'License :: OSI Approved :: Apache Software License',
+    'Operating System :: OS Independent',
+    'Programming Language :: Python :: 3',
+    'Topic :: System :: Boot',
+    'Topic :: System :: Boot :: Init',
+    'Topic :: System :: Recovery Tools',
+    'Topic :: System :: System Shells',
+    'Topic :: System :: Systems Administration',
   ]
 )

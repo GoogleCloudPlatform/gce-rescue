@@ -19,12 +19,12 @@ import googleapiclient.discovery
 from time import time, sleep
 from typing import Dict
 from gce_rescue.config import get_config
-from absl import logging
+import logging
 import multiprocessing
 import sys
 import json
 
-_logger = logging
+_logger = logging.getLogger(__name__)
 
 class Tracker():
   """ Track tasks using multiprocessing and print progress bar. """
@@ -187,14 +187,18 @@ def wait_for_os_boot(vm: googleapiclient.discovery.Resource) -> bool:
       return False
 
 
-def log_to_file(log_file_name: str, level: str = 'INFO') -> None:
-  """ Set logfile and verbosity """
+def set_logging(vm_name: str, level: str ='INFO') -> None:
+  """ Set logfile and verbosity. """
 
   log_level = getattr(logging, level.upper())
-  logging.set_verbosity(log_level)
-  logging.use_absl_handler()
-  logging.get_absl_handler().use_absl_log_file(log_file_name, './')
-
+  file_name = f'{vm_name}.log'
+  logging.basicConfig(
+    filename=file_name,
+    filemode='a',
+    format='%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d]\
+      %(message)s',
+    datefmt='%Y-%m-%d:%H:%M:%S',
+    level=log_level)
 
 def read_input(msg: str) -> None:
   """Read user input if --force is not provided."""

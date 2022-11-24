@@ -15,7 +15,7 @@
 """ Compilations of all disks tasks related. """
 
 from typing import Dict
-from absl import logging
+import logging
 
 import googleapiclient.errors
 
@@ -23,7 +23,7 @@ from gce_rescue.utils import wait_for_operation
 from gce_rescue.tasks.backup import  backup
 from gce_rescue.multitasks import Handler
 
-_logger = logging
+_logger = logging.getLogger(__name__)
 
 def _create_rescue_disk(vm, source_disk: str) -> Dict:
   """ Create new temporary rescue disk based on source_disk.

@@ -16,9 +16,9 @@
 
 from gce_rescue.rescue import Instance
 from gce_rescue.utils import wait_for_operation
-from absl import logging
+import logging
 
-_logger = logging
+_logger = logging.getLogger(__name__)
 
 def start_instance(vm: Instance) -> str:
   """Start instance."""
