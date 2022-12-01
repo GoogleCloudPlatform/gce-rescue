@@ -15,14 +15,14 @@
 """Test code for rescue.py."""
 
 from absl.testing import absltest
-from gce_rescue.rescue import Instance
+from gce_rescue.instance import Instance
 from gce_rescue.test.mocks import (
   mock_api_object,
   MOCK_TEST_VM,
   MOCK_TEST_DATA
 )
 
-class RescueTest(absltest.TestCase):
+class InstanceTest(absltest.TestCase):
   vm: Instance
 
 

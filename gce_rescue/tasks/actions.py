@@ -17,7 +17,7 @@
 from typing import Dict
 import logging
 
-from gce_rescue.rescue import Instance
+from gce_rescue.instance import Instance
 from gce_rescue.tasks.disks import (
   config_rescue_disks,
   restore_original_disk,

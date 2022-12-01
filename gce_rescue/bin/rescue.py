@@ -21,7 +21,7 @@ import argparse
 import logging
 
 from gce_rescue import messages
-from gce_rescue.rescue import Instance
+from gce_rescue.instance import Instance
 from gce_rescue.tasks.actions import call_tasks
 from gce_rescue.utils import read_input, set_logging
 

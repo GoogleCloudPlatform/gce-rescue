@@ -19,7 +19,7 @@ import logging
 
 import googleapiclient.errors
 
-from gce_rescue.utils import wait_for_operation
+from gce_rescue.tasks.controller import wait_for_operation
 from gce_rescue.tasks.backup import  backup
 from gce_rescue.multitasks import Handler
 

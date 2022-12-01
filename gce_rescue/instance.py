@@ -23,9 +23,27 @@ from gce_rescue.tasks.pre_validations import Validations
 from gce_rescue.utils import (
   validate_instance_mode,
   guess_guest,
-  get_instance_info
 )
 import googleapiclient.discovery
+
+
+def get_instance_info(
+  compute: googleapiclient.discovery.Resource,
+  name: str,
+  project_data: Dict[str, str]
+) -> Dict:
+  """Set Dictionary with complete data from instances().get() from the instance.
+  https://cloud.google.com/compute/docs/reference/rest/v1/instances/get
+  Attributes:
+    compute: obj, API Object
+    instance: str, Instace name
+    project_data: dict, Dictionary containing project and zone keys to be
+      unpacked when calling the API.
+  """
+  return compute.instances().get(
+      **project_data,
+      instance = name).execute()
+
 
 @dataclass
 class Instance:
