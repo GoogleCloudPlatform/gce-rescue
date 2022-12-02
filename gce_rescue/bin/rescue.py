@@ -22,7 +22,7 @@ import logging
 
 from gce_rescue import messages
 from gce_rescue.instance import Instance
-from gce_rescue.tasks.actions import call_tasks
+from gce_rescue.rescuer import Rescuer
 from gce_rescue.utils import read_input, set_logging
 
 def usage():
@@ -63,6 +63,7 @@ def main():
     parse_kwargs['project'] = args.project
 
   vm = Instance(test_mode=False, **parse_kwargs)
+  rescuer = Rescuer(vm)
   rescue_on = vm.rescue_mode_status['rescue-mode']
   if not rescue_on:
     if not args.force:
@@ -91,7 +92,11 @@ def main():
     action = 'reset_rescue_mode'
     msg = messages.tip_restore_disk(vm)
 
-  call_tasks(vm=vm, action=action)
+  if action == 'set_rescue_mode':
+    rescuer.set_rescue_mode()
+  elif action == 'reset_rescue_mode':
+    rescuer.reset_rescue_mode()
+
   print(msg)
 
 
