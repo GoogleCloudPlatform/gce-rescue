@@ -31,7 +31,7 @@ from gce_rescue.tasks.metadata import (
   set_metadata,
   restore_metadata_items
 )
-
+from utils import Tracker
 
 _logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ def _list_tasks(vm: Instance, action: str) -> Dict:
 @dataclass
 class Rescuer:
   """Initialize Rescuer instance."""
-  rescuee: Instance 
+  rescuee: Instance
   # _rescue_source_disk: str = ''
   # _rescue_mode_status: Dict[str, Union[str, int]] = field(
   #   default_factory=lambda: ({})
@@ -144,13 +144,13 @@ class Rescuer:
 
   def set_rescue_mode(self) -> None:
     """ execute the set rescue mode tasks """
-    
+
     self._call_tasks('set_rescue_mode')
 
 
   def reset_rescue_mode(self) -> None:
     """  execute the reset rescue mode tasks """
-    
+
     self._call_tasks('reset_rescue_mode')
 
 
