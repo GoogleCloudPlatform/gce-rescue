@@ -113,7 +113,7 @@ def _list_tasks(vm: Instance, action: str) -> Dict:
   }
 
   if action not in all_tasks:
-    _logger.info(f'Unable to find "{action}".')
+    _logger.info('Unable to find "%s".', action)
     raise Exception(ValueError)
   return all_tasks[action]
 
