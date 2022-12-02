@@ -17,7 +17,7 @@
 from absl.testing import absltest
 from absl import logging
 
-from gce_rescue.instance import Instance
+from gce_rescue.gce_instance import Instance
 from gce_rescue.tasks import disks
 from gce_rescue.test.mocks import (
   mock_api_object,

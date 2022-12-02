@@ -20,10 +20,9 @@ from typing import Dict, List, Union
 from gce_rescue.tasks.backup import backup_metadata_items
 from gce_rescue.tasks.disks import list_disk
 from gce_rescue.tasks.pre_validations import Validations
-from gce_rescue.utils import (
-  validate_instance_mode,
-  guess_guest,
-)
+from gce_rescue.utils import generate_ts
+from gce_rescue.config import get_config
+
 import googleapiclient.discovery
 
 
@@ -44,6 +43,44 @@ def get_instance_info(
       **project_data,
       instance = name).execute()
 
+
+def validate_instance_mode(data: Dict) -> Dict:
+  """Validate if the instance is already configured as rescue mode."""
+
+  result = {
+      'rescue-mode': False,
+      'ts': generate_ts()
+  }
+  if 'metadata' in data and  'items' in data['metadata']:
+    metadata = data['metadata']
+    for item in metadata['items']:
+      if item['key'] == 'rescue-mode':
+        result = {
+          'rescue-mode': True,
+          'ts': item['value']
+        }
+
+  return result
+
+
+def guess_guest(data: Dict) -> str:
+  """Determined which Guest OS Family is being used and select a
+  different OS for recovery disk.
+     Default: projects/debian-cloud/global/images/family/debian-11"""
+
+  guests = get_config('source_guests')
+  for disk in data['disks']:
+    if disk['boot']:
+      if 'architecture' in disk:
+        arch = disk['architecture'].lower()
+      else:
+        arch = 'x86_64'
+      guest_default = guests[arch][0]
+      guest_name = guest_default.split('/')[-1]
+      for lic in disk['licenses']:
+        if guest_name in lic:
+          guest_default = guests[arch][1]
+  return guest_default
 
 @dataclass
 class Instance:

@@ -14,7 +14,7 @@
 
 """ Standard VM operations. """
 
-from gce_rescue.instance import Instance
+from gce_rescue.gce_instance import Instance
 from gce_rescue.tasks.controller import wait_for_operation
 import logging
 

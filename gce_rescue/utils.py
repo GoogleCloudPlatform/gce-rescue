@@ -16,8 +16,6 @@
 
 
 from time import time, sleep
-from typing import Dict
-from gce_rescue.config import get_config
 import logging
 import multiprocessing
 import sys
@@ -90,43 +88,6 @@ def generate_ts() -> int:
   during this execution."""
   return int(time())
 
-def validate_instance_mode(data: Dict) -> Dict:
-  """Validate if the instance is already configured as rescue mode."""
-
-  result = {
-      'rescue-mode': False,
-      'ts': generate_ts()
-  }
-  if 'metadata' in data and  'items' in data['metadata']:
-    metadata = data['metadata']
-    for item in metadata['items']:
-      if item['key'] == 'rescue-mode':
-        result = {
-          'rescue-mode': True,
-          'ts': item['value']
-        }
-
-  return result
-
-def guess_guest(data: Dict) -> str:
-  """Determined which Guest OS Family is being used and select a
-  different OS for recovery disk.
-     Default: projects/debian-cloud/global/images/family/debian-11"""
-
-  guests = get_config('source_guests')
-  for disk in data['disks']:
-    if disk['boot']:
-      if 'architecture' in disk:
-        arch = disk['architecture'].lower()
-      else:
-        arch = 'x86_64'
-      guest_default = guests[arch][0]
-      guest_name = guest_default.split('/')[-1]
-      for lic in disk['licenses']:
-        if guest_name in lic:
-          guest_default = guests[arch][1]
-  return guest_default
-
 
 def set_logging(vm_name: str, level: str ='INFO') -> None:
   """ Set logfile and verbosity. """
@@ -140,6 +101,7 @@ def set_logging(vm_name: str, level: str ='INFO') -> None:
       %(message)s',
     datefmt='%Y-%m-%d:%H:%M:%S',
     level=log_level)
+
 
 def read_input(msg: str) -> None:
   """Read user input if --force is not provided."""

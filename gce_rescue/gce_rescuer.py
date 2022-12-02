@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" List of ordered tasks to be executed when set/reset VM rescue mode. """
+""" Define the Rescuer functions. """
 
+from dataclasses import dataclass
 from typing import Dict
 import logging
-
-from gce_rescue.instance import Instance
+from gce_rescue.gce_instance import Instance
 from gce_rescue.tasks.disks import (
   config_rescue_disks,
   restore_original_disk,
@@ -31,9 +31,10 @@ from gce_rescue.tasks.metadata import (
   set_metadata,
   restore_metadata_items
 )
-from gce_rescue.utils import Tracker
+
 
 _logger = logging.getLogger(__name__)
+
 
 def _list_tasks(vm: Instance, action: str) -> Dict:
   """ List tasks, by order, per operation
@@ -117,19 +118,56 @@ def _list_tasks(vm: Instance, action: str) -> Dict:
   return all_tasks[action]
 
 
-def call_tasks(vm: Instance, action: str) -> None:
-  """ Loop tasks dict and execute """
-  tasks = _list_tasks(vm = vm, action = action)
-  total_tasks = len(tasks)
+@dataclass
+class Rescuer:
+  """Initialize Rescuer instance."""
+  rescuee: Instance 
+  # _rescue_source_disk: str = ''
+  # _rescue_mode_status: Dict[str, Union[str, int]] = field(
+  #   default_factory=lambda: ({})
+  # )
 
-  tracker = Tracker(total_tasks)
-  tracker.start()
+  # @property
+  # def rescue_disk(self) -> str:
+  #   return f'linux-rescue-disk-{self.ts}'
 
-  for task in tasks:
-    execute = task['name']
-    args = task['args'][0]
 
-    execute(**args)
-    tracker.advance(step = 1)
+  # @property
+  # def rescue_source_disk(self) -> str:
+  #   return self._rescue_source_disk
 
-  tracker.finish()
+
+  # @rescue_source_disk.setter
+  # def rescue_source_disk(self, v: str) -> None:
+  #   self._rescue_source_disk = v
+
+
+  def set_rescue_mode(self) -> None:
+    """ execute the set rescue mode tasks """
+    
+    self._call_tasks('set_rescue_mode')
+
+
+  def reset_rescue_mode(self) -> None:
+    """  execute the reset rescue mode tasks """
+    
+    self._call_tasks('reset_rescue_mode')
+
+
+  def _call_tasks(self, action) -> None:
+    """ Loop tasks dict and execute tasks"""
+
+    tasks = _list_tasks(vm = self.rescuee, action = action)
+    total_tasks = len(tasks)
+
+    tracker = Tracker(total_tasks)
+    tracker.start()
+
+    for task in tasks:
+      execute = task['name']
+      args = task['args'][0]
+
+      execute(**args)
+      tracker.advance(step = 1)
+
+    tracker.finish()
