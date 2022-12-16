@@ -24,8 +24,7 @@ def tip_connect_ssh(vm: Instance) -> str:
     f'  2. Google Cloud Console:\n'
     f'    https://ssh.cloud.google.com/v2/ssh/projects/{vm.project}/zones/'
     f'{vm.zone}/instances/{vm.name}?authuser=0&hl=en_US&useAdminProxy=true&'
-    f'troubleshoot4005Enabled=true&troubleshoot255Enabled=true&'
-    f'sshTroubleshootingToolEnabled=true\n')
+    f'troubleshoot4005Enabled=true\n')
 
 def tip_restore_disk(vm: Instance) -> str:
   return (f'- The instance {vm.name} was restored! Use the snapshot below '
