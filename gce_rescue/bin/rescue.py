@@ -27,7 +27,7 @@ from gce_rescue.utils import read_input, set_logging
 
 def usage():
   """ Print usage options. """
-  parser = argparse.ArgumentParser(description='GCE Rescue v0.0.2 - Set/Reset\
+  parser = argparse.ArgumentParser(description='GCE Rescue v0.0.2-1 - Set/Reset\
     GCE instances to boot in rescue mode.')
   parser.add_argument('-p', '--project',
                       help='The project-id that has the instance.')
