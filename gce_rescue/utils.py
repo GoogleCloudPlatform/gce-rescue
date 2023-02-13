@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# pylint: disable=broad-exception-raised
+
 """ List of classes and functions to be used across the code. """
 
 import googleapiclient.discovery
@@ -151,7 +153,6 @@ def wait_for_operation(
   oper: Dict
 ) -> Dict:
   """ Creating poll to wait the operation to finish. """
-  # pylint: disable=broad-except
 
   while True:
     if oper['status'] == 'DONE':
