@@ -165,7 +165,7 @@ output-format=text
 # command line instead of printing them on stdout. Reports (if any) will be
 # written in a file name "pylint_global.[txt|html]". This option is deprecated
 # and it will be removed in Pylint 2.0.
-files-output=no
+#files-output=no
 
 # Tells whether to display a full report or only the messages
 reports=no

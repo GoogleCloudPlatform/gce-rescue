@@ -151,6 +151,7 @@ def wait_for_operation(
   oper: Dict
 ) -> Dict:
   """ Creating poll to wait the operation to finish. """
+  # pylint: disable=broad-except
 
   while True:
     if oper['status'] == 'DONE':
