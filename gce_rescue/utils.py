@@ -208,6 +208,5 @@ def read_input(msg: str) -> None:
   input_answer = input()
   input_answer = input_answer.strip()
   if input_answer.upper() != 'Y':
-    print('Cancelled.')
     print(f'got input: "{input_answer}". Aborting')
     sys.exit(1)
