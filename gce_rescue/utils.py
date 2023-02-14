@@ -206,6 +206,7 @@ def read_input(msg: str) -> None:
   """Read user input if --force is not provided."""
   print(msg, end='')
   input_answer = input()
+  input_answer = input_answer.strip()
   if input_answer.upper() != 'Y':
-    print('Cancelled.')
+    print(f'got input: "{input_answer}". Aborting')
     sys.exit(1)
