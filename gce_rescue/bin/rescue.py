@@ -20,6 +20,7 @@ from datetime import datetime
 import argparse
 import logging
 
+from config import set_config
 from gce_rescue import messages
 from gce_rescue.rescue import Instance
 from gce_rescue.tasks.actions import call_tasks
@@ -47,12 +48,9 @@ def main():
   parser = usage()
   args = parser.parse_args()
 
-  if args.debug:
-    log_level = 'DEBUG'
-  else:
-    log_level = 'INFO'
+  configs = set_config(args)
 
-  set_logging(vm_name=args.name, level=log_level)
+  set_logging(vm_name=args.name, level=configs["verbosity"])
 
   parse_kwargs = {
       'zone': args.zone,

@@ -15,6 +15,7 @@
 """ Default configurations values. """
 
 import os
+from argparse import Namespace
 
 dirname = os.path.dirname(__file__)
 
@@ -36,3 +37,10 @@ config = {
 def get_config(key):
   if key in config:
     return config[key]
+
+
+def set_config(args: Namespace) -> dict:
+  global config
+  if args.debug:
+    config["verbosity"] = 'DEBUG'
+  return config
