@@ -71,8 +71,8 @@ flags:
   --name: Instance name.
   --project: The project-id that has the instance.
   --zone: Zone where the instance is created.
-  
-Try --helpfull to get a list of all flags.
+
+Try --help to get a list of all flags.
 ```
 
 - ### --zone ### 
