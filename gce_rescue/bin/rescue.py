@@ -30,7 +30,7 @@ def main():
   """ Main script function. """
   args = process_args()
 
-  set_logging(vm_name=args.name, level=get_config("debug"))
+  set_logging(vm_name=args.name, level=get_config('debug'))
 
   parse_kwargs = {
       'zone': args.zone,
