@@ -15,12 +15,12 @@
 """ Default configurations values. """
 
 import os
-from argparse import Namespace
+import argparse
 
 dirname = os.path.dirname(__file__)
 
 config = {
-  'verbosity': 'INFO',
+  'debug': 'INFO',
   'startup-script-file': os.path.join(dirname, 'startup-script.txt'),
   'source_guests': {
     'x86_64':[
@@ -35,12 +35,30 @@ config = {
 }
 
 def get_config(key):
-  if key in config:
+  args = process_args()
+  try:
+    value = getattr(args, key)
+    if value:
+      return value
+    else:
+      return config[key]
+  except AttributeError:
     return config[key]
 
 
-def set_config(args: Namespace) -> dict:
-  global config
-  if args.debug:
-    config["verbosity"] = 'DEBUG'
-  return config
+def process_args():
+  """ Print usage options. """
+  parser = argparse.ArgumentParser(description='GCE Rescue v0.0.2-1 - Set/Reset\
+    GCE instances to boot in rescue mode.')
+  parser.add_argument('-p', '--project',
+                      help='The project-id that has the instance.')
+  parser.add_argument('-z', '--zone', help='Zone where the instance \
+    is created.',
+                      required=True)
+  parser.add_argument('-n', '--name', help='Instance name.', required=True)
+  parser.add_argument('-d', '--debug', action='store_true',
+                      help='Print to the log file in debug leve')
+  parser.add_argument('-f', '--force', action='store_true',
+                      help='Don\'t ask for confirmation.')
+
+  return parser.parse_args()

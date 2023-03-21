@@ -20,37 +20,17 @@ from datetime import datetime
 import argparse
 import logging
 
-from config import set_config
+from config import get_config, process_args
 from gce_rescue import messages
 from gce_rescue.rescue import Instance
 from gce_rescue.tasks.actions import call_tasks
 from gce_rescue.utils import read_input, set_logging
 
-def usage():
-  """ Print usage options. """
-  parser = argparse.ArgumentParser(description='GCE Rescue v0.0.2-1 - Set/Reset\
-    GCE instances to boot in rescue mode.')
-  parser.add_argument('-p', '--project',
-                      help='The project-id that has the instance.')
-  parser.add_argument('-z', '--zone', help='Zone where the instance \
-    is created.',
-                      required=True)
-  parser.add_argument('-n', '--name', help='Instance name.', required=True)
-  parser.add_argument('-d', '--debug', action='store_true',
-                      help='Print to the log file in debug leve')
-  parser.add_argument('-f', '--force', action='store_true',
-                      help='Don\'t ask for confirmation.')
-
-  return parser
-
 def main():
   """ Main script function. """
-  parser = usage()
-  args = parser.parse_args()
+  args = process_args()
 
-  configs = set_config(args)
-
-  set_logging(vm_name=args.name, level=configs["verbosity"])
+  set_logging(vm_name=args.name, level=get_config("debug"))
 
   parse_kwargs = {
       'zone': args.zone,
