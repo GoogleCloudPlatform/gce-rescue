@@ -15,43 +15,41 @@ The advantage of using GCE Rescue is that it uses the resources already configur
 >Note: **`GCE Rescue is not an officially supported Google Cloud product`**. The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
 
 
-## Installation ##
-
+## Installation
 
 To install GCE Rescue, follow these steps:
 
 1. Clone the git repository to your local machine:
 
-``` 
-$ git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
-```
+   ```bash
+   git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
+   ```
 
-2. Navigate to the `cd/gce-rescue` folder:
+2. Navigate to the `gce-rescue` directory:
 
-```
-$ cd gce-rescue/
-```
+   ```bash
+   cd gce-rescue/
+   ```
 
 3. To install GCE Rescue, select one of the following options: 
 
-* Install GCE Rescue globally.
+   * Install GCE Rescue globally
 
-``` 
-$ sudo python3 setup.py install
-```
+   ```bash
+   sudo python3 setup.py install
+   ```
 
-* Install GCE Rescue locally.
+   * Install GCE Rescue locally
 
-```
-$ python3 setup.py install --user
-```
+   ```bash
+   python3 setup.py install --user
+   ```
 
-> Note: If you cannot find the gce-rescue executable after your install 
-GCE Rescue, add the Python Library to your PATH:
+> Note: If you cannot find the `gce-rescue` executable after your install GCE Rescue, add the Python Library to your `PATH`:
 >
-```
-$ export PATH=$PATH:$(python3 -m site --user-base)/bin
-```
+>   ```bash
+>   export PATH=$PATH:$(python3 -m site --user-base)/bin
+>   ```
 
 ---
 
