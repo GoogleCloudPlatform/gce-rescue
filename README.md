@@ -49,11 +49,13 @@ To install GCE Rescue, follow these steps:
    python3 setup.py install --user
    ```
 
-> Note: If you cannot find the `gce-rescue` executable after your install GCE Rescue, add the Python Library to your `PATH`:
+> **Note**
 >
->   ```bash
->   export PATH=$PATH:$(python3 -m site --user-base)/bin
->   ```
+> If you cannot find the `gce-rescue` executable after your install GCE Rescue, add the Python Library to your `PATH`:
+> ```bash
+> export PATH=$PATH:$(python3 -m site --user-base)/bin
+> ```
+> Read more about [how to permanently set $PATH on Linux/Unix](https://stackoverflow.com/q/14637979).
 
 ---
 
