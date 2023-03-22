@@ -1,19 +1,23 @@
-# GCE Rescue #
+# GCE Rescue
+
 [![test badge](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml/badge.svg?branch=main&event=push)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml?query=branch%3Amain+event%3Apush)
 
+GCE Rescue is a tool that can help you fix problems with a virtual machine (VM) instance in Google Cloud. It can be issues with the boot disk or any software-related problems that may prevent the VM from starting up or functioning as intended.
 
-This page shows you how to rescue a virtual machine (VM) instance by using GCE Rescue. 
+In short, the rescue for the VM occurs as follows:
 
-With GCE Rescue, you can boot the VM instance using a temporary boot disk to fix any problem that may be stopping the VM instance. Specifically, GCE Rescue uses a temporary Linux image as the VM instance’s boot disk to let you do maintenance on the faulty boot disk while it is in rescue mode.
+1. A backup of the current boot disk will be created
+2. A temporary boot disk will be created
+3. The VM will be booted from a temporary disk, and the current boot disk will be attached for repair
+4. You will perform the necessary actions with the broken disk to fix it
+5. After that, the VM will be rebooted in normal mode with a fixed old disk
 
-When running GCE Rescue, it creates a snapshot of the existing boot disk for backup. 
+GCE Rescue has an important advantage over creating a duplicate VM instance to repair a faulty boot disk - you don't need to waste time recreating the environment (VPC Networks, Firewalls, VPNs, routes, etc.) because you're using an existing and already configured instance.
 
-After you’ve fixed the faulty disk, you can then restore the original configuration by running GCE Rescue again to reboot the VM instance in normal mode again.
-
-The advantage of using GCE Rescue is that it uses the resources already configured on the VM instance, such as networking, VPC firewalls or routes, to restore the faulty boot disk instead of creating a duplicate VM instance to restore the faulty boot disk. 
-
->Note: **`GCE Rescue is not an officially supported Google Cloud product`**. The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
-
+> **Warning**
+> **GCE Rescue is not an official Google Cloud product.**
+> **Google Cloud does not accept any responsibility for the use of this tool.**
+> The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
 
 ## Installation
 
