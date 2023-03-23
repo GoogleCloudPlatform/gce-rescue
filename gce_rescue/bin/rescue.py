@@ -17,10 +17,9 @@
 """ Main script to be used to set/reset rescue mode. """
 
 from datetime import datetime
-import argparse
 import logging
 
-from config import get_config, process_args
+from gce_rescue.config import get_config, process_args
 from gce_rescue import messages
 from gce_rescue.rescue import Instance
 from gce_rescue.tasks.actions import call_tasks
@@ -28,7 +27,8 @@ from gce_rescue.utils import read_input, set_logging
 
 def main():
   """ Main script function. """
-  args = process_args()
+  parser = process_args()
+  args = parser.parse_args()
 
   set_logging(vm_name=args.name, level=get_config('debug'))
 

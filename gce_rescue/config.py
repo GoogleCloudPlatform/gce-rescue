@@ -61,4 +61,4 @@ def process_args():
   parser.add_argument('-f', '--force', action='store_true',
                       help='Don\'t ask for confirmation.')
 
-  return parser.parse_args()
+  return parser
