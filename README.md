@@ -238,11 +238,21 @@ This section demonstrates the use of GCE Rescue with the example of `test` VM in
 
 ---
 
-## Authentication ##
+## Authentication
 
-This script makes use of Application Default Credentials (ADC). Make sure you have gcloud installed and your ADC updated.
+GCE Rescue uses [Application Default Credentials (ADC)](https://cloud.google.com/docs/authentication/provide-credentials-adc) to interact with Google Cloud API.
 
-You can find more information on: https://cloud.google.com/docs/authentication/provide-credentials-adc
+To authorize this tool to act on your behalf, follow these steps:
+
+1. Obtain a new user credentials with [`gcloud auth application-default login`](https://cloud.google.com/sdk/gcloud/reference/auth/application-default/login) command
+   ```bash
+   gcloud auth application-default login
+   ```
+
+2. Set a Google Cloud quota project that will be used for billing and quota limits with [`gcloud auth application-default set-quota-project`](https://cloud.google.com/sdk/gcloud/reference/auth/application-default/login) command
+   ```bash
+   gcloud auth application-default set-quota-project {PROJECT_ID}
+   ```
 
 ----
 
