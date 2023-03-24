@@ -2,7 +2,7 @@
 
 [![test badge](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml/badge.svg?branch=main&event=push)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml?query=branch%3Amain+event%3Apush)
 
-GCE Rescue is a tool that can help you fix problems with a virtual machine (VM) instance in Google Cloud. It can be issues with the boot disk or any software-related problems that may prevent the VM from starting up or functioning as intended.
+GCE Rescue is a tool that can help you fix problems with a virtual machine (VM) instance in Google Cloud. It can be some issues with the boot disk or software-related problems that may prevent the VM from starting up or functioning as intended.
 
 In short, the rescue for the VM occurs as follows:
 
@@ -12,9 +12,10 @@ In short, the rescue for the VM occurs as follows:
 4. You will perform the necessary actions with the broken disk to fix it
 5. After that, the VM will be rebooted in normal mode with a fixed old disk
 
-GCE Rescue has an important advantage over creating a duplicate VM instance to repair a faulty boot disk - you don't need to waste time recreating the environment (VPC Networks, Firewalls, VPNs, routes, etc.) because you're using an existing and already configured instance.
+GCE Rescue has an important advantage over creating a duplicate VM instance to repair a faulty boot disk. **You don't need to waste time recreating the environment *(VPC Networks, Firewalls, VPNs, routes, etc.)* because you're using an existing and already configured instance.**
 
 > **Warning**
+>
 > **GCE Rescue is not an official Google Cloud product.**
 > **Google Cloud does not accept any responsibility for the use of this tool.**
 > The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
@@ -97,7 +98,6 @@ Try --help to get a list of all flags.
 - ### --debug ###
   - If provided, the log output will be set to DEBUG level. (OPTIONAL)
   - The log file will be created on ./ containing the VM name and timestamp on the name, that can be used to help to troubleshoot failed executions as well as to manually recover the instance's original configuration, if necessary.
-
 
 > The log files contain important information about the initial state of the VM instance that may be required to manually restore it.
 
@@ -184,7 +184,7 @@ This section demonstrates the use of GCE Rescue with the example of `test` VM in
    /dev/sdb1       9.7G  2.0G  7.2G  22% /mnt/sysroot
    </pre>
 
-   At this point you should take the necessary actions to restore your faulty boot disk.
+   At this point, you should take the necessary actions to restore your faulty boot disk.
 
    > **Warning**
    >
@@ -244,7 +244,7 @@ GCE Rescue uses [Application Default Credentials (ADC)](https://cloud.google.com
 
 To authorize this tool to act on your behalf, follow these steps:
 
-1. Obtain a new user credentials with [`gcloud auth application-default login`](https://cloud.google.com/sdk/gcloud/reference/auth/application-default/login) command
+1. Obtain new user credentials with [`gcloud auth application-default login`](https://cloud.google.com/sdk/gcloud/reference/auth/application-default/login) command
    ```bash
    gcloud auth application-default login
    ```
