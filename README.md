@@ -96,88 +96,138 @@ Try --help to get a list of all flags.
 
 ---
 
-## Examples ##
+## Example
 
-```shellscript
-$ gce-rescue --zone europe-central2-a --name test
+This section demonstrates the use of GCE Rescue with the example of `test` VM in the `europe-central2-a` region.
 
-This option will boot the instance test in RESCUE MODE.
-If your instance is running it will be rebooted.
-Do you want to continue [y/N]: y
-Starting...
-- Configuring...
- \- Progress 6/6 [█████████████████████████████████████████████████████████████]
-- Configurations finished.
-- Your instance is READY! You can now connect your instance "test" via:
-  1. CLI. (add --tunnel-through-iap if necessary)
-    $ gcloud compute ssh test --zone=europe-central2-a --project=my-project --ssh-flag="-o StrictHostKeyChecking=no"
-  OR
-  2. Google Cloud Console:
-    https://ssh.cloud.google.com/v2/ssh/projects/my-project/zones/europe-central2-a/instances/test?authuser=0&hl=en_US&useAdminProxy=true&troubleshoot4005Enabled=true
+1. Preparation and booting in rescue mode.
 
-```
+   The preparation process includes the following steps:
+      * The current boot disk will be disconnected
+      * A snapshot of the current disk will be created as a backup
+      * A new temporary boot disk will be attached to the VM
+      * The old disk will be attached to the VM as non-boot
 
-Once your VM instance is in rescue mode you can connect via SSH, as you normally would do.
+   To start the process, run the following command
+      ```bash
+      gce-rescue --zone europe-central2-a --name test
+      ```
 
-Notice that `-rescue` was added to your hostname, to highlight that you are currently in rescue mode.
+   The successful output will be as follows
+      <pre>
+      This option will boot the instance test in RESCUE MODE.
+      If your instance is running it will be rebooted.
+      Do you want to continue [y/N]: y
+      Starting...
+      ┌── Configuring...
+      │   └── Progress 6/6 [█████████████████████████████████████████████████████████████]
+      ├── Configurations finished.
+      └── Your instance is READY! You can now connect your instance "test" via:
+        1. CLI. (add --tunnel-through-iap if necessary)
+          $ gcloud compute ssh test --zone=europe-central2-a --project=my-project --ssh-flag="-o StrictHostKeyChecking=no"
+        OR
+        2. Google Cloud Console:
+          https://ssh.cloud.google.com/v2/ssh/projects/my-project/zones/europe-central2-a/instances/test? authuser=0&hl=en_US&useAdminProxy=true&troubleshoot4005Enabled=true
+      </pre>
 
-The original boot disk should be automatically mounted on `/mnt/sysroot`:
+2. Verification of the preparatory actions.
 
-```shellscript
-user@test-rescue:~$ lsblk
-NAME    MAJ:MIN RM  SIZE RO TYPE MOUNTPOINT
-sda       8:0    0   10G  0 disk
-├─sda1    8:1    0  9.9G  0 part /
-├─sda14   8:14   0    3M  0 part
-└─sda15   8:15   0  124M  0 part /boot/efi
-sdb       8:16   0   30G  0 disk
-├─sdb1    8:17   0    2M  0 part
-├─sdb2    8:18   0   20M  0 part
-└─sdb3    8:19   0   30G  0 part /mnt/sysroot
+   * Check that the snapshot of the old disk was successfully created
+      ```bash
+      gcloud compute snapshots list \
+         --filter="sourceDisk='europe-central2-a/disks/test'" \
+         --format="table(name, sourceDisk, status, creationTimestamp)"
+      ```
 
-user@test-rescue:~$ chroot /mnt/sysroot
-```
+      The result should be similar to the following
+         <pre>
+         NAME               SRC_DISK                        STATUS  CREATION_TIMESTAMP
+         test-1668043020    europe-central2-a/disks/test    READY   2022-11-10T14:17:00.000+01:00
+         </pre>
 
-At this point you should take the necessary actions to restore your faulty boot disk.
+   * Check that both disks were attached to the VM
+      ```bash
+      gcloud compute instances describe --zone europe-central2-a test \
+         --format="table(disks:format='table(deviceName,boot)')"
+      ```
 
-When finished you can close your SSH connections and restore the VM instance to the original mode, by running the same command again:
+      The result should be similar to the following
+         <pre>
+         DEVICE_NAME                   BOOT
+         linux-rescue-disk-1668043020  True
+         test                          False
+         </pre>
 
-```shellscript
-$ gce-rescue --zone europe-central2-a --name test
+3. Connection to the VM and repair work.
 
-The instance "test" is currently configured to boot as rescue mode since 2022-11-01 12:05:08.
-Would you like to restore the original configuration ? [y/N]: y
-Restoring VM...
-- Configuring...
- \- Progress 4/4 [█████████████████████████████████████████████████████████████]
-- Configurations finished.
-- The instance test was restored! Use the snapshot below if you need to restore the modification made while the instance was in rescue mode.
- Snapshot name: test-1668009968
- More information: https://cloud.google.com/compute/docs/disks/restore-snapshot
+   > **Note**
+   >
+   > The `-rescue` suffix was added to the hostname of the VM, to highlight that you are currently in rescue mode.
 
-```
+   Once your VM instance is in rescue mode you can connect to it in any familiar way.
 
-> A snapshot was taken before setting the instance in Rescue Mode and can be used to recover the disk status.
-You will be able to idenfiy the snapshot name, like in the example above is: `test-1668009968`.
+   To make sure that the block device of the old disk was mounted to the `/mnt/sysroot` directory, use the following command
+      ```bash
+      df -h /mnt/sysroot
+      ```
 
-#
-# You are ready !
+   The result should be similar to the following
+   <pre>
+   Filesystem      Size  Used Avail Use% Mounted on
+   /dev/sdb1       9.7G  2.0G  7.2G  22% /mnt/sysroot
+   </pre>
 
-When you connect again you will noticed the your instance is back to the normal mode:
+   At this point you should take the necessary actions to restore your faulty boot disk.
 
-```shellscript
-user@test:~> uptime
- 12:24:18  up   0:05,  1 user,  load average: 0.00, 0.00, 0.00
+   > **Warning**
+   >
+   > Keep in mind that the old disk is now mounted to a non-root directory. Consider temporarily changing the root directory to the old disk's directory to avoid mistakes with file paths using the following command
+   > ```bash
+   > chroot /mnt/sysroot
+   > ```
+   > Read more about [`chroot`](https://man7.org/linux/man-pages/man2/chroot.2.html) command.
 
-user@test:~> lsblk
-NAME   MAJ:MIN RM SIZE RO TYPE MOUNTPOINTS
-sda      8:0    0  30G  0 disk
-├─sda1   8:1    0   2M  0 part
-├─sda2   8:2    0  20M  0 part /boot/efi
-└─sda3   8:3    0  30G  0 part /
+   When finished, you can just disconnect from the VM.
 
-user@test:~>
-```
+4. Restoring to the normal mode.
+
+   To return the VM to the original state, run the first command again
+      ```bash
+      gce-rescue --zone europe-central2-a --name test
+      ```
+   The successful output will be as follows
+      <pre>
+      The instance "test" is currently configured to boot as rescue mode since 2022-11-10 13:17:00.
+      Would you like to restore the original configuration ? [y/N]: y
+      Restoring VM...
+      ┌── Configuring...
+      │   └── Progress 4/4 [█████████████████████████████████████████████████████████████]
+      ├── Configurations finished.
+      └── The instance test was restored! Use the snapshot below if you need to restore the modification made while the instance was in rescue mode.
+       Snapshot name: test-1668043020
+       More information: https://cloud.google.com/compute/docs/disks/restore-snapshot
+      </pre>
+
+   > **Note**
+   >
+   > Since the snapshot was created before the recovery process, you can restore the original state of the disk if necessary.
+   > Read more about how to [Restore from a snapshot](https://cloud.google.com/compute/docs/disks/restore-snapshot).
+
+5. Validation of rescue results.
+
+   * Check that only the old disk is now connected to the VM
+      ```bash
+      gcloud compute instances describe --zone europe-central2-a test \
+         --format="table(disks:format='table(deviceName,boot)')"
+      ```
+
+      The result should be similar to the following
+         <pre>
+         DEVICE_NAME  BOOT
+         test         True
+         </pre>
+
+   * **Connect to the VM and make sure everything is working as expected**
 
 ---
 
