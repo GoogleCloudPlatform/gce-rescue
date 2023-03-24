@@ -19,6 +19,13 @@ GCE Rescue has an important advantage over creating a duplicate VM instance to r
 > **Google Cloud does not accept any responsibility for the use of this tool.**
 > The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
 
+## Requirements
+
+To install and use GCE Rescue, you must have:
+
+1. Python environment >= 3.9 ([read more](https://docs.python.org/3.9/tutorial/index.html))
+2. `gcloud` CLI ([read more](https://cloud.google.com/sdk/docs/install-sdk))
+
 ## Installation
 
 To install GCE Rescue, follow these steps:
