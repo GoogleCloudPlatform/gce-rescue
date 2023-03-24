@@ -256,16 +256,18 @@ To authorize this tool to act on your behalf, follow these steps:
 
 ----
 
-## Permissions ##
+## Permissions
 
 This is the list of the minimal IAM permissions required.
 
 | Description | Permissions|
 |----------:|----------|
-| Start and stop instance | compute.instances.stop <br/> compute.instances.start |
-| Create and remove disk | compute.instances.attachDisk on the instance <br/> compute.instances.detachDisk on the instance <br/> compute.images.useReadOnly on the image if creating a new root persistent disk <br/> compute.disks.use on the disk if attaching an existing disk in read/write mode  <br/> compute.disks.setLabels on the disk if setting labels |
-| Create snapshot | compute.snapshots.create on the project <br/> compute.disks.createSnapshot on the disk |
-| Configure metadata | compute.instances.setMetadata if setting metadata  <br/> compute.instances.setLabels on the instance if setting labels |
+| Start and stop instance | `compute.instances.stop` <br/> `compute.instances.start` |
+| Create and remove disk | `compute.instances.attachDisk` on the instance <br/> `compute.instances.detachDisk` on the instance <br/> `compute.images.useReadOnly` on the image if creating a new root persistent disk <br/> `compute.disks.use` on the disk if attaching an existing disk in read/write mode  <br/> `compute.disks.setLabels` on the disk if setting labels |
+| Create snapshot | `compute.snapshots.create` on the project <br/> `compute.disks.createSnapshot` on the disk |
+| Configure metadata | `compute.instances.setMetadata` if setting metadata  <br/> `compute.instances.setLabels` on the instance if setting labels |
+
+To learn more, read about [Compute Engine IAM roles and permissions](https://cloud.google.com/compute/docs/access/iam).
 
 ----
 
