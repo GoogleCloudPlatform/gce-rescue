@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Main script to be used to set/reset rescue mode. """
+"""Main script to be used to set/reset rescue mode."""
 
 from datetime import datetime
 import argparse
@@ -25,25 +25,40 @@ from gce_rescue.rescue import Instance
 from gce_rescue.tasks.actions import call_tasks
 from gce_rescue.utils import read_input, set_logging
 
+
 def usage():
-  """ Print usage options. """
-  parser = argparse.ArgumentParser(description='GCE Rescue v0.0.2-1 - Set/Reset\
-    GCE instances to boot in rescue mode.')
-  parser.add_argument('-p', '--project',
-                      help='The project-id that has the instance.')
-  parser.add_argument('-z', '--zone', help='Zone where the instance \
-    is created.',
-                      required=True)
+  """Print usage options."""
+  parser = argparse.ArgumentParser(
+      description=(
+          'GCE Rescue v0.0.2-1 - Set/Reset GCE instances to boot in rescue'
+          ' mode.'
+      )
+  )
+  parser.add_argument(
+      '-p', '--project', help='The project-id that has the instance.'
+  )
+  parser.add_argument(
+      '-z',
+      '--zone',
+      help='Zone where the instance is created.',
+      required=True,
+  )
   parser.add_argument('-n', '--name', help='Instance name.', required=True)
-  parser.add_argument('-d', '--debug', action='store_true',
-                      help='Print to the log file in debug leve')
-  parser.add_argument('-f', '--force', action='store_true',
-                      help='Don\'t ask for confirmation.')
+  parser.add_argument(
+      '-d',
+      '--debug',
+      action='store_true',
+      help='Print to the log file in debug leve',
+  )
+  parser.add_argument(
+      '-f', '--force', action='store_true', help="Don't ask for confirmation."
+  )
 
   return parser
 
+
 def main():
-  """ Main script function. """
+  """Main script function."""
   parser = usage()
   args = parser.parse_args()
 
@@ -66,9 +81,11 @@ def main():
   rescue_on = vm.rescue_mode_status['rescue-mode']
   if not rescue_on:
     if not args.force:
-      info = (f'This option will boot the instance {vm.name} in '
-              'RESCUE MODE. \nIf your instance is running it will be rebooted. '
-              '\nDo you want to continue [y/N]: ')
+      info = (
+          f'This option will boot the instance {vm.name} in '
+          'RESCUE MODE. \nIf your instance is running it will be rebooted. '
+          '\nDo you want to continue [y/N]: '
+      )
       read_input(msg=info)
 
     print('Starting...')
@@ -82,9 +99,11 @@ def main():
     rescue_date = datetime.fromtimestamp(int(rescue_ts))
 
     if not args.force:
-      info = (f'The instance \"{vm.name}\" is currently configured '
-              f'to boot as rescue mode since {rescue_date}.\nWould you like to'
-              ' restore the original configuration ? [y/N]: ')
+      info = (
+          f'The instance "{vm.name}" is currently configured '
+          f'to boot as rescue mode since {rescue_date}.\nWould you like to'
+          ' restore the original configuration ? [y/N]: '
+      )
       read_input(msg=info)
 
     print('Restoring VM...')
