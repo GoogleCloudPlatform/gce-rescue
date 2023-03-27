@@ -12,23 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Validations that should be performed before continue the script execution.
-    Each validations steps can be appended to the class Validations() and keep
-    the file under validations/ folder."""
+"""Validations that should be performed before continue the script execution.
+
+Each validations steps can be appended to the class Validations() and keep the
+file under validations/ folder.
+"""
 
 from dataclasses import dataclass, field
 import googleapiclient.discovery
 from gce_rescue.tasks.validations.authentication import (
-  authenticate_check,
-  project_name
+    authenticate_check,
+    project_name,
 )
+
 
 @dataclass
 class Validations:
   """Run different validations before continue the script.
-  	Return:
-  		discovery.build object.
+
+  Return:
+
+          discovery.build object.
   """
+
   zone: str
   name: str
   project: str = None
@@ -36,10 +42,10 @@ class Validations:
 
   def _authentication(self):
     return authenticate_check(
-      project = self.project,
-      zone = self.zone,
-      instance_name = self.name,
-      test_mode = self.test_mode,
+        project=self.project,
+        zone=self.zone,
+        instance_name=self.name,
+        test_mode=self.test_mode,
     )
 
   @property
