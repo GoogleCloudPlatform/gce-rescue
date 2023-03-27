@@ -23,17 +23,14 @@ from gce_rescue.test.mocks import mock_api_object, MOCK_TEST_VM
 class OperationsTest(absltest.TestCase):
   vm: Instance
 
-
   def setUp(self):
     self.vm = Instance(test_mode=True, **MOCK_TEST_VM)
     self.vm.compute = mock_api_object(['operations'])
-    self.instance_data =  self.vm.data
-
+    self.instance_data = self.vm.data
 
   def test_start_instance(self):
     """test starting vm instance."""
     start_instance(self.vm)
-
 
   def test_stop_instance(self):
     """test stoping vm instance."""
