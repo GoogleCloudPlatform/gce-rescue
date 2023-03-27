@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Different functions to modify VM custom metadata. """
+"""Different functions to modify VM custom metadata."""
 
 from gce_rescue.config import get_config
 from gce_rescue.utils import wait_for_operation, wait_for_os_boot
@@ -21,12 +21,16 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
+
 def set_metadata(vm) -> Dict:
   """Configure Instance custom metadata.
+
   https://cloud.google.com/compute/docs/reference/rest/v1/instances/setMetadata
+
     a. Set rescue-mode=<ts unique id> if disable=False
     b. Delete rescue-mode if disable=True
-    c. Replace startup-script with local startup-script.sh content."""
+    c. Replace startup-script with local startup-script.sh content.
+  """
 
   startup_script_file = get_config('startup-script-file')
   device_name = vm.disks['device_name']
@@ -36,18 +40,16 @@ def set_metadata(vm) -> Dict:
     file_content = file_content.replace('GOOGLE_TS', str(vm.ts))
 
   metadata_body = {
-    'fingerprint': vm.data['metadata']['fingerprint'],
-    'items': [{
-      'key': 'startup-script',
-      'value': file_content
-    }]
+      'fingerprint': vm.data['metadata']['fingerprint'],
+      'items': [{'key': 'startup-script', 'value': file_content}],
   }
   _logger.info('Setting custom metadata...')
 
-  operation = vm.compute.instances().setMetadata(
-    **vm.project_data,
-    instance = vm.name,
-    body = metadata_body).execute()
+  operation = (
+      vm.compute.instances()
+      .setMetadata(**vm.project_data, instance=vm.name, body=metadata_body)
+      .execute()
+  )
 
   result = wait_for_operation(vm, oper=operation)
   return result
@@ -59,20 +61,21 @@ def restore_metadata_items(vm, remove_rescue_mode: bool = False) -> Dict:
   vm.refresh_fingerprint()
 
   if not remove_rescue_mode:
-    vm.backup_items.append({ 'key': 'rescue-mode', 'value': vm.ts })
+    vm.backup_items.append({'key': 'rescue-mode', 'value': vm.ts})
   else:
-    vm.backup_items.remove({ 'key': 'rescue-mode', 'value': vm.ts })
+    vm.backup_items.remove({'key': 'rescue-mode', 'value': vm.ts})
 
   metadata_body = {
-    'fingerprint': vm.data['metadata']['fingerprint'],
-    'items': vm.backup_items
+      'fingerprint': vm.data['metadata']['fingerprint'],
+      'items': vm.backup_items,
   }
   _logger.info('Restoring original metadata...')
   if not remove_rescue_mode and not wait_for_os_boot(vm):
     raise Exception('Guest OS boot timeout.')
-  operation = vm.compute.instances().setMetadata(
-    **vm.project_data,
-    instance = vm.name,
-    body = metadata_body).execute()
+  operation = (
+      vm.compute.instances()
+      .setMetadata(**vm.project_data, instance=vm.name, body=metadata_body)
+      .execute()
+  )
   result = wait_for_operation(vm, oper=operation)
   return result
