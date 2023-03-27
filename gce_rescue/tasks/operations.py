@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Standard VM operations. """
+"""Standard VM operations."""
 
 from gce_rescue.rescue import Instance
 from gce_rescue.utils import wait_for_operation
 import logging
 
 _logger = logging.getLogger(__name__)
+
 
 def start_instance(vm: Instance) -> str:
   """Start instance."""
@@ -28,9 +29,11 @@ def start_instance(vm: Instance) -> str:
     _logger.info(f'{vm.name} is already runnning.')
     return
 
-  operation = vm.compute.instances().start(
-    **vm.project_data,
-    instance = vm.name).execute()
+  operation = (
+      vm.compute.instances()
+      .start(**vm.project_data, instance=vm.name)
+      .execute()
+  )
   result = wait_for_operation(vm, oper=operation)
 
   if result['status'] == 'DONE':
@@ -45,12 +48,11 @@ def stop_instance(vm: Instance) -> str:
     _logger.info(f'{vm.name} is already stopped.')
     return
 
-  operation = vm.compute.instances().stop(
-    **vm.project_data,
-    instance = vm.name).execute()
+  operation = (
+      vm.compute.instances().stop(**vm.project_data, instance=vm.name).execute()
+  )
   result = wait_for_operation(vm, oper=operation)
 
   if result['status'] == 'DONE':
     vm.status = 'TERMINATED'
   return vm.status
-
