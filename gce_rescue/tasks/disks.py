@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Compilations of all disks tasks related. """
+"""Compilations of all disks tasks related."""
 
 from typing import Dict
 import logging
@@ -20,23 +20,26 @@ import logging
 import googleapiclient.errors
 
 from gce_rescue.utils import wait_for_operation
-from gce_rescue.tasks.backup import  backup
+from gce_rescue.tasks.backup import backup
 from gce_rescue.multitasks import Handler
 
 _logger = logging.getLogger(__name__)
 
+
 def _create_rescue_disk(vm, source_disk: str) -> Dict:
-  """ Create new temporary rescue disk based on source_disk.
+  """Create new temporary rescue disk based on source_disk.
+
   https://cloud.google.com/compute/docs/reference/rest/v1/disks/insert
+
   Returns:
     operation-result: Dict
   """
 
   chk_disk_exist = {}
   try:
-    chk_disk_exist = vm.compute.disks().get(
-      **vm.project_data,
-      disk = vm.rescue_disk).execute()
+    chk_disk_exist = (
+        vm.compute.disks().get(**vm.project_data, disk=vm.rescue_disk).execute()
+    )
   except googleapiclient.errors.HttpError as e:
     if e.status_code == 404:
       _logger.info(f'Creating rescue disk {vm.rescue_disk}...')
@@ -47,26 +50,27 @@ def _create_rescue_disk(vm, source_disk: str) -> Dict:
     if 'users' in chk_disk_exist.keys():
       disk_users = chk_disk_exist['users']
       raise Exception(
-        f'Disk {vm.rescue_disk} is currently in use: {disk_users}'
+          f'Disk {vm.rescue_disk} is currently in use: {disk_users}'
       )
     _logger.info(f'Disk {vm.rescue_disk} already exist. Skipping...')
     return {}
 
   disk_body = {
-    'name': vm.rescue_disk,
-    'sourceImage': source_disk,
-    'type': f'projects/{vm.project}/zones/{vm.zone}/diskTypes/pd-balanced'
+      'name': vm.rescue_disk,
+      'sourceImage': source_disk,
+      'type': f'projects/{vm.project}/zones/{vm.zone}/diskTypes/pd-balanced',
   }
-  operation = vm.compute.disks().insert(
-    **vm.project_data,
-    body = disk_body).execute()
+  operation = (
+      vm.compute.disks().insert(**vm.project_data, body=disk_body).execute()
+  )
 
   result = wait_for_operation(vm, oper=operation)
   return result
 
 
-def _set_disk_label(vm, disk_name = str) -> Dict:
-  """ Set labels.rescue=TS to be able to idenfied the boot disk when restore
+def _set_disk_label(vm, disk_name=str) -> Dict:
+  """Set labels.rescue=TS to be able to idenfied the boot disk when restore
+
   the VM to the normal configuration.
   https://cloud.google.com/compute/docs/reference/rest/v1/disks/setLabels
   Return:
@@ -75,27 +79,25 @@ def _set_disk_label(vm, disk_name = str) -> Dict:
 
   name_filter = f'name={disk_name}'
   response = list_disk(
-    vm,
-    project_data=vm.project_data,
-    label_filter=name_filter
+      vm, project_data=vm.project_data, label_filter=name_filter
   )
   label_fingerprint = response[0]['labelFingerprint']
   request_body = {
-    'labels': {
-        'rescue': vm.ts
-    },
-    'labelFingerprint': label_fingerprint
+      'labels': {'rescue': vm.ts},
+      'labelFingerprint': label_fingerprint,
   }
-  operation = vm.compute.disks().setLabels(
-    **vm.project_data,
-    resource = disk_name,
-    body = request_body).execute()
+  operation = (
+      vm.compute.disks()
+      .setLabels(**vm.project_data, resource=disk_name, body=request_body)
+      .execute()
+  )
 
   return operation
 
+
 def _delete_rescue_disk(vm, disk_name: str) -> Dict:
-  """
-  Delete rescue disk after resetting the instance to the original configuration.
+  """Delete rescue disk after resetting the instance to the original configuration.
+
   https://cloud.google.com/compute/docs/reference/rest/v1/disks/delete
   Param:
     disk_name: str, Name of the disk to be deleted.
@@ -103,9 +105,9 @@ def _delete_rescue_disk(vm, disk_name: str) -> Dict:
     operation-result: Dict
   """
   _logger.info(f'Deleting disk {disk_name}...')
-  operation = vm.compute.disks().delete(
-    **vm.project_data,
-    disk = disk_name).execute()
+  operation = (
+      vm.compute.disks().delete(**vm.project_data, disk=disk_name).execute()
+  )
 
   result = wait_for_operation(vm, oper=operation)
   return result
@@ -113,29 +115,29 @@ def _delete_rescue_disk(vm, disk_name: str) -> Dict:
 
 def list_disk(vm, project_data: Dict, label_filter: str) -> Dict:
   """Filter existing disks with labels.rescue=TS
+
   https://cloud.google.com/compute/docs/reference/rest/v1/disks/list
   Returns:
     result: Dict
   """
-  result = vm.compute.disks().list(
-    **project_data,
-    filter=label_filter).execute()
+  result = (
+      vm.compute.disks().list(**project_data, filter=label_filter).execute()
+  )
 
-  #TODO: Add validation and throw exception if response has more than 1 disk:
+  # TODO: Add validation and throw exception if response has more than 1 disk:
   #  len(response['items'])
-  #For test phase - remember to fix that
+  # For test phase - remember to fix that
   return result['items']
 
 
 def attach_disk(
-  vm,
-  disk_name: str,
-  device_name: str,
-  boot: bool = False
+    vm, disk_name: str, device_name: str, boot: bool = False
 ) -> Dict:
-  """
-  Attach disk on the instance. By default it will attach as secundary
+  """Attach disk on the instance.
+
+  By default it will attach as secundary
   https://cloud.google.com/compute/docs/reference/rest/v1/instances/attachDisk
+
   Returns:
       operation-result: Dict
   """
@@ -147,32 +149,35 @@ def attach_disk(
     else:
       _logger.info(f'Label configured successfully disk {disk_name}.')
   attach_disk_body = {
-    'boot': boot,
-    'name': disk_name,
-    'deviceName': device_name,
-    'type': 'PERSISTENT',
-    'source': f'projects/{vm.project}/zones/{vm.zone}/disks/{disk_name}'
+      'boot': boot,
+      'name': disk_name,
+      'deviceName': device_name,
+      'type': 'PERSISTENT',
+      'source': f'projects/{vm.project}/zones/{vm.zone}/disks/{disk_name}',
   }
   _logger.info(f'Attaching disk {disk_name}...')
-  operation = vm.compute.instances().attachDisk(
-    **vm.project_data,
-    instance = vm.name,
-    body = attach_disk_body).execute()
+  operation = (
+      vm.compute.instances()
+      .attachDisk(**vm.project_data, instance=vm.name, body=attach_disk_body)
+      .execute()
+  )
 
   result = wait_for_operation(vm, oper=operation)
   return result
 
 
 def _detach_disk(vm, disk: str) -> Dict:
-  """ Detach disk from the instance.
+  """Detach disk from the instance.
+
   https://cloud.google.com/compute/docs/reference/rest/v1/instances/detachDisk
   """
 
   _logger.info(f'Detaching disk {disk} from {vm.name}...')
-  operation = vm.compute.instances().detachDisk(
-      **vm.project_data,
-      instance = vm.name,
-      deviceName = disk).execute()
+  operation = (
+      vm.compute.instances()
+      .detachDisk(**vm.project_data, instance=vm.name, deviceName=disk)
+      .execute()
+  )
   result = wait_for_operation(vm, oper=operation)
   return result
 
@@ -186,21 +191,19 @@ def config_rescue_disks(vm) -> None:
   #     )
   # task1.start()
   task2 = Handler(
-    target = _create_rescue_disk,
-    kwargs={'vm': vm, 'source_disk': vm.rescue_source_disk}
-    )
+      target=_create_rescue_disk,
+      kwargs={'vm': vm, 'source_disk': vm.rescue_source_disk},
+  )
   task2.start()
   task2.join()
   _detach_disk(vm, disk=device_name)
   attach_disk(
-    vm,
-    disk_name=vm.rescue_disk,
-    device_name=vm.rescue_disk,
-    boot=True
+      vm, disk_name=vm.rescue_disk, device_name=vm.rescue_disk, boot=True
   )
 
+
 def restore_original_disk(vm) -> None:
-  """ Restore tasks to the original disk """
+  """Restore tasks to the original disk"""
   device_name = vm.disks['device_name']
 
   _detach_disk(vm, disk=vm.rescue_disk)
