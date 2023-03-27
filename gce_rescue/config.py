@@ -12,26 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Default configurations values. """
+"""Default configurations values."""
 
 import os
 
 dirname = os.path.dirname(__file__)
 
 config = {
-  'verbosity': 'INFO',
-  'startup-script-file': os.path.join(dirname, 'startup-script.txt'),
-  'source_guests': {
-    'x86_64':[
-      'projects/debian-cloud/global/images/family/debian-11',
-      'projects/rocky-linux-cloud/global/images/family/rocky-linux-9'
-      ],
-    'arm64':[
-      'projects/debian-cloud/global/images/family/debian-11-arm64',
-      'projects/rocky-linux-cloud/global/images/family/rocky-linux-9-arm64'
-    ]
-  }
+    'verbosity': 'INFO',
+    'startup-script-file': os.path.join(dirname, 'startup-script.txt'),
+    'source_guests': {
+        'x86_64': [
+            'projects/debian-cloud/global/images/family/debian-11',
+            'projects/rocky-linux-cloud/global/images/family/rocky-linux-9',
+        ],
+        'arm64': [
+            'projects/debian-cloud/global/images/family/debian-11-arm64',
+            'projects/rocky-linux-cloud/global/images/family/rocky-linux-9-arm64',
+        ],
+    },
 }
+
 
 def get_config(key):
   if key in config:
