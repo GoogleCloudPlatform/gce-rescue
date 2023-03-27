@@ -19,31 +19,30 @@ from absl import logging
 
 from gce_rescue.rescue import Instance
 from gce_rescue.tasks import metadata
-from gce_rescue.test.mocks import  mock_api_object, MOCK_TEST_VM
+from gce_rescue.test.mocks import mock_api_object, MOCK_TEST_VM
 
 
 class MetadataTest(absltest.TestCase):
+
   def setUp(self):
     self.vm = Instance(test_mode=True, **MOCK_TEST_VM)
-    self.instance_data =  self.vm.data
-
+    self.instance_data = self.vm.data
 
   def test_set_metadata(self):
     self.vm.compute = mock_api_object(['operations'])
     result = metadata.set_metadata(self.vm)
-    self.assertTrue(len(result)> 1)
-
+    self.assertTrue(len(result) > 1)
 
   def test_restore_metadata(self):
     self.vm.ts = 1666774335
     self.vm.compute = mock_api_object([
-      'compute',
-      'serialconsole',
-      'operations',
+        'compute',
+        'serialconsole',
+        'operations',
     ])
     result = metadata.restore_metadata_items(self.vm)
-    self.assertTrue(len(result)> 1)
+    self.assertTrue(len(result) > 1)
+
 
 if __name__ == '__main__':
   absltest.main()
-
