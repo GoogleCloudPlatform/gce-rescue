@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Initilization Instance() with VM information. """
+"""Initilization Instance() with VM information."""
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
@@ -21,15 +21,17 @@ from gce_rescue.tasks.backup import backup_metadata_items
 from gce_rescue.tasks.disks import list_disk
 from gce_rescue.tasks.pre_validations import Validations
 from gce_rescue.utils import (
-  validate_instance_mode,
-  guess_guest,
-  get_instance_info
+    validate_instance_mode,
+    guess_guest,
+    get_instance_info,
 )
 import googleapiclient.discovery
+
 
 @dataclass
 class Instance:
   """Initialize instance."""
+
   zone: str
   name: str
   project: str = None
@@ -40,25 +42,22 @@ class Instance:
   _status: str = ''
   _rescue_source_disk: str = ''
   _rescue_mode_status: Dict[str, Union[str, int]] = field(
-    default_factory=lambda: ({})
+      default_factory=lambda: ({})
   )
   _disks: Dict[str, str] = field(default_factory=lambda: ({}))
   _backup_items: Dict[str, Union[str, int]] = field(
-    default_factory=lambda: ([])
+      default_factory=lambda: ([])
   )
 
   def __post_init__(self):
     check = Validations(
-        name=self.name,
-        test_mode=self.test_mode,
-        **self.project_data
+        name=self.name, test_mode=self.test_mode, **self.project_data
     )
     self.compute = check.compute
     self.project = check.adc_project
     self.data = get_instance_info(
-        compute=self.compute,
-        name=self.name,
-        project_data=self.project_data)
+        compute=self.compute, name=self.name, project_data=self.project_data
+    )
 
     self._rescue_mode_status = validate_instance_mode(self.data)
     self.ts = self._rescue_mode_status['ts']
@@ -67,17 +66,14 @@ class Instance:
     self._disks = self._define_disks()
 
     # Backup metadata items
-    self._backup_items = backup_metadata_items(
-        data=self.data
-    )
+    self._backup_items = backup_metadata_items(data=self.data)
 
   def refresh_fingerprint(self) -> None:
     """Refresh the current metadata fingerprint value."""
 
     project_data = get_instance_info(
-        compute=self.compute,
-        name=self.name,
-        project_data=self.project_data)
+        compute=self.compute, name=self.name, project_data=self.project_data
+    )
 
     new_fingerprint = project_data['metadata']['fingerprint']
     self.data['metadata']['fingerprint'] = new_fingerprint
@@ -98,9 +94,7 @@ class Instance:
       disk_filter = f'labels.rescue={ts}'
 
       disk = list_disk(
-        vm=self,
-        project_data=self.project_data,
-        label_filter=disk_filter
+          vm=self, project_data=self.project_data, label_filter=disk_filter
       )
 
       disk_name = disk[0]['name']
@@ -111,10 +105,7 @@ class Instance:
         if disk_name == source:
           device_name = disk['deviceName']
 
-    result = {
-        'device_name': device_name,
-        'disk_name': disk_name
-    }
+    result = {'device_name': device_name, 'disk_name': disk_name}
     return result
 
   @property
