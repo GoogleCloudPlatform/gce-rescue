@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Multitask test code """
+"""Multitask test code"""
 
 from absl.testing import absltest
 from gce_rescue.multitasks import Handler
@@ -24,10 +24,9 @@ OUTPUT2 = 'task1 done'
 
 class MultitasksTest(absltest.TestCase):
   status = {
-	  'task1_done': False,
-	  'task2_done': False,
-	}
-
+      'task1_done': False,
+      'task2_done': False,
+  }
 
   @classmethod
   def task1(cls):
@@ -37,7 +36,6 @@ class MultitasksTest(absltest.TestCase):
     MultitasksTest.status['task1_done'] = True
     return OUTPUT1
 
-
   @classmethod
   def task2(cls):
     for i in range(0, 3):
@@ -45,7 +43,6 @@ class MultitasksTest(absltest.TestCase):
       time.sleep(0.001)
     MultitasksTest.status['task2_done'] = True
     return OUTPUT2
-
 
   def test_multitasks(self):
     t1 = Handler(target=MultitasksTest.task1)
