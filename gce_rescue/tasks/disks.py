@@ -96,7 +96,8 @@ def _set_disk_label(vm, disk_name=str) -> Dict:
 
 
 def _delete_rescue_disk(vm, disk_name: str) -> Dict:
-  """Delete rescue disk after resetting the instance to the original configuration.
+  """Delete rescue disk after resetting the instance to the original
+  configuration.
 
   https://cloud.google.com/compute/docs/reference/rest/v1/disks/delete
   Param:

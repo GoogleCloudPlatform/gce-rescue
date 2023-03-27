@@ -28,7 +28,7 @@ config = {
         ],
         'arm64': [
             'projects/debian-cloud/global/images/family/debian-11-arm64',
-            'projects/rocky-linux-cloud/global/images/family/rocky-linux-9-arm64',
+            'projects/rocky-linux-cloud/global/images/family/rocky-linux-9-arm64', # pylint: disable=line-too-long
         ],
     },
 }
