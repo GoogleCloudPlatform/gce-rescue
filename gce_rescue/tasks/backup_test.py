@@ -21,13 +21,11 @@ from gce_rescue.rescue import Instance
 
 
 class BackupTest(absltest.TestCase):
-  vm : Instance
-
+  vm: Instance
 
   def setUp(self):
     self.vm = Instance(test_mode=True, **MOCK_TEST_VM)
     self.vm.compute = mock_api_object(['operations'])
-
 
   def test_backup_metadata_items(self):
     """Test Backup_metadata_Items."""
@@ -35,7 +33,6 @@ class BackupTest(absltest.TestCase):
     self.assertTrue(backup_data is not None)
     self.assertTrue('key' in backup_data[0])
     self.assertTrue('value' in backup_data[0])
-
 
   def test_backup(self):
     """Test backup task."""
