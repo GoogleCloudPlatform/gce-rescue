@@ -12,22 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Class to handle multithread tasks. """
+"""Class to handle multithread tasks."""
 
 from threading import Thread
+
 
 class Handler(Thread):
   """Handler for multithread tasks."""
 
   def __init__(
-      self,
-      group=None,
-      target=None,
-      name=None,
-      args=None,
-      kwargs=None
-    ):
-
+      self, group=None, target=None, name=None, args=None, kwargs=None
+  ):
     if not args:
       args = ()
 
