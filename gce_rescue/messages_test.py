@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Test code for messages.py. """
+"""Test code for messages.py."""
 
 from absl.testing import absltest
 from gce_rescue import messages
@@ -23,17 +23,14 @@ from gce_rescue.test.mocks import mock_api_object, MOCK_TEST_VM
 class MessagesTest(absltest.TestCase):
   vm: Instance
 
-
   def setUp(self):
     self.vm = Instance(test_mode=True, **MOCK_TEST_VM)
     self.vm.compute = mock_api_object(['compute'])
-    self.instance_data =  self.vm.data
-
+    self.instance_data = self.vm.data
 
   def test_tip_connect_ssh(self):
     output = messages.tip_connect_ssh(self.vm)
     self.assertTrue(len(output) > 1)
-
 
   def test_tip_restore_disk(self):
     output = messages.tip_restore_disk(self.vm)
