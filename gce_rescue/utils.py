@@ -14,7 +14,7 @@
 
 # pylint: disable=broad-exception-raised
 
-""" List of classes and functions to be used across the code. """
+"""List of classes and functions to be used across the code."""
 
 import googleapiclient.discovery
 
@@ -28,8 +28,9 @@ import json
 
 _logger = logging.getLogger(__name__)
 
-class Tracker():
-  """ Track tasks using multiprocessing and print progress bar. """
+
+class Tracker:
+  """Track tasks using multiprocessing and print progress bar."""
 
   def __init__(self, target):
     self.target = target
@@ -82,56 +83,60 @@ class Tracker():
     total = self.target
     x = int(size * self._pivot.value / self.target)
     progress = '█' * x
-    bar = '.' * (size-x)
-    print(f'│   └── Progress {count}/{total} [{progress}{loading}{bar}]',
-      end='\r',
-      file=sys.stderr,
-      flush=True)
+    bar = '.' * (size - x)
+    print(
+        f'│   └── Progress {count}/{total} [{progress}{loading}{bar}]',
+        end='\r',
+        file=sys.stderr,
+        flush=True,
+    )
+
 
 def get_instance_info(
-  compute: googleapiclient.discovery.Resource,
-  name: str,
-  project_data: Dict[str, str]
+    compute: googleapiclient.discovery.Resource,
+    name: str,
+    project_data: Dict[str, str],
 ) -> Dict:
   """Set Dictionary with complete data from instances().get() from the instance.
+
   https://cloud.google.com/compute/docs/reference/rest/v1/instances/get
+
   Attributes:
     compute: obj, API Object
     instance: str, Instace name
     project_data: dict, Dictionary containing project and zone keys to be
       unpacked when calling the API.
   """
-  return compute.instances().get(
-      **project_data,
-      instance = name).execute()
+  return compute.instances().get(**project_data, instance=name).execute()
+
 
 def generate_ts() -> int:
   """Get the current timestamp to be used as unique ID
-  during this execution."""
+
+  during this execution.
+  """
   return int(time())
+
 
 def validate_instance_mode(data: Dict) -> Dict:
   """Validate if the instance is already configured as rescue mode."""
 
-  result = {
-      'rescue-mode': False,
-      'ts': generate_ts()
-  }
-  if 'metadata' in data and  'items' in data['metadata']:
+  result = {'rescue-mode': False, 'ts': generate_ts()}
+  if 'metadata' in data and 'items' in data['metadata']:
     metadata = data['metadata']
     for item in metadata['items']:
       if item['key'] == 'rescue-mode':
-        result = {
-          'rescue-mode': True,
-          'ts': item['value']
-        }
+        result = {'rescue-mode': True, 'ts': item['value']}
 
   return result
 
+
 def guess_guest(data: Dict) -> str:
   """Determined which Guest OS Family is being used and select a
+
   different OS for recovery disk.
-     Default: projects/debian-cloud/global/images/family/debian-11"""
+     Default: projects/debian-cloud/global/images/family/debian-11
+  """
 
   guests = get_config('source_guests')
   for disk in data['disks']:
@@ -149,10 +154,9 @@ def guess_guest(data: Dict) -> str:
 
 
 def wait_for_operation(
-  instance_obj: googleapiclient.discovery.Resource,
-  oper: Dict
+    instance_obj: googleapiclient.discovery.Resource, oper: Dict
 ) -> Dict:
-  """ Creating poll to wait the operation to finish. """
+  """Creating poll to wait the operation to finish."""
 
   while True:
     if oper['status'] == 'DONE':
@@ -161,10 +165,13 @@ def wait_for_operation(
         raise Exception(oper['error'])
       return oper
 
-    oper = instance_obj.compute.zoneOperations().get(
-      **instance_obj.project_data,
-      operation = oper['name']).execute()
+    oper = (
+        instance_obj.compute.zoneOperations()
+        .get(**instance_obj.project_data, operation=oper['name'])
+        .execute()
+    )
     sleep(1)
+
 
 def wait_for_os_boot(vm: googleapiclient.discovery.Resource) -> bool:
   """Wait guest OS to complete the boot proccess."""
@@ -174,10 +181,11 @@ def wait_for_os_boot(vm: googleapiclient.discovery.Resource) -> bool:
   end_string = f'END:{vm.ts}'
   _logger.info('Waiting startup-script to complete.')
   while True:
-    result = vm.compute.instances().getSerialPortOutput(
-      **vm.project_data,
-      instance = vm.name
-    ).execute()
+    result = (
+        vm.compute.instances()
+        .getSerialPortOutput(**vm.project_data, instance=vm.name)
+        .execute()
+    )
 
     if end_string in json.dumps(result):
       _logger.info('startup-script has ended.')
@@ -189,18 +197,22 @@ def wait_for_os_boot(vm: googleapiclient.discovery.Resource) -> bool:
       return False
 
 
-def set_logging(vm_name: str, level: str ='INFO') -> None:
-  """ Set logfile and verbosity. """
+def set_logging(vm_name: str, level: str = 'INFO') -> None:
+  """Set logfile and verbosity."""
 
   log_level = getattr(logging, level.upper())
   file_name = f'{vm_name}.log'
   logging.basicConfig(
-    filename=file_name,
-    filemode='a',
-    format='%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d]\
-      %(message)s',
-    datefmt='%Y-%m-%d:%H:%M:%S',
-    level=log_level)
+      filename=file_name,
+      filemode='a',
+      format=(
+          '%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d]   '
+          '   %(message)s'
+      ),
+      datefmt='%Y-%m-%d:%H:%M:%S',
+      level=log_level,
+  )
+
 
 def read_input(msg: str) -> None:
   """Read user input if --force is not provided."""
