@@ -39,7 +39,7 @@ class Tracker():
   def start(self):
     self._proc = multiprocessing.Process(target=self._run)
     self._proc.start()
-    print('- Configuring...')
+    print('┌── Configuring...')
 
   def advance(self, step=None):
     if not step:
@@ -50,7 +50,7 @@ class Tracker():
     self._pivot.value = self.target
     self._proc.join()
     sleep(0.5)
-    print('- Configurations finished.')
+    print('├── Configurations finished.')
 
   def _loading(self):
     chars = ['-', '|', '/', '|', '\\']
@@ -83,7 +83,7 @@ class Tracker():
     x = int(size * self._pivot.value / self.target)
     progress = '█' * x
     bar = '.' * (size-x)
-    print(f' \\- Progress {count}/{total} [{progress}{loading}{bar}]',
+    print(f'│   └── Progress {count}/{total} [{progress}{loading}{bar}]',
       end='\r',
       file=sys.stderr,
       flush=True)
