@@ -20,7 +20,7 @@ import argparse
 dirname = os.path.dirname(__file__)
 
 config = {
-  'debug': 'INFO',
+  'debug': False,
   'startup-script-file': os.path.join(dirname, 'startup-script.txt'),
   'source_guests': {
     'x86_64':[
@@ -35,15 +35,8 @@ config = {
 }
 
 def get_config(key):
-  args = process_args()
-  try:
-    value = getattr(args, key)
-    if value:
-      return value
-    else:
+    if key in config:
       return config[key]
-  except AttributeError:
-    return config[key]
 
 
 def process_args():
@@ -62,3 +55,8 @@ def process_args():
                       help='Don\'t ask for confirmation.')
 
   return parser
+
+
+def set_configs(user_args):
+  global config
+  config['debug'] = getattr(user_args, 'debug')

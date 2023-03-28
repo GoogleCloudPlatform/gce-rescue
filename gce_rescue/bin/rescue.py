@@ -19,7 +19,7 @@
 from datetime import datetime
 import logging
 
-from gce_rescue.config import get_config, process_args
+from gce_rescue.config import process_args, set_configs
 from gce_rescue import messages
 from gce_rescue.rescue import Instance
 from gce_rescue.tasks.actions import call_tasks
@@ -29,8 +29,9 @@ def main():
   """ Main script function. """
   parser = process_args()
   args = parser.parse_args()
+  set_configs(args)
 
-  set_logging(vm_name=args.name, level=get_config('debug'))
+  set_logging(vm_name=args.name)
 
   parse_kwargs = {
       'zone': args.zone,

@@ -189,9 +189,10 @@ def wait_for_os_boot(vm: googleapiclient.discovery.Resource) -> bool:
       return False
 
 
-def set_logging(vm_name: str, level: str ='INFO') -> None:
+def set_logging(vm_name: str) -> None:
   """ Set logfile and verbosity. """
 
+  level = 'DEBUG' if get_config('debug') else 'INFO'
   log_level = getattr(logging, level.upper())
   file_name = f'{vm_name}.log'
   logging.basicConfig(
