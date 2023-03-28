@@ -101,10 +101,10 @@ This option will boot the instance test in RESCUE MODE.
 If your instance is running it will be rebooted.
 Do you want to continue [y/N]: y
 Starting...
-- Configuring...
- \- Progress 6/6 [█████████████████████████████████████████████████████████████]
-- Configurations finished.
-- Your instance is READY! You can now connect your instance "test" via:
+┌── Configuring...
+│   └── Progress 6/6 [█████████████████████████████████████████████████████████████]
+├── Configurations finished.
+└── Your instance is READY! You can now connect your instance "test" via:
   1. CLI. (add --tunnel-through-iap if necessary)
     $ gcloud compute ssh test --zone=europe-central2-a --project=my-project --ssh-flag="-o StrictHostKeyChecking=no"
   OR
