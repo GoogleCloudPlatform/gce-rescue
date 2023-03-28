@@ -35,8 +35,8 @@ config = {
 }
 
 def get_config(key):
-    if key in config:
-      return config[key]
+  if key in config:
+    return config[key]
 
 
 def process_args():
