@@ -58,5 +58,4 @@ def process_args():
 
 
 def set_configs(user_args):
-  global config
   config['debug'] = getattr(user_args, 'debug')
