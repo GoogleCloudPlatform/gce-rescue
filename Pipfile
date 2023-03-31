@@ -10,6 +10,3 @@ google-auth = ">=2.15.0"
 
 [dev-packages]
 bump2version = "*"
-
-[requires]
-python_version = "3.9"
