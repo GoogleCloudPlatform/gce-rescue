@@ -31,7 +31,7 @@ class MultitasksTest(absltest.TestCase):
 
   @classmethod
   def task1(cls):
-    for i in range(0, 3):
+    for _ in range(0, 3):
       # print(f'task 1, time {i}')
       time.sleep(0.001)
     MultitasksTest.status['task1_done'] = True
@@ -40,7 +40,7 @@ class MultitasksTest(absltest.TestCase):
 
   @classmethod
   def task2(cls):
-    for i in range(0, 3):
+    for _ in range(0, 3):
       # print(f'task 2, time {i}')
       time.sleep(0.001)
     MultitasksTest.status['task2_done'] = True
