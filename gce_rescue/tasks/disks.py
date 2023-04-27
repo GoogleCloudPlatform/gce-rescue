@@ -19,9 +19,9 @@ import logging
 
 import googleapiclient.errors
 
-from gce_rescue.utils import wait_for_operation
+from gce_rescue.tasks.keeper import wait_for_operation
 from gce_rescue.tasks.backup import  backup
-from gce_rescue.multitasks import Handler
+from gce_rescue.utils import ThreadHandler as Handler
 
 _logger = logging.getLogger(__name__)
 

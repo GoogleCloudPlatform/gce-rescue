@@ -1,31 +1,76 @@
-# Copyright 2021 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """ Initilization Instance() with VM information. """
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
-
+from time import time
 from gce_rescue.tasks.backup import backup_metadata_items
 from gce_rescue.tasks.disks import list_disk
 from gce_rescue.tasks.pre_validations import Validations
-from gce_rescue.utils import (
-  validate_instance_mode,
-  guess_guest,
-  get_instance_info
-)
+from gce_rescue.config import get_config
+
 import googleapiclient.discovery
+
+
+def get_instance_info(
+  compute: googleapiclient.discovery.Resource,
+  name: str,
+  project_data: Dict[str, str]
+) -> Dict:
+  """Set Dictionary with complete data from instances().get() from the instance.
+  https://cloud.google.com/compute/docs/reference/rest/v1/instances/get
+  Attributes:
+    compute: obj, API Object
+    instance: str, Instace name
+    project_data: dict, Dictionary containing project and zone keys to be
+      unpacked when calling the API.
+  """
+  return compute.instances().get(
+      **project_data,
+      instance = name).execute()
+
+
+def guess_guest(data: Dict) -> str:
+  """Determined which Guest OS Family is being used and select a
+  different OS for recovery disk.
+     Default: projects/debian-cloud/global/images/family/debian-11"""
+
+  guests = get_config('source_guests')
+  for disk in data['disks']:
+    if disk['boot']:
+      if 'architecture' in disk:
+        arch = disk['architecture'].lower()
+      else:
+        arch = 'x86_64'
+      guest_default = guests[arch][0]
+      guest_name = guest_default.split('/')[-1]
+      for lic in disk['licenses']:
+        if guest_name in lic:
+          guest_default = guests[arch][1]
+  return guest_default
+
+
+def validate_instance_mode(data: Dict) -> Dict:
+  """Validate if the instance is already configured as rescue mode."""
+
+  result = {
+      'rescue-mode': False,
+      'ts': generate_ts()
+  }
+  if 'metadata' in data and  'items' in data['metadata']:
+    metadata = data['metadata']
+    for item in metadata['items']:
+      if item['key'] == 'rescue-mode':
+        result = {
+          'rescue-mode': True,
+          'ts': item['value']
+        }
+
+  return result
+
+def generate_ts() -> int:
+  """Get the current timestamp to be used as unique ID
+  during this execution."""
+  return int(time())
 
 @dataclass
 class Instance:

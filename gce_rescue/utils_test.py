@@ -15,7 +15,7 @@
 """ Multitask test code """
 
 from absl.testing import absltest
-from gce_rescue.multitasks import Handler
+from gce_rescue.utils import ThreadHandler as Handler
 import time
 
 OUTPUT1 = 'task1 done'
@@ -32,7 +32,7 @@ class MultitasksTest(absltest.TestCase):
   @classmethod
   def task1(cls):
     for i in range(0, 3):
-      print(f'task 1, time {i}')
+      # print(f'task 1, time {i}')
       time.sleep(0.001)
     MultitasksTest.status['task1_done'] = True
     return OUTPUT1
@@ -41,7 +41,7 @@ class MultitasksTest(absltest.TestCase):
   @classmethod
   def task2(cls):
     for i in range(0, 3):
-      print(f'task 2, time {i}')
+      # print(f'task 2, time {i}')
       time.sleep(0.001)
     MultitasksTest.status['task2_done'] = True
     return OUTPUT2
