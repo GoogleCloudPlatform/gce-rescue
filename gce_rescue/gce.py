@@ -1,5 +1,7 @@
 """ Initilization Instance() with VM information. """
 
+from googleapiclient.discovery import Resource
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
 from time import time
@@ -8,11 +10,9 @@ from gce_rescue.tasks.disks import list_disk
 from gce_rescue.tasks.pre_validations import Validations
 from gce_rescue.config import get_config
 
-import googleapiclient.discovery
-
 
 def get_instance_info(
-  compute: googleapiclient.discovery.Resource,
+  compute: Resource,
   name: str,
   project_data: Dict[str, str]
 ) -> Dict:
@@ -72,14 +72,15 @@ def generate_ts() -> int:
   during this execution."""
   return int(time())
 
+
 @dataclass
-class Instance:
+class Instance(Resource):
   """Initialize instance."""
   zone: str
   name: str
   project: str = None
   test_mode: bool = field(default_factory=False)
-  compute: googleapiclient.discovery.Resource = field(init=False)
+  compute: Resource = field(init=False)
   data: Dict[str, Union[str, int]] = field(init=False)
   ts: int = field(init=False)
   _status: str = ''

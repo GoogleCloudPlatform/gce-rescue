@@ -13,12 +13,20 @@
 # limitations under the License.
 
 """ Authentication validation to be called from ../pre_validations.py """
+import googleapiclient
 import googleapiclient.discovery
 import google.auth
+import google_auth_httplib2
+
+import httplib2
 import sys
+
 from gce_rescue.test.mocks import mock_api_object
 
+
 PROJECT = ''
+GCE_RESCUE_HEADER = 'gce_rescue_header'
+
 
 def _get_auth():
   global PROJECT
@@ -50,11 +58,12 @@ def authenticate_check(
   credentials = _get_auth()
   if not credentials:
     return False
-  service = googleapiclient.discovery.build(
-    'compute',
-    'v1',
-    credentials = credentials
-  )
+  # service = googleapiclient.discovery.build(
+  #   'compute',
+  #   'v1',
+  #   credentials = credentials
+  # )
+  service =  gce_service(credentials)
   request = service.instances().get(
 		project = PROJECT,
 		zone = zone,
@@ -66,6 +75,26 @@ def authenticate_check(
     msg = _info_auth_refresh()
     print(msg, file=sys.stderr)
     sys.exit(1)
+
+
+def gce_service(credentials):
+
+  def _builder(http, *args, **kwargs):
+    # google api client is not thread safe
+    # https://github.com/googleapis/google-api-python-client/blob/main/docs/thread_safety.md
+    del http
+    headers = kwargs.setdefault('headers',{})
+    headers['user-agent'] = GCE_RESCUE_HEADER
+    auth_http = google_auth_httplib2.AuthorizedHttp(credentials,
+                                                   http=httplib2.Http())
+    return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+  service_ = googleapiclient.discovery.build('compute', 'v1',
+                        cache_discovery=False,
+                        credentials=credentials,
+                        requestBuilder=_builder)
+  return service_
+
 
 def project_name() -> str:
   return PROJECT
