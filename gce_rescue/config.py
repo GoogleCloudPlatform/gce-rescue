@@ -19,7 +19,7 @@ import argparse
 
 dirname = os.path.dirname(__file__)
 
-VERSION = '0.3-test'
+VERSION = '0.3-beta'
 
 config = {
   'version': VERSION,
@@ -44,8 +44,8 @@ def get_config(key):
 
 def process_args():
   """ Print usage options. """
-  parser = argparse.ArgumentParser(description='GCE Rescue v0.0.2-1 - Set/Reset\
-    GCE instances to boot in rescue mode.')
+  parser = argparse.ArgumentParser(description=f'GCE Rescue v{VERSION} - \
+    Set/Reset GCE instances to boot in rescue mode.')
   parser.add_argument('-p', '--project',
                       help='The project-id that has the instance.')
   parser.add_argument('-z', '--zone', help='Zone where the instance \

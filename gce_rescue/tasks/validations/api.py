@@ -20,6 +20,8 @@ import httplib2
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import Resource
 
+from gce_rescue.config import VERSION
+
 def api_service(
     service: str,
     version: str,
@@ -30,7 +32,7 @@ def api_service(
     # https://github.com/googleapis/google-api-python-client/blob/main/docs/thread_safety.md
     del http
     headers = kwargs.setdefault('headers',{})
-    headers['user-agent'] = 'gce_rescue_header'
+    headers['user-agent'] = f'gce_rescue-{VERSION}'
     auth_http = google_auth_httplib2.AuthorizedHttp(credentials,
                                                    http=httplib2.Http())
     return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)

@@ -1,3 +1,0 @@
-2023-03-21:17:05:27,250 INFO     [__init__.py:49]      file_cache is only supported with oauth2client<4.0.0
-2023-03-26:11:27:31,975 INFO     [__init__.py:49]      file_cache is only supported with oauth2client<4.0.0
-2023-03-28:17:23:03,448 INFO     [__init__.py:49]      file_cache is only supported with oauth2client<4.0.0
