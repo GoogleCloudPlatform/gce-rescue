@@ -19,7 +19,10 @@ import argparse
 
 dirname = os.path.dirname(__file__)
 
+VERSION = '0.2-1'
+
 config = {
+  'version': VERSION,
   'debug': False,
   'startup-script-file': os.path.join(dirname, 'startup-script.txt'),
   'source_guests': {
