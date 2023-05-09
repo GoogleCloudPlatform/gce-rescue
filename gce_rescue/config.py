@@ -19,7 +19,7 @@ import argparse
 
 dirname = os.path.dirname(__file__)
 
-VERSION = '0.2-1'
+VERSION = '0.3-test'
 
 config = {
   'version': VERSION,
