@@ -20,7 +20,7 @@ import httplib2
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import Resource
 
-def gce_service(
+def api_service(
     service: str,
     version: str,
     credentials: Credentials) -> Resource:

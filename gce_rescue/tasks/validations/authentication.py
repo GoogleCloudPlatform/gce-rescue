@@ -17,7 +17,7 @@ import google.auth
 import sys
 
 from googleapiclient.discovery import Resource
-from gce_rescue.tasks.validations.api import gce_service
+from gce_rescue.tasks.validations.api import api_service
 from gce_rescue.test.mocks import mock_api_object
 
 PROJECT = ''
@@ -57,7 +57,7 @@ def authenticate_check(
   #   'v1',
   #   credentials = credentials
   # )
-  service =  gce_service('compute', 'v1', credentials)
+  service =  api_service('compute', 'v1', credentials)
   request = service.instances().get(
 		project = PROJECT,
 		zone = zone,

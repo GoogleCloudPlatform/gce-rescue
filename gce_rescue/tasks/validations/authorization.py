@@ -28,9 +28,9 @@ Permissions:
   compute.instances.setLabels
 """
 import google.auth
-from gce_rescue.tasks.validations.api import gce_service
+from gce_rescue.tasks.validations.api import api_service
 
-def authorization_check(project: str = None) -> bool:
+def authorize_check(project: str = None) -> bool:
 
   permissions_list = ['compute.snapshots.create']
   body_data = {'permissions': permissions_list}
@@ -39,7 +39,7 @@ def authorization_check(project: str = None) -> bool:
   if not project:
     project = project_id
 
-  service = gce_service('cloudresourcemanager', 'v1', credentials)
+  service = api_service('cloudresourcemanager', 'v1', credentials)
   result = service.projects().testIamPermissions(
     resource = project,
     body =  body_data

@@ -18,7 +18,7 @@
 
 from dataclasses import dataclass, field
 import googleapiclient.discovery
-from gce_rescue.tasks.validations.authorization import authorization_check
+from gce_rescue.tasks.validations.authorization import authorize_check
 from gce_rescue.tasks.validations.authentication import (
   authenticate_check,
   project_name
@@ -45,7 +45,7 @@ class Validations:
 
   def __post_init__(self):
     if not self.test_mode:
-      authorization_check(project = self.project)
+      authorize_check(project = self.project)
 
   @property
   def compute(self) -> googleapiclient.discovery.Resource:
