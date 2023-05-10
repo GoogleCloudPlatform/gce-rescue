@@ -15,7 +15,7 @@
 """ Different operations to guarantee VM disks backup, before performing
     any modifications."""
 
-from gce_rescue.utils import wait_for_operation
+from gce_rescue.tasks.keeper import wait_for_operation
 from typing import Dict, List
 import logging
 

@@ -17,7 +17,7 @@
 from absl.testing import absltest
 from gce_rescue.tasks import backup
 from gce_rescue.test.mocks import mock_api_object, MOCK_TEST_VM
-from gce_rescue.rescue import Instance
+from gce_rescue.gce import Instance
 
 
 class BackupTest(absltest.TestCase):

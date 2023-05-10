@@ -8,6 +8,7 @@ absl-py = ">=1.2.0"
 google-api-python-client = "*"
 google-auth = "*"
 pylint = "*"
+bumpversion = "*"
 
 [dev-packages]
 bump2version = "*"

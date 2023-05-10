@@ -14,7 +14,7 @@
 
 """ List of messages to inform and educate the user. """
 
-from gce_rescue.rescue import Instance
+from gce_rescue.gce import Instance
 
 def tip_connect_ssh(vm: Instance) -> str:
   return (f'└── Your instance is READY! You can now connect your instance '

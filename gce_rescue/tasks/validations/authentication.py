@@ -13,9 +13,11 @@
 # limitations under the License.
 
 """ Authentication validation to be called from ../pre_validations.py """
-import googleapiclient.discovery
 import google.auth
 import sys
+
+from googleapiclient.discovery import Resource
+from gce_rescue.tasks.validations.api import api_service
 from gce_rescue.test.mocks import mock_api_object
 
 PROJECT = ''
@@ -41,7 +43,7 @@ def authenticate_check(
   instance_name: str,
   project: str = None,
   test_mode: bool = False
-) -> googleapiclient.discovery.Resource:
+) -> Resource:
   global PROJECT
   PROJECT = project
   if test_mode:
@@ -50,11 +52,12 @@ def authenticate_check(
   credentials = _get_auth()
   if not credentials:
     return False
-  service = googleapiclient.discovery.build(
-    'compute',
-    'v1',
-    credentials = credentials
-  )
+  # service = googleapiclient.discovery.build(
+  #   'compute',
+  #   'v1',
+  #   credentials = credentials
+  # )
+  service =  api_service('compute', 'v1', credentials)
   request = service.instances().get(
 		project = PROJECT,
 		zone = zone,

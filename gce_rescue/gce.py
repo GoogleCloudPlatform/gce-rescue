@@ -14,27 +14,87 @@
 
 """ Initilization Instance() with VM information. """
 
+from googleapiclient.discovery import Resource
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
-
+from time import time
 from gce_rescue.tasks.backup import backup_metadata_items
 from gce_rescue.tasks.disks import list_disk
 from gce_rescue.tasks.pre_validations import Validations
-from gce_rescue.utils import (
-  validate_instance_mode,
-  guess_guest,
-  get_instance_info
-)
-import googleapiclient.discovery
+from gce_rescue.config import get_config
+
+
+def get_instance_info(
+  compute: Resource,
+  name: str,
+  project_data: Dict[str, str]
+) -> Dict:
+  """Set Dictionary with complete data from instances().get() from the instance.
+  https://cloud.google.com/compute/docs/reference/rest/v1/instances/get
+  Attributes:
+    compute: obj, API Object
+    instance: str, Instace name
+    project_data: dict, Dictionary containing project and zone keys to be
+      unpacked when calling the API.
+  """
+  return compute.instances().get(
+      **project_data,
+      instance = name).execute()
+
+
+def guess_guest(data: Dict) -> str:
+  """Determined which Guest OS Family is being used and select a
+  different OS for recovery disk.
+     Default: projects/debian-cloud/global/images/family/debian-11"""
+
+  guests = get_config('source_guests')
+  for disk in data['disks']:
+    if disk['boot']:
+      if 'architecture' in disk:
+        arch = disk['architecture'].lower()
+      else:
+        arch = 'x86_64'
+      guest_default = guests[arch][0]
+      guest_name = guest_default.split('/')[-1]
+      for lic in disk['licenses']:
+        if guest_name in lic:
+          guest_default = guests[arch][1]
+  return guest_default
+
+
+def validate_instance_mode(data: Dict) -> Dict:
+  """Validate if the instance is already configured as rescue mode."""
+
+  result = {
+      'rescue-mode': False,
+      'ts': generate_ts()
+  }
+  if 'metadata' in data and  'items' in data['metadata']:
+    metadata = data['metadata']
+    for item in metadata['items']:
+      if item['key'] == 'rescue-mode':
+        result = {
+          'rescue-mode': True,
+          'ts': item['value']
+        }
+
+  return result
+
+def generate_ts() -> int:
+  """Get the current timestamp to be used as unique ID
+  during this execution."""
+  return int(time())
+
 
 @dataclass
-class Instance:
+class Instance(Resource):
   """Initialize instance."""
   zone: str
   name: str
   project: str = None
   test_mode: bool = field(default_factory=False)
-  compute: googleapiclient.discovery.Resource = field(init=False)
+  compute: Resource = field(init=False)
   data: Dict[str, Union[str, int]] = field(init=False)
   ts: int = field(init=False)
   _status: str = ''

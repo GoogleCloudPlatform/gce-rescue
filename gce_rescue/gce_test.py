@@ -15,7 +15,7 @@
 """Test code for rescue.py."""
 
 from absl.testing import absltest
-from gce_rescue.rescue import Instance
+from gce_rescue.gce import Instance
 from gce_rescue.test.mocks import (
   mock_api_object,
   MOCK_TEST_VM,

@@ -15,7 +15,7 @@
 """ Different functions to modify VM custom metadata. """
 
 from gce_rescue.config import get_config
-from gce_rescue.utils import wait_for_operation, wait_for_os_boot
+from gce_rescue.tasks.keeper import wait_for_operation, wait_for_os_boot
 from typing import Dict
 import logging
 
