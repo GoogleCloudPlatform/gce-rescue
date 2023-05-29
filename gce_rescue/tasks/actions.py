@@ -127,16 +127,15 @@ def _list_tasks(vm: Instance, action: str) -> List:
 def call_tasks(vm: Instance, action: str) -> None:
   """ Loop tasks dict and execute """
   tasks = _list_tasks(vm = vm, action = action)
+  if get_config('skip-snapshot'):
+    _logger.info(f'Skipping snapshot backup.')
+    tasks = [task for task in tasks if task['name'].__name__ != 'take_snapshot']
   total_tasks = len(tasks)
 
   tracker = Tracker(total_tasks)
   tracker.start()
 
   for task in tasks:
-    if task['name'].__name__ == 'take_snapshot':
-      if get_config('skip-snapshot'):
-        _logger.info(f'Skipping snapshot backup.')
-        continue
     execute = task['name']
     args = task['args'][0]
 

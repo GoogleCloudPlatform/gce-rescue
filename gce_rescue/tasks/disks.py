@@ -20,7 +20,7 @@ import logging
 import googleapiclient.errors
 
 from gce_rescue.tasks.keeper import wait_for_operation
-from gce_rescue.tasks.backup import _create_snapshot
+from gce_rescue.tasks.backup import create_snapshot
 from gce_rescue.utils import ThreadHandler as Handler
 from googleapiclient.errors import HttpError
 
@@ -179,7 +179,7 @@ def _detach_disk(vm, disk: str) -> Dict:
 
 
 def take_snapshot(vm) -> None:
-  _create_snapshot(vm)
+  create_snapshot(vm)
 
 
 def create_rescue_disk(vm) -> None:
@@ -210,7 +210,7 @@ def list_snapshot(vm) -> str:
       snapshot=lookup_filter,
       project=vm.project
     ).execute()
-  except HttpError as e:
+  except HttpError:
     _logger.info('Snapshot was not found for VM in active rescue mode')
     return ''
   return 'ok'

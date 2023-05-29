@@ -57,7 +57,7 @@ def process_args():
                       help='Print to the log file in debug leve')
   parser.add_argument('-f', '--force', action='store_true',
                       help='Don\'t ask for confirmation.')
-  parser.add_argument('-s', '--skip-snapshot', action='store_true',
+  parser.add_argument('--skip-snapshot', action='store_true',
                       help='Skip backing up the disk using a snapshot.')
   return parser
 

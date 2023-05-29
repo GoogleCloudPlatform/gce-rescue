@@ -39,7 +39,7 @@ class BackupTest(absltest.TestCase):
 
   def test_backup(self):
     """Test backup task."""
-    backup._create_snapshot(self.vm)
+    backup.create_snapshot(self.vm)
 
 
 if __name__ == '__main__':

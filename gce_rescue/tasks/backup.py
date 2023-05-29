@@ -30,7 +30,7 @@ def backup_metadata_items(data: Dict) -> List:
     return data['metadata']['items']
   return []
 
-def _create_snapshot(vm) -> Dict:
+def create_snapshot(vm) -> Dict:
   """
   Create a snaphost of the instance boot disk, adding self._ts to the disk name.
   https://cloud.google.com/compute/docs/reference/rest/v1/disks/createSnapshot
