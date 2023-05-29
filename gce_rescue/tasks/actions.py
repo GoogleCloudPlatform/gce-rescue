@@ -19,7 +19,8 @@ import logging
 
 from gce_rescue.gce import Instance
 from gce_rescue.tasks.disks import (
-  config_rescue_disks,
+  take_snapshot,
+  create_rescue_disk,
   restore_original_disk,
   attach_disk
 )
@@ -32,7 +33,7 @@ from gce_rescue.tasks.metadata import (
   restore_metadata_items
 )
 from gce_rescue.utils import Tracker
-
+from gce_rescue.config import get_config
 _logger = logging.getLogger(__name__)
 
 def _list_tasks(vm: Instance, action: str) -> List:
@@ -50,7 +51,13 @@ def _list_tasks(vm: Instance, action: str) -> List:
         }]
       },
       {
-        'name': config_rescue_disks,
+        'name': take_snapshot,
+        'args': [{
+          'vm': vm
+        }]
+      },
+      {
+        'name': create_rescue_disk,
         'args': [{
           'vm': vm
         }]
@@ -126,6 +133,10 @@ def call_tasks(vm: Instance, action: str) -> None:
   tracker.start()
 
   for task in tasks:
+    if task['name'].__name__ == 'take_snapshot':
+      if get_config('skip-snapshot'):
+        _logger.info(f'Skipping snapshot backup.')
+        continue
     execute = task['name']
     args = task['args'][0]
 

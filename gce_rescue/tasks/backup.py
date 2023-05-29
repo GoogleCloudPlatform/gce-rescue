@@ -51,8 +51,3 @@ def _create_snapshot(vm) -> Dict:
   result = wait_for_operation(vm, oper=operation)
   return result
 
-def backup(vm) -> None:
-  """
-  List of methods to backup data and information from the orignal instance
-  """
-  _create_snapshot(vm)
