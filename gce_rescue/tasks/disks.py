@@ -204,16 +204,16 @@ def create_rescue_disk(vm) -> None:
   )
 
 def list_snapshot(vm) -> str:
-  lookup_filter = f"{vm.disks['disk_name']}-{vm.ts}"
+  snapshot_name = f"{vm.disks['disk_name']}-{vm.ts}"
   try:
     result = vm.compute.snapshots().get(
-      snapshot=lookup_filter,
+      snapshot=snapshot_name,
       project=vm.project
     ).execute()
   except HttpError:
     _logger.info('Snapshot was not found for VM in active rescue mode')
     return ''
-  return 'ok'
+  return snapshot_name
 
 def restore_original_disk(vm) -> None:
   """ Restore tasks to the original disk """
