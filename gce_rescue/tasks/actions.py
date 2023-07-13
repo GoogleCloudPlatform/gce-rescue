@@ -51,12 +51,6 @@ def _list_tasks(vm: Instance, action: str) -> List:
         }]
       },
       {
-        'name': take_snapshot,
-        'args': [{
-          'vm': vm
-        }]
-      },
-      {
         'name': create_rescue_disk,
         'args': [{
           'vm': vm
@@ -127,9 +121,13 @@ def _list_tasks(vm: Instance, action: str) -> List:
 def call_tasks(vm: Instance, action: str) -> None:
   """ Loop tasks dict and execute """
   tasks = _list_tasks(vm = vm, action = action)
-  if get_config('skip-snapshot'):
-    _logger.info(f'Skipping snapshot backup.')
-    tasks = [task for task in tasks if task['name'].__name__ != 'take_snapshot']
+  async_backup_thread = None
+  if action == 'set_rescue_mode':
+    if get_config('skip-snapshot'):
+      _logger.info(f'Skipping snapshot backup.')
+    else:
+      take_snapshot(vm)
+      async_backup_thread = True
   total_tasks = len(tasks)
 
   tracker = Tracker(total_tasks)
@@ -142,4 +140,8 @@ def call_tasks(vm: Instance, action: str) -> None:
     execute(**args)
     tracker.advance(step = 1)
 
+  if async_backup_thread:
+    _logger.info(f'Waiting for async backup to finish')
+    take_snapshot(vm, join_snapshot=True)
+    _logger.info('done.')
   tracker.finish()

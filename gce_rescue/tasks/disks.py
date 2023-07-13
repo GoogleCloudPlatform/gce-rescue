@@ -16,6 +16,7 @@
 
 from typing import Dict
 import logging
+from threading import Thread
 
 import googleapiclient.errors
 
@@ -25,6 +26,7 @@ from gce_rescue.utils import ThreadHandler as Handler
 from googleapiclient.errors import HttpError
 
 _logger = logging.getLogger(__name__)
+snapshot_thread = None
 
 def _create_rescue_disk(vm, source_disk: str) -> Dict:
   """ Create new temporary rescue disk based on source_disk.
@@ -178,8 +180,13 @@ def _detach_disk(vm, disk: str) -> Dict:
   return result
 
 
-def take_snapshot(vm) -> None:
-  create_snapshot(vm)
+def take_snapshot(vm, join_snapshot=None) -> None:
+  global snapshot_thread
+  if not join_snapshot:
+    snapshot_thread = Thread(target=create_snapshot, args=(vm,), daemon=True)
+    snapshot_thread.start()
+  else:
+    snapshot_thread.join()
 
 
 def create_rescue_disk(vm) -> None:
