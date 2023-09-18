@@ -13,8 +13,10 @@
 # limitations under the License.
 
 """ Initilization Instance() with VM information. """
+import sys
 
 from googleapiclient.discovery import Resource
+from googleapiclient.errors import HttpError
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
@@ -41,7 +43,6 @@ def get_instance_info(
   return compute.instances().get(
       **project_data,
       instance = name).execute()
-
 
 def guess_guest(data: Dict) -> str:
   """Determined which Guest OS Family is being used and select a
@@ -113,12 +114,16 @@ class Instance(Resource):
         test_mode=self.test_mode,
         **self.project_data
     )
-    self.compute = check.compute
-    self.project = check.adc_project
-    self.data = get_instance_info(
+    try:
+      self.compute = check.compute
+      self.project = check.adc_project
+      self.data = get_instance_info(
         compute=self.compute,
         name=self.name,
         project_data=self.project_data)
+    except HttpError as e:
+      print(e.reason)
+      sys.exit(1)
 
     self._rescue_mode_status = validate_instance_mode(self.data)
     self.ts = self._rescue_mode_status['ts']
