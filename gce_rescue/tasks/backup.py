@@ -39,11 +39,14 @@ def create_snapshot(vm) -> Dict:
   """
 
   disk_name = vm.disks['disk_name']
+  # Patch issues/23
+  region = vm.zone[:-2]
   snapshot_name = f'{disk_name}-{vm.ts}'
   snapshot_body = {
-    'name': snapshot_name
+    'name': snapshot_name,
+    'storageLocations': [ region ]
   }
-  _logger.info(f'Creating snapshot {snapshot_name}... ')
+  _logger.info(f'Creating snapshot {snapshot_body}... ')
   operation = vm.compute.disks().createSnapshot(
     **vm.project_data,
     disk = disk_name,
