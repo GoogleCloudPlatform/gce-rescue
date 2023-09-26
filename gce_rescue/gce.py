@@ -13,14 +13,16 @@
 # limitations under the License.
 
 """ Initilization Instance() with VM information. """
+import sys
 
 from googleapiclient.discovery import Resource
+from googleapiclient.errors import HttpError
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Union
 from time import time
 from gce_rescue.tasks.backup import backup_metadata_items
-from gce_rescue.tasks.disks import list_disk
+from gce_rescue.tasks.disks import list_disk, list_snapshot
 from gce_rescue.tasks.pre_validations import Validations
 from gce_rescue.config import get_config
 
@@ -41,7 +43,6 @@ def get_instance_info(
   return compute.instances().get(
       **project_data,
       instance = name).execute()
-
 
 def guess_guest(data: Dict) -> str:
   """Determined which Guest OS Family is being used and select a
@@ -70,7 +71,7 @@ def validate_instance_mode(data: Dict) -> Dict:
       'rescue-mode': False,
       'ts': generate_ts()
   }
-  if 'metadata' in data and  'items' in data['metadata']:
+  if 'metadata' in data and 'items' in data['metadata']:
     metadata = data['metadata']
     for item in metadata['items']:
       if item['key'] == 'rescue-mode':
@@ -113,12 +114,16 @@ class Instance(Resource):
         test_mode=self.test_mode,
         **self.project_data
     )
-    self.compute = check.compute
-    self.project = check.adc_project
-    self.data = get_instance_info(
+    try:
+      self.compute = check.compute
+      self.project = check.adc_project
+      self.data = get_instance_info(
         compute=self.compute,
         name=self.name,
         project_data=self.project_data)
+    except HttpError as e:
+      print(e.reason)
+      sys.exit(1)
 
     self._rescue_mode_status = validate_instance_mode(self.data)
     self.ts = self._rescue_mode_status['ts']
@@ -216,3 +221,10 @@ class Instance(Resource):
   @property
   def disks(self) -> List[str]:
     return self._disks
+
+  @property
+  def snapshot(self) -> str:
+    if not self.rescue_mode_status['rescue-mode']:
+      return f"{self.disks['disk_name']}-{self.ts}"
+    return list_snapshot(self)
+

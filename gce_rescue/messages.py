@@ -26,9 +26,14 @@ def tip_connect_ssh(vm: Instance) -> str:
     f'{vm.zone}/instances/{vm.name}?authuser=0&hl=en_US&useAdminProxy=true&'
     f'troubleshoot4005Enabled=true\n')
 
-def tip_restore_disk(vm: Instance) -> str:
-  return (f'└── The instance {vm.name} was restored! Use the snapshot below '
+def tip_restore_disk(vm: Instance, snapshot=False) -> str:
+  if not snapshot:
+    snapshot_restore_msg = ''
+  else:
+    snapshot_restore_msg = (f' Use the snapshot below '
     f'if you need to restore the modification made while the instance was '
     f'in rescue mode.\n Snapshot name: {vm.disks["disk_name"]}-{vm.ts}\n'
     f' More information: '
     f'https://cloud.google.com/compute/docs/disks/restore-snapshot\n')
+
+  return f'└── The instance {vm.name} was restored!' + snapshot_restore_msg

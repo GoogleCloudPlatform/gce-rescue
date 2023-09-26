@@ -73,7 +73,7 @@ class DisksTest(absltest.TestCase):
       'operations',
       'disks',
     ])
-    disks.config_rescue_disks(self.vm)
+    disks.create_rescue_disk(self.vm)
 
 
   def test_restore_original_disk(self):

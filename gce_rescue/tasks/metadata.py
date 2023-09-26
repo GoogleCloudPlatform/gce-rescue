@@ -68,8 +68,11 @@ def restore_metadata_items(vm, remove_rescue_mode: bool = False) -> Dict:
     'items': vm.backup_items
   }
   _logger.info('Restoring original metadata...')
-  if not remove_rescue_mode and not wait_for_os_boot(vm):
-    raise Exception('Guest OS boot timeout.')
+
+  # gce-rescue/issues/21 - continue after wait period timed out
+  if not remove_rescue_mode:
+    wait_for_os_boot(vm)
+
   operation = vm.compute.instances().setMetadata(
     **vm.project_data,
     instance = vm.name,

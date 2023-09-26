@@ -68,7 +68,8 @@ def main():
 
     print('Restoring VM...')
     action = 'reset_rescue_mode'
-    msg = messages.tip_restore_disk(vm)
+    has_snapshot = vm.snapshot
+    msg = messages.tip_restore_disk(vm, snapshot=has_snapshot)
 
   call_tasks(vm=vm, action=action)
   print(msg)
