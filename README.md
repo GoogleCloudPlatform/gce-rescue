@@ -58,21 +58,20 @@ $ export PATH=$PATH:$(python3 -m site --user-base)/bin
 ## Usage ##
 
 ```
-$ gce-rescue --help
+gce-rescue --help
+usage: gce-rescue [-h] [-p PROJECT] -z ZONE -n NAME [-d] [-f] [--skip-snapshot]
 
-       USAGE: gce-rescue [flags]
-flags:
+GCE Rescue v0.4-beta - Set/Reset GCE instances to boot in rescue mode.
 
-./gce-rescue.py:
-  --[no]debug: Print to the log file in debug level.
-    (default: 'false')
-  --[no]force: Don't ask for confirmation.
-    (default: 'false')
-  --name: Instance name.
-  --project: The project-id that has the instance.
-  --zone: Zone where the instance is created.
-  
-Try --helpfull to get a list of all flags.
+optional arguments:
+  -h, --help            show this help message and exit
+  -p PROJECT, --project PROJECT
+                        The project-id that has the instance.
+  -z ZONE, --zone ZONE  Zone where the instance is created.
+  -n NAME, --name NAME  Instance name.
+  -d, --debug           Print to the log file in debug leve
+  -f, --force           Don't ask for confirmation.
+  --skip-snapshot       Skip backing up the disk using a snapshot.
 ```
 
 - ### --zone ### 
@@ -87,8 +86,12 @@ Try --helpfull to get a list of all flags.
   - If provided, the log output will be set to DEBUG level. (OPTIONAL)
   - The log file will be created on ./ containing the VM name and timestamp on the name, that can be used to help to troubleshoot failed executions as well as to manually recover the instance's original configuration, if necessary.
 
+  - > The log files contain important information about the initial state of the VM instance that may be required to manually restore it.
 
-> The log files contain important information about the initial state of the VM instance that may be required to manually restore it.
+
+- ### --skip-snapshot ###
+  - Skip the snapshot creation. (OPTIONAL) 
+  - Before setting your instance in rescue mode, GCE Rescue will always create a snapshot of your boot disk before taking any action. For some users this might be time consuming and not always necessary. Use this argument if you want to skip this step.
 
 ---
 
