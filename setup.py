@@ -19,6 +19,8 @@
 from setuptools import setup, find_packages
 from os import path
 
+from gce_rescue.config import VERSION
+
 my_pwd = path.abspath(path.dirname(__file__))
 
 # Get the long description from the README file
@@ -31,7 +33,7 @@ with open(path.join(my_pwd, 'requirements.txt'), encoding='utf-8') as f:
 
 setup(
   name = 'gce-rescue',
-  version = '0.0.2-1',
+  version = VERSION,
   description='GCE Rescue - Boot your GCE VM in rescue mode.',
   url = 'https://github.com/googlecloudplatform/gce-rescue',
   author = 'Halley de Souza',
@@ -52,10 +54,14 @@ setup(
         ],
     },
   classifiers = [
-    'Development Status :: 3 - Alpha',
     'License :: OSI Approved :: Apache Software License',
     'Operating System :: OS Independent',
-    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.7',
+    'Programming Language :: Python :: 3.8',
+    'Programming Language :: Python :: 3.9',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
     'Topic :: System :: Boot',
     'Topic :: System :: Boot :: Init',
     'Topic :: System :: Recovery Tools',

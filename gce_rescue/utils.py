@@ -16,15 +16,13 @@
 
 """ List of classes and functions to be used across the code. """
 
-import googleapiclient.discovery
-
-from time import time, sleep
-from typing import Dict
-from gce_rescue.config import get_config
+from time import sleep
 import logging
 import multiprocessing
+from threading import Thread
 import sys
-import json
+from gce_rescue.config import get_config
+
 
 _logger = logging.getLogger(__name__)
 
@@ -88,110 +86,41 @@ class Tracker():
       file=sys.stderr,
       flush=True)
 
-def get_instance_info(
-  compute: googleapiclient.discovery.Resource,
-  name: str,
-  project_data: Dict[str, str]
-) -> Dict:
-  """Set Dictionary with complete data from instances().get() from the instance.
-  https://cloud.google.com/compute/docs/reference/rest/v1/instances/get
-  Attributes:
-    compute: obj, API Object
-    instance: str, Instace name
-    project_data: dict, Dictionary containing project and zone keys to be
-      unpacked when calling the API.
-  """
-  return compute.instances().get(
-      **project_data,
-      instance = name).execute()
 
-def generate_ts() -> int:
-  """Get the current timestamp to be used as unique ID
-  during this execution."""
-  return int(time())
+class ThreadHandler(Thread):
+  """Handler for multithread tasks."""
 
-def validate_instance_mode(data: Dict) -> Dict:
-  """Validate if the instance is already configured as rescue mode."""
+  def __init__(
+      self,
+      group=None,
+      target=None,
+      name=None,
+      args=None,
+      kwargs=None
+    ):
 
-  result = {
-      'rescue-mode': False,
-      'ts': generate_ts()
-  }
-  if 'metadata' in data and  'items' in data['metadata']:
-    metadata = data['metadata']
-    for item in metadata['items']:
-      if item['key'] == 'rescue-mode':
-        result = {
-          'rescue-mode': True,
-          'ts': item['value']
-        }
+    if not args:
+      args = ()
 
-  return result
+    if not kwargs:
+      kwargs = {}
 
-def guess_guest(data: Dict) -> str:
-  """Determined which Guest OS Family is being used and select a
-  different OS for recovery disk.
-     Default: projects/debian-cloud/global/images/family/debian-11"""
+    Thread.__init__(self, group, target, name, args, kwargs)
+    self._result = None
 
-  guests = get_config('source_guests')
-  for disk in data['disks']:
-    if disk['boot']:
-      if 'architecture' in disk:
-        arch = disk['architecture'].lower()
-      else:
-        arch = 'x86_64'
-      guest_default = guests[arch][0]
-      guest_name = guest_default.split('/')[-1]
-      for lic in disk['licenses']:
-        if guest_name in lic:
-          guest_default = guests[arch][1]
-  return guest_default
+  def run(self):
+    if self._target is not None:
+      self._result = self._target(*self._args, **self._kwargs)
+
+  def result(self, *args):
+    Thread.join(self, *args)
+    return self._result
 
 
-def wait_for_operation(
-  instance_obj: googleapiclient.discovery.Resource,
-  oper: Dict
-) -> Dict:
-  """ Creating poll to wait the operation to finish. """
-
-  while True:
-    if oper['status'] == 'DONE':
-      _logger.info('done.')
-      if 'error' in oper:
-        raise Exception(oper['error'])
-      return oper
-
-    oper = instance_obj.compute.zoneOperations().get(
-      **instance_obj.project_data,
-      operation = oper['name']).execute()
-    sleep(1)
-
-def wait_for_os_boot(vm: googleapiclient.discovery.Resource) -> bool:
-  """Wait guest OS to complete the boot proccess."""
-
-  timeout = 60
-  wait_time = 2
-  end_string = f'END:{vm.ts}'
-  _logger.info('Waiting startup-script to complete.')
-  while True:
-    result = vm.compute.instances().getSerialPortOutput(
-      **vm.project_data,
-      instance = vm.name
-    ).execute()
-
-    if end_string in json.dumps(result):
-      _logger.info('startup-script has ended.')
-      return True
-
-    sleep(wait_time)
-    timeout -= wait_time
-    if not timeout:
-      return False
-
-
-def set_logging(vm_name: str, level: str ='INFO') -> None:
+def set_logging(vm_name: str) -> None:
   """ Set logfile and verbosity. """
 
+  level = 'DEBUG' if get_config('debug') else 'INFO'
   log_level = getattr(logging, level.upper())
   file_name = f'{vm_name}.log'
   logging.basicConfig(
@@ -202,10 +131,13 @@ def set_logging(vm_name: str, level: str ='INFO') -> None:
     datefmt='%Y-%m-%d:%H:%M:%S',
     level=log_level)
 
+
 def read_input(msg: str) -> None:
   """Read user input if --force is not provided."""
   print(msg, end='')
   input_answer = input()
+  input_answer = input_answer.strip()
   if input_answer.upper() != 'Y':
-    print('Cancelled.')
+    print(f'got input: "{input_answer}". Aborting')
     sys.exit(1)
+    

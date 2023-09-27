@@ -16,14 +16,17 @@
 
 from typing import Dict
 import logging
+from threading import Thread
 
 import googleapiclient.errors
 
-from gce_rescue.utils import wait_for_operation
-from gce_rescue.tasks.backup import  backup
-from gce_rescue.multitasks import Handler
+from gce_rescue.tasks.keeper import wait_for_operation
+from gce_rescue.tasks.backup import create_snapshot
+from gce_rescue.utils import ThreadHandler as Handler
+from googleapiclient.errors import HttpError
 
 _logger = logging.getLogger(__name__)
+snapshot_thread = None
 
 def _create_rescue_disk(vm, source_disk: str) -> Dict:
   """ Create new temporary rescue disk based on source_disk.
@@ -177,9 +180,17 @@ def _detach_disk(vm, disk: str) -> Dict:
   return result
 
 
-def config_rescue_disks(vm) -> None:
+def take_snapshot(vm, join_snapshot=None) -> None:
+  global snapshot_thread
+  if not join_snapshot:
+    snapshot_thread = Thread(target=create_snapshot, args=(vm,), daemon=True)
+    snapshot_thread.start()
+  else:
+    snapshot_thread.join()
+
+
+def create_rescue_disk(vm) -> None:
   device_name = vm.disks['device_name']
-  backup(vm)
   # task1 = multitasks.Handler(
   #     target = backup,
   #     kwargs={'vm' : vm}
@@ -198,6 +209,18 @@ def config_rescue_disks(vm) -> None:
     device_name=vm.rescue_disk,
     boot=True
   )
+
+def list_snapshot(vm) -> str:
+  snapshot_name = f"{vm.disks['disk_name']}-{vm.ts}"
+  try:
+    result = vm.compute.snapshots().get(
+      snapshot=snapshot_name,
+      project=vm.project
+    ).execute()
+  except HttpError:
+    _logger.info('Snapshot was not found for VM in active rescue mode')
+    return ''
+  return snapshot_name
 
 def restore_original_disk(vm) -> None:
   """ Restore tasks to the original disk """

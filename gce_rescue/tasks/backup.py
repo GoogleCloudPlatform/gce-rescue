@@ -15,7 +15,7 @@
 """ Different operations to guarantee VM disks backup, before performing
     any modifications."""
 
-from gce_rescue.utils import wait_for_operation
+from gce_rescue.tasks.keeper import wait_for_operation
 from typing import Dict, List
 import logging
 
@@ -30,7 +30,7 @@ def backup_metadata_items(data: Dict) -> List:
     return data['metadata']['items']
   return []
 
-def _create_snapshot(vm) -> Dict:
+def create_snapshot(vm) -> Dict:
   """
   Create a snaphost of the instance boot disk, adding self._ts to the disk name.
   https://cloud.google.com/compute/docs/reference/rest/v1/disks/createSnapshot
@@ -39,11 +39,14 @@ def _create_snapshot(vm) -> Dict:
   """
 
   disk_name = vm.disks['disk_name']
+  # Patch issues/23
+  region = vm.zone[:-2]
   snapshot_name = f'{disk_name}-{vm.ts}'
   snapshot_body = {
-    'name': snapshot_name
+    'name': snapshot_name,
+    'storageLocations': [ region ]
   }
-  _logger.info(f'Creating snapshot {snapshot_name}... ')
+  _logger.info(f'Creating snapshot {snapshot_body}... ')
   operation = vm.compute.disks().createSnapshot(
     **vm.project_data,
     disk = disk_name,
@@ -51,8 +54,3 @@ def _create_snapshot(vm) -> Dict:
   result = wait_for_operation(vm, oper=operation)
   return result
 
-def backup(vm) -> None:
-  """
-  List of methods to backup data and information from the orignal instance
-  """
-  _create_snapshot(vm)

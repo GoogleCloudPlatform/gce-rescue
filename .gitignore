@@ -22,4 +22,4 @@ poetry.lock
 *.DS_Store
 .vscode/
 .idea
-debian.log
+*.log

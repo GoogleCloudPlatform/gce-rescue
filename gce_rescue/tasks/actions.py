@@ -14,12 +14,13 @@
 
 """ List of ordered tasks to be executed when set/reset VM rescue mode. """
 
-from typing import Dict
+from typing import List
 import logging
 
-from gce_rescue.rescue import Instance
+from gce_rescue.gce import Instance
 from gce_rescue.tasks.disks import (
-  config_rescue_disks,
+  take_snapshot,
+  create_rescue_disk,
   restore_original_disk,
   attach_disk
 )
@@ -32,10 +33,10 @@ from gce_rescue.tasks.metadata import (
   restore_metadata_items
 )
 from gce_rescue.utils import Tracker
-
+from gce_rescue.config import get_config
 _logger = logging.getLogger(__name__)
 
-def _list_tasks(vm: Instance, action: str) -> Dict:
+def _list_tasks(vm: Instance, action: str) -> List:
   """ List tasks, by order, per operation
     operations (str):
       1. set_rescue_mode
@@ -50,7 +51,7 @@ def _list_tasks(vm: Instance, action: str) -> Dict:
         }]
       },
       {
-        'name': config_rescue_disks,
+        'name': create_rescue_disk,
         'args': [{
           'vm': vm
         }]
@@ -113,13 +114,20 @@ def _list_tasks(vm: Instance, action: str) -> Dict:
 
   if action not in all_tasks:
     _logger.info(f'Unable to find "{action}".')
-    raise Exception(ValueError)
+    raise ValueError()
   return all_tasks[action]
 
 
 def call_tasks(vm: Instance, action: str) -> None:
   """ Loop tasks dict and execute """
   tasks = _list_tasks(vm = vm, action = action)
+  async_backup_thread = None
+  if action == 'set_rescue_mode':
+    if get_config('skip-snapshot'):
+      _logger.info(f'Skipping snapshot backup.')
+    else:
+      take_snapshot(vm)
+      async_backup_thread = True
   total_tasks = len(tasks)
 
   tracker = Tracker(total_tasks)
@@ -132,4 +140,8 @@ def call_tasks(vm: Instance, action: str) -> None:
     execute(**args)
     tracker.advance(step = 1)
 
+  if async_backup_thread:
+    _logger.info(f'Waiting for async backup to finish')
+    take_snapshot(vm, join_snapshot=True)
+    _logger.info('done.')
   tracker.finish()

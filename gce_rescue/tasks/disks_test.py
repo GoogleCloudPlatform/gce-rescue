@@ -17,7 +17,7 @@
 from absl.testing import absltest
 from absl import logging
 
-from gce_rescue.rescue import Instance
+from gce_rescue.gce import Instance
 from gce_rescue.tasks import disks
 from gce_rescue.test.mocks import (
   mock_api_object,
@@ -73,7 +73,7 @@ class DisksTest(absltest.TestCase):
       'operations',
       'disks',
     ])
-    disks.config_rescue_disks(self.vm)
+    disks.create_rescue_disk(self.vm)
 
 
   def test_restore_original_disk(self):

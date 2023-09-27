@@ -7,6 +7,9 @@ test:
 requirements: requirements.txt
 	python3 -m pip install -r requirements.txt
 
+bumpversion:
+	pipenv run bumpversion --commit minor
+
 build: setup.py
 	python3 ./setup.py bdist_wheel sdist
 
