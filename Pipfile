@@ -5,13 +5,10 @@ name = "pypi"
 
 [packages]
 absl-py = ">=1.2.0"
-google-api-python-client = "*"
-google-auth = "*"
+google-api-python-client = ">=2.68.0"
+google-auth = ">=2.15.0"
 pylint = "*"
 bumpversion = "*"
 
 [dev-packages]
 bump2version = "*"
-
-[requires]
-python_version = "3.9"

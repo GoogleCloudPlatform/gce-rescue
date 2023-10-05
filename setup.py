@@ -47,6 +47,7 @@ setup(
   package_dir = {'': '.'},
   package_data = {'': ['startup-script.txt']},
   include_package_data = True,
+  python_requires='>=3.7',
   entry_points={
         'console_scripts': [
             'gce-rescue = gce_rescue.bin.rescue:main',
