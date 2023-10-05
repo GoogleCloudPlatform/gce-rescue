@@ -30,7 +30,7 @@ jobs:
 
     - name: Install dependencies
       if: steps.cache-pipenv.outputs.cache-hit != 'true'
-      run: pipenv install --deploy
+      run: pipenv lock && pipenv install --deploy
 
     - name: Run make test
       run: pipenv run make test
