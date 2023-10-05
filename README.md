@@ -159,10 +159,10 @@ $ gce-rescue --zone europe-central2-a --name test
 The instance "test" is currently configured to boot as rescue mode since 2022-11-01 12:05:08.
 Would you like to restore the original configuration ? [y/N]: y
 Restoring VM...
-- Configuring...
- \- Progress 4/4 [█████████████████████████████████████████████████████████████]
-- Configurations finished.
-- The instance test was restored! Use the snapshot below if you need to restore the modification made while the instance was in rescue mode.
+┌── Configuring...
+│   └── Progress 4/4 [█████████████████████████████████████████████████████████████]
+├── Configurations finished.
+└── The instance test was restored! Use the snapshot below if you need to restore the modification made while the instance was in rescue mode.
  Snapshot name: test-1668009968
  More information: https://cloud.google.com/compute/docs/disks/restore-snapshot
 
