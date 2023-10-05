@@ -14,6 +14,18 @@ The advantage of using GCE Rescue is that it uses the resources already configur
 
 >Note: **`GCE Rescue is not an officially supported Google Cloud product`**. The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
 
+## Requirements
+
+To install and use GCE Rescue, you must have:
+
+1. Python environment >= 3.7 ([read more](https://docs.python.org/3.7/tutorial/index.html))
+2. `gcloud` CLI ([read more](https://cloud.google.com/sdk/docs/install-sdk))
+
+> **Note**
+>
+> The requirement of Python >= 3.7 was inherited from the [`google-api-python-client`](https://github.com/googleapis/google-api-python-client/tree/main#supported-python-versions) package.
+>
+> Despite the fact that `gce-rescue` can be installed in some ways with a Python version < 3.7 and may work, this is not recommended and is not supported.
 
 ## Installation ##
 
