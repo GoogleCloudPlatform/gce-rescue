@@ -133,11 +133,11 @@ def call_tasks(vm: Instance, action: str) -> None:
   tracker = Tracker(total_tasks)
   tracker.start()
 
-  for task in tasks:
+  for task_index, task in enumerate(tasks, 1):
     execute = task['name']
     args = task['args'][0]
 
-    execute(**args)
+    execute(**args, task_index=task_index, total_tasks=total_tasks)
     tracker.advance(step = 1)
 
   if async_backup_thread:

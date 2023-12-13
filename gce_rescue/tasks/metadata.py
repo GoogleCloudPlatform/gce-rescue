@@ -16,11 +16,13 @@
 
 from gce_rescue.config import get_config
 from gce_rescue.tasks.keeper import wait_for_operation, wait_for_os_boot
+from gce_rescue.utils import tasks_wrapper
 from typing import Dict
 import logging
 
 _logger = logging.getLogger(__name__)
 
+@tasks_wrapper
 def set_metadata(vm) -> Dict:
   """Configure Instance custom metadata.
   https://cloud.google.com/compute/docs/reference/rest/v1/instances/setMetadata
@@ -53,6 +55,7 @@ def set_metadata(vm) -> Dict:
   return result
 
 
+@tasks_wrapper
 def restore_metadata_items(vm, remove_rescue_mode: bool = False) -> Dict:
   """Restore original metadata.items after the instance is running again."""
 
