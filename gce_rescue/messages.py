@@ -17,7 +17,7 @@
 from gce_rescue.gce import Instance
 
 def tip_connect_ssh(vm: Instance) -> str:
-  return (f'└── Your instance is READY! You can now connect your instance '
+  return (f'└── Your instance is READY! You can now connect to your instance '
     f' {vm.name} via:\n  1. CLI. (add --tunnel-through-iap if necessary)\n'
     f'    $ gcloud compute ssh {vm.name} --zone={vm.zone} '
     f'--project={vm.project} --ssh-flag="-o StrictHostKeyChecking=no"\n  OR\n'
