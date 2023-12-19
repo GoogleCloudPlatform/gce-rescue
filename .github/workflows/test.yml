@@ -14,7 +14,7 @@ jobs:
 
     - name: Set up Python
       id: setup-python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v2
       with:
         python-version: 3.9
 
@@ -23,7 +23,7 @@ jobs:
 
     - name: Restore pipenv cache
       id: cache-pipenv
-      uses: actions/cache@v4
+      uses: actions/cache@v2
       with:
         path: ./.venv
         key: test-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-pipenv-${{ hashFiles('Pipfile.lock') }}
