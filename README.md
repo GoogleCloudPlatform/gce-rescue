@@ -1,6 +1,7 @@
 # GCE Rescue #
 [![test badge](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml/badge.svg?branch=main&event=push)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml?query=branch%3Amain+event%3Apush)
 
+{% include youtube.html id="oD6IFpjEtEw" %}
 
 This page shows you how to rescue a virtual machine (VM) instance by using GCE Rescue. 
 
