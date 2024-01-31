@@ -148,21 +148,23 @@ def read_input(msg: str) -> None:
 
 def tasks_wrapper(task_func):
   def inner(*args, **kwargs):
-    _logger.info(f"task {task_func.__name__} "
-                 f"started at: {datetime.now().strftime('%H:%M:%S')}")
+    _logger.info('task %s '
+                 'started at: %s',
+                 task_func.__name__, datetime.now().strftime('%H:%M:%S'))
     task_index = kwargs.pop('task_index') if kwargs.get('task_index') else None
     total_tasks = kwargs.pop('total_tasks') if kwargs.get('total_tasks') \
       else None
     try:
       res = task_func(*args, **kwargs)
     except HttpError as e:
-      _logger.error(f'HttpError caught on task {task_func.__name__} '
-                    f'with error: {e}')
+      _logger.error('HttpError caught on task %s '
+                    'with error: %s', task_func.__name__, e)
       return
-    _logger.info(f"task {task_func.__name__} ended at: "
-                 f"{datetime.now().strftime('%H:%M:%S')}")
+    _logger.info('task %s ended at: %s',
+                 task_func.__name__, datetime.now().strftime('%H:%M:%S'))
     if task_index and total_tasks:
-      _logger.info(f'Progress: {task_index}/{total_tasks} tasks completed')
+      _logger.info('Progress: %i/%i tasks completed',
+                   task_index, total_tasks)
       print(f'finished {task_func.__name__} {task_index}/{total_tasks}'
             f' tasks completed')
 
