@@ -53,8 +53,9 @@ def guess_guest(data: Dict) -> str:
 
   guests = get_config('source_guests')
   if not data.get('disks'):
-    _logger.error(f'Unable to get disks for vm. Check whether a boot disk is attached to your vm.')
-    raise Exception("No boot disk was found for vm")
+    _logger.error('Unable to get disks for vm.'
+                  ' Check whether a boot disk is attached to your vm.')
+    raise Exception('No boot disk was found for vm')
   for disk in data['disks']:
     if disk['boot']:
       if 'architecture' in disk:
