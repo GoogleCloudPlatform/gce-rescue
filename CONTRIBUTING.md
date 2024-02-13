@@ -70,6 +70,10 @@ Several useful templates for new issues and pull requests will be provided
 automatically. Although not mandatory, adhering to them helps standardize the
 review process.
 
+All Pull Requests, with rare exceptions *(such as docs, minor wording edits,
+etc.), should use the `develop` branch as a base. Only team members have
+permissions to push to the `main` branch.
+
 ### Code style
 
 We strive to adhere the standard [PEP8](https://peps.python.org/pep-0008/)
