@@ -14,58 +14,59 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Install GCE Rescue """
+"""Install GCE Rescue"""
+
+import os
 
 from setuptools import setup, find_packages
-from os import path
-
 from gce_rescue.config import VERSION
 
-my_pwd = path.abspath(path.dirname(__file__))
+
+my_pwd = os.path.abspath(os.path.dirname(__file__))
 
 # Get the long description from the README file
-with open(path.join(my_pwd, 'README.md'), encoding='utf-8') as f:
-  long_description_readme = f.read()
+with open(os.path.join(my_pwd, 'README.md'), encoding='utf-8') as f:
+    long_description_readme = f.read()
 
 # Get requirements
-with open(path.join(my_pwd, 'requirements.txt'), encoding='utf-8') as f:
-  list_requirements = f.readlines()
+with open(os.path.join(my_pwd, 'requirements.txt'), encoding='utf-8') as f:
+    list_requirements = f.readlines()
 
 setup(
-  name = 'gce-rescue',
-  version = VERSION,
-  description='GCE Rescue - Boot your GCE VM in rescue mode.',
-  url = 'https://github.com/googlecloudplatform/gce-rescue',
-  author = 'Halley de Souza',
-  author_email = 'gce-rescue-dev@google.com',
-  license = 'Apache-2.0',
-  long_description = long_description_readme,
-  long_description_content_type = 'text/markdown',
-  install_requires = list_requirements,
-  zip_safe = False,
-  packages = find_packages(exclude=['test', '*_test.py']),
-  package_dir = {'': '.'},
-  package_data = {'': ['startup-script.txt']},
-  include_package_data = True,
-  python_requires='>=3.7',
-  entry_points={
+    name='gce-rescue',
+    version=VERSION,
+    description='GCE Rescue - Boot your GCE VM in rescue mode.',
+    url='https://github.com/googlecloudplatform/gce-rescue',
+    author='Halley de Souza',
+    author_email='gce-rescue-dev@google.com',
+    license='Apache-2.0',
+    long_description=long_description_readme,
+    long_description_content_type='text/markdown',
+    install_requires=list_requirements,
+    zip_safe=False,
+    packages=find_packages(exclude=['test', '*_test.py']),
+    package_dir={'': '.'},
+    package_data={'': ['startup-script.txt']},
+    include_package_data=True,
+    python_requires='>=3.7',
+    entry_points={
         'console_scripts': [
             'gce-rescue = gce_rescue.bin.rescue:main',
         ],
     },
-  classifiers = [
-    'License :: OSI Approved :: Apache Software License',
-    'Operating System :: OS Independent',
-    'Programming Language :: Python :: 3.7',
-    'Programming Language :: Python :: 3.8',
-    'Programming Language :: Python :: 3.9',
-    'Programming Language :: Python :: 3.10',
-    'Programming Language :: Python :: 3.11',
-    'Programming Language :: Python :: 3.12',
-    'Topic :: System :: Boot',
-    'Topic :: System :: Boot :: Init',
-    'Topic :: System :: Recovery Tools',
-    'Topic :: System :: System Shells',
-    'Topic :: System :: Systems Administration',
-  ]
+    classifiers=[
+        'License :: OSI Approved :: Apache Software License',
+        'Operating System :: OS Independent',
+        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
+        'Programming Language :: Python :: 3.10',
+        'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
+        'Topic :: System :: Boot',
+        'Topic :: System :: Boot :: Init',
+        'Topic :: System :: Recovery Tools',
+        'Topic :: System :: System Shells',
+        'Topic :: System :: Systems Administration',
+    ],
 )
