@@ -12,45 +12,50 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Standard VM operations. """
+"""Standard VM operations."""
+
+import logging
 
 from gce_rescue.gce import Instance
 from gce_rescue.tasks.keeper import wait_for_operation
-import logging
+
 
 _logger = logging.getLogger(__name__)
 
+
 def start_instance(vm: Instance) -> str:
-  """Start instance."""
+    """Start instance."""
+    _logger.info('Starting %s...', vm.name)
+    if vm.status == 'RUNNING':
+        _logger.info('%s is already runnning.', vm.name)
+        return
 
-  _logger.info(f'Starting {vm.name}...')
-  if vm.status == 'RUNNING':
-    _logger.info(f'{vm.name} is already runnning.')
-    return
+    operation = (
+        vm.compute.instances().start(
+            **vm.project_data,
+            instance=vm.name).execute())
+    result = wait_for_operation(vm, oper=operation)
 
-  operation = vm.compute.instances().start(
-    **vm.project_data,
-    instance = vm.name).execute()
-  result = wait_for_operation(vm, oper=operation)
-
-  if result['status'] == 'DONE':
-    vm.status = 'RUNNING'
-  return vm.status
+    if result['status'] == 'DONE':
+        vm.status = 'RUNNING'
+    return vm.status
 
 
 def stop_instance(vm: Instance) -> str:
-  """Stop instance."""
-  _logger.info(f'Stopping {vm.name}...')
-  if vm.status == 'TERMINATED':
-    _logger.info(f'{vm.name} is already stopped.')
-    return
+    """Stop instance."""
+    _logger.info('Stopping %s...', vm.name)
+    if vm.status == 'TERMINATED':
+        _logger.info('%s is already stopped.', vm.name)
+        return
 
-  operation = vm.compute.instances().stop(
-    **vm.project_data,
-    instance = vm.name).execute()
-  result = wait_for_operation(vm, oper=operation)
+    operation = (
+        vm.compute.instances().stop(
+            **vm.project_data,
+            instance=vm.name
+        ).execute()
+    )
+    result = wait_for_operation(vm, oper=operation)
 
-  if result['status'] == 'DONE':
-    vm.status = 'TERMINATED'
-  return vm.status
-
+    if result['status'] == 'DONE':
+        vm.status = 'TERMINATED'
+    return vm.status
