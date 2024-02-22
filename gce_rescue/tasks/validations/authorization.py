@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Authorization validation to be called from ../pre_validations.py
+"""Authorization validation to be called from ../pre_validations.py
 Permissions:
   compute.instances.stop
   compute.instances.start
@@ -27,25 +26,28 @@ Permissions:
   compute.instances.setMetadata
   compute.instances.setLabels
 """
+
 import google.auth
+
 from gce_rescue.tasks.validations.api import api_service
 
+
 def authorize_check(project: str = None) -> bool:
+    permissions_list = ['compute.snapshots.create']
+    body_data = {'permissions': permissions_list}
+    credentials, project_id = google.auth.default()
 
-  permissions_list = ['compute.snapshots.create']
-  body_data = {'permissions': permissions_list}
-  credentials, project_id = google.auth.default()
+    if not project:
+        project = project_id
 
-  if not project:
-    project = project_id
+    service = api_service('cloudresourcemanager', 'v1', credentials)
+    result = (
+        service.projects()
+        .testIamPermissions(resource=project, body=body_data)
+        .execute()
+    )
 
-  service = api_service('cloudresourcemanager', 'v1', credentials)
-  result = service.projects().testIamPermissions(
-    resource = project,
-    body =  body_data
-  ).execute()
+    if permissions_list != result['permissions']:
+        raise PermissionError()
 
-  if permissions_list != result['permissions']:
-    raise PermissionError()
-
-  return True
+    return True
