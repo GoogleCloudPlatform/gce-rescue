@@ -12,33 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Common API objects """
+"""Common API objects"""
+
+import httplib2
 import googleapiclient
 import google_auth_httplib2
-import httplib2
-
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import Resource
 
 from gce_rescue.config import VERSION
+from googleapiclient.discovery import Resource
+from google.oauth2.credentials import Credentials
+
 
 def api_service(
     service: str,
     version: str,
-    credentials: Credentials) -> Resource:
+    credentials: Credentials
+) -> Resource:
+    def _builder(http, *args, **kwargs):
+        # google api client is not thread safe
+        # https://github.com/googleapis/google-api-python-client/blob/main/docs/thread_safety.md
+        del http
+        headers = kwargs.setdefault('headers', {})
+        headers['user-agent'] = f'gce_rescue-{VERSION}'
+        auth_http = google_auth_httplib2.AuthorizedHttp(
+            credentials,
+            http=httplib2.Http()
+        )
+        return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
 
-  def _builder(http, *args, **kwargs):
-    # google api client is not thread safe
-    # https://github.com/googleapis/google-api-python-client/blob/main/docs/thread_safety.md
-    del http
-    headers = kwargs.setdefault('headers',{})
-    headers['user-agent'] = f'gce_rescue-{VERSION}'
-    auth_http = google_auth_httplib2.AuthorizedHttp(credentials,
-                                                   http=httplib2.Http())
-    return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
-
-  service_ = googleapiclient.discovery.build(service, version,
-                        cache_discovery=False,
-                        credentials=credentials,
-                        requestBuilder=_builder)
-  return service_
+    service_ = googleapiclient.discovery.build(
+        service,
+        version,
+        cache_discovery=False,
+        credentials=credentials,
+        requestBuilder=_builder,
+    )
+    return service_
