@@ -12,84 +12,92 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Authentication validation to be called from ../pre_validations.py """
-import google.auth
+"""Authentication validation to be called from ../pre_validations.py"""
+
 import sys
+
+import google.auth
 
 from googleapiclient.discovery import Resource
 from gce_rescue.tasks.validations.api import api_service
 from gce_rescue.test.mocks import mock_api_object
 
+
 PROJECT = ''
 
+
 def _get_auth():
-  global PROJECT
-  try:
-    credentials, adc_project = google.auth.default()
-    if not adc_project and not PROJECT:
-      msg = _info_no_project()
-      print(msg, file=sys.stderr)
-      sys.exit(1)
-    if not PROJECT and adc_project:
-      PROJECT = adc_project
-    return credentials
-  except google.auth.exceptions.DefaultCredentialsError:
-    msg = _info_auth_cred()
-    print(msg, file=sys.stderr)
-    sys.exit(1)
+    global PROJECT
+    try:
+        credentials, adc_project = google.auth.default()
+        if not adc_project and not PROJECT:
+            msg = _info_no_project()
+            print(msg, file=sys.stderr)
+            sys.exit(1)
+        if not PROJECT and adc_project:
+            PROJECT = adc_project
+        return credentials
+    except google.auth.exceptions.DefaultCredentialsError:
+        msg = _info_auth_cred()
+        print(msg, file=sys.stderr)
+        sys.exit(1)
+
 
 def authenticate_check(
-  zone: str,
-  instance_name: str,
-  project: str = None,
-  test_mode: bool = False
+    zone: str,
+    instance_name: str,
+    project: str = None,
+    test_mode: bool = False
 ) -> Resource:
-  global PROJECT
-  PROJECT = project
-  if test_mode:
-    service = mock_api_object(['compute'])
-    return service
-  credentials = _get_auth()
-  if not credentials:
-    return False
-  # service = googleapiclient.discovery.build(
-  #   'compute',
-  #   'v1',
-  #   credentials = credentials
-  # )
-  service =  api_service('compute', 'v1', credentials)
-  request = service.instances().get(
-		project = PROJECT,
-		zone = zone,
-		instance = instance_name)
-  try:
-    request.execute()
-    return service
-  except google.auth.exceptions.RefreshError:
-    msg = _info_auth_refresh()
-    print(msg, file=sys.stderr)
-    sys.exit(1)
+    global PROJECT
+    PROJECT = project
+    if test_mode:
+        service = mock_api_object(['compute'])
+        return service
+    credentials = _get_auth()
+    if not credentials:
+        return False
+    # service = googleapiclient.discovery.build(
+    #   'compute',
+    #   'v1',
+    #   credentials = credentials
+    # )
+    service = api_service('compute', 'v1', credentials)
+    request = service.instances().get(
+        project=PROJECT, zone=zone, instance=instance_name
+    )
+    try:
+        request.execute()
+        return service
+    except google.auth.exceptions.RefreshError:
+        msg = _info_auth_refresh()
+        print(msg, file=sys.stderr)
+        sys.exit(1)
+
 
 def project_name() -> str:
-  return PROJECT
+    return PROJECT
+
 
 def _info_auth_refresh() -> str:
-  return (
-	'    Please use application-default Credentials (ADC) to authenticate:\n'
-	'    $ gcloud auth login --update-adc'
-  )
+    return (
+        '    Please use application-default Credentials (ADC) to authenticate:'
+        '\n    $ gcloud auth login --update-adc'
+    )
+
 
 def _info_auth_cred() -> str:
-  return (
-	'    Please use application-default Credentions (ADC) to authenticate:\n'
-	'     $ gcloud auth application-default login\n'
-	f'     $ gcloud auth application-default set-quota-project {PROJECT}'
-  )
+    return (
+        '    Please use application-default Credentions (ADC) to authenticate:'
+        '\n     $ gcloud auth application-default login'
+        f'\n     $ gcloud auth application-default set-quota-project {PROJECT}'
+    )
+
 
 def _info_no_project() -> str:
-  return (
-	'    Was not possible to find the project where the VM is created.\n'
-	'    You can use the option --project to declare the project-id or '
-  'set to your configuration:\n'
-	'    $ gcloud config set project PROJECT_ID'
-  )
+    return (
+        '    Was not possible to find the project where the VM is created.'
+        '\n    You can use the option --project to declare the project-id or '
+        'set to your configuration:'
+        '\n    $ gcloud config set project PROJECT_ID'
+    )
