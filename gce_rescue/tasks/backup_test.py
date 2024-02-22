@@ -15,32 +15,29 @@
 """Test code for backup.py."""
 
 from absl.testing import absltest
+from gce_rescue.gce import Instance
 from gce_rescue.tasks import backup
 from gce_rescue.test.mocks import mock_api_object, MOCK_TEST_VM
-from gce_rescue.gce import Instance
 
 
 class BackupTest(absltest.TestCase):
-  vm : Instance
+    vm: Instance
 
+    def setUp(self):
+        self.vm = Instance(test_mode=True, **MOCK_TEST_VM)
+        self.vm.compute = mock_api_object(['operations'])
 
-  def setUp(self):
-    self.vm = Instance(test_mode=True, **MOCK_TEST_VM)
-    self.vm.compute = mock_api_object(['operations'])
+    def test_backup_metadata_items(self):
+        """Test Backup_metadata_Items."""
+        backup_data = backup.backup_metadata_items(self.vm.data)
+        self.assertTrue(backup_data is not None)
+        self.assertTrue('key' in backup_data[0])
+        self.assertTrue('value' in backup_data[0])
 
-
-  def test_backup_metadata_items(self):
-    """Test Backup_metadata_Items."""
-    backup_data = backup.backup_metadata_items(self.vm.data)
-    self.assertTrue(backup_data is not None)
-    self.assertTrue('key' in backup_data[0])
-    self.assertTrue('value' in backup_data[0])
-
-
-  def test_backup(self):
-    """Test backup task."""
-    backup.create_snapshot(self.vm)
+    def test_backup(self):
+        """Test backup task."""
+        backup.create_snapshot(self.vm)
 
 
 if __name__ == '__main__':
-  absltest.main()
+    absltest.main()
