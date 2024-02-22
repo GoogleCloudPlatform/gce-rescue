@@ -14,66 +14,72 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Main script to be used to set/reset rescue mode. """
+"""Main script to be used to set/reset rescue mode."""
 
-from datetime import datetime
 import logging
 
-from gce_rescue.config import process_args, set_configs
+from datetime import datetime
 from gce_rescue import messages
 from gce_rescue.gce import Instance
 from gce_rescue.tasks.actions import call_tasks
 from gce_rescue.utils import read_input, set_logging
+from gce_rescue.config import process_args, set_configs
+
 
 def main():
-  """ Main script function. """
-  parser = process_args()
-  args = parser.parse_args()
-  set_configs(args)
+    """Main script function."""
+    parser = process_args()
+    args = parser.parse_args()
+    set_configs(args)
 
-  set_logging(vm_name=args.name)
+    set_logging(vm_name=args.name)
 
-  parse_kwargs = {
-      'zone': args.zone,
-      'name': args.name,
-  }
+    parse_kwargs = {
+        'zone': args.zone,
+        'name': args.name,
+    }
 
-  if args.project:
-    parse_kwargs['project'] = args.project
+    if args.project:
+        parse_kwargs['project'] = args.project
 
-  vm = Instance(test_mode=False, **parse_kwargs)
-  rescue_on = vm.rescue_mode_status['rescue-mode']
-  if not rescue_on:
-    if not args.force:
-      info = (f'This option will boot the instance {vm.name} in '
-              'RESCUE MODE. \nIf your instance is running it will be rebooted. '
-              '\nDo you want to continue [y/N]: ')
-      read_input(msg=info)
+    vm = Instance(test_mode=False, **parse_kwargs)
+    rescue_on = vm.rescue_mode_status['rescue-mode']
+    if not rescue_on:
+        if not args.force:
+            info = (
+                f'This option will boot the instance {vm.name} in RESCUE MODE.'
+                '\nIf your instance is running it will be rebooted.'
+                '\nDo you want to continue [y/N]: '
+            )
+            read_input(msg=info)
 
-    print('Starting...')
-    # save in the log file current configuration of the VM as backup.
-    logging.info('RESTORE#%s\n', vm.data)
-    action = 'set_rescue_mode'
-    msg = messages.tip_connect_ssh(vm)
+        print('Starting...')
+        # save in the log file current configuration of the VM as backup.
+        logging.info('RESTORE#%s\n', vm.data)
+        action = 'set_rescue_mode'
+        msg = messages.tip_connect_ssh(vm)
 
-  else:
-    rescue_ts = vm.rescue_mode_status['ts']
-    rescue_date = datetime.fromtimestamp(int(rescue_ts))
+    else:
+        rescue_ts = vm.rescue_mode_status['ts']
+        rescue_date = datetime.fromtimestamp(int(rescue_ts))
 
-    if not args.force:
-      info = (f'The instance \"{vm.name}\" is currently configured '
-              f'to boot as rescue mode since {rescue_date}.\nWould you like to'
-              ' restore the original configuration ? [y/N]: ')
-      read_input(msg=info)
+        if not args.force:
+            info = (
+                f'The instance "{vm.name}" is currently configured to boot as '
+                f'rescue mode since {rescue_date}.'
+                '\nWould you like to restore the original configuration? '
+                '[y/N]: '
+            )
+            read_input(msg=info)
 
-    print('Restoring VM...')
-    action = 'reset_rescue_mode'
-    has_snapshot = vm.snapshot
-    msg = messages.tip_restore_disk(vm, snapshot=has_snapshot)
+        print('Restoring VM...')
+        action = 'reset_rescue_mode'
+        has_snapshot = vm.snapshot
+        msg = messages.tip_restore_disk(vm, snapshot=has_snapshot)
 
-  call_tasks(vm=vm, action=action)
-  print(msg)
+    call_tasks(vm=vm, action=action)
+    print(msg)
 
 
 if __name__ == '__main__':
-  main()
+    main()
