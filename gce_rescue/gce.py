@@ -19,9 +19,9 @@ import time
 
 from typing import Dict, List, Union
 from dataclasses import dataclass, field
-from gce_rescue.config import get_config
 from googleapiclient.errors import HttpError
 from googleapiclient.discovery import Resource
+from gce_rescue.config import get_config
 from gce_rescue.tasks.pre_validations import Validations
 from gce_rescue.tasks.backup import backup_metadata_items
 from gce_rescue.tasks.disks import list_disk, list_snapshot

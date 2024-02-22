@@ -289,15 +289,12 @@ single-line-if-stmt=yes
 # separator` is used to allow tabulation in dicts, etc.: {1  : 1,\n222: 2}.
 # `trailing-comma` allows a space between comma and closing bracket: (a, ).
 # `empty-line` allows space-only lines.
-no-space-check=
+# no-space-check=
 
 # Maximum number of lines in a module
 max-module-lines=99999
 
-# String used as indentation unit.  The internal Google style guide mandates 2
-# spaces.  Google's externaly-published style guide says 4, consistent with
-# PEP 8.  Here, we use 2 spaces, for conformity with many open-sourced Google
-# projects (like TensorFlow).
+# String used as indentation unit.
 indent-string='    '
 
 # Number of spaces of indent required inside a hanging  or continued line.
