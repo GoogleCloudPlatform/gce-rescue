@@ -12,45 +12,48 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Different operations to guarantee VM disks backup, before performing
-    any modifications."""
+"""Different operations to guarantee VM disks backup, before performing
+any modifications."""
 
-from gce_rescue.tasks.keeper import wait_for_operation
-from typing import Dict, List
 import logging
+
+from typing import Dict, List
+from gce_rescue.tasks.keeper import wait_for_operation
+
 
 _logger = logging.getLogger(__name__)
 
+
 def backup_metadata_items(data: Dict) -> List:
-  """ Returns the "items" content (ssh-keys, scripts, etc) to be restored
-  at the end of the process. After the instance booted and executed
-  the rescue start-script
-  """
-  if 'items' in data['metadata'].keys():
-    return data['metadata']['items']
-  return []
+    """Returns the 'items' content (ssh-keys, scripts, etc) to be
+    restored at the end of the process. After the instance booted
+    and executed the rescue start-script
+    """
+    if 'items' in data['metadata'].keys():
+        return data['metadata']['items']
+    return []
+
 
 def create_snapshot(vm) -> Dict:
-  """
-  Create a snaphost of the instance boot disk, adding self._ts to the disk name.
-  https://cloud.google.com/compute/docs/reference/rest/v1/disks/createSnapshot
-  Returns:
-    operation-result: Dict
-  """
+    """
+    Create a snaphost of the instance boot disk, adding self._ts to the
+    disk name.
+    https://cloud.google.com/compute/docs/reference/rest/v1/disks/createSnapshot
 
-  disk_name = vm.disks['disk_name']
-  # Patch issues/23
-  region = vm.zone[:-2]
-  snapshot_name = f'{disk_name}-{vm.ts}'
-  snapshot_body = {
-    'name': snapshot_name,
-    'storageLocations': [ region ]
-  }
-  _logger.info(f'Creating snapshot {snapshot_body}... ')
-  operation = vm.compute.disks().createSnapshot(
-    **vm.project_data,
-    disk = disk_name,
-    body = snapshot_body).execute()
-  result = wait_for_operation(vm, oper=operation)
-  return result
+    Returns:
+      operation-result: Dict
+    """
+    disk_name = vm.disks['disk_name']
+    # Patch issues/23
+    region = vm.zone[:-2]
+    snapshot_name = f'{disk_name}-{vm.ts}'
+    snapshot_body = {'name': snapshot_name, 'storageLocations': [region]}
+    _logger.info('Creating snapshot %s...', snapshot_body)
 
+    operation = (
+        vm.compute.disks()
+        .createSnapshot(**vm.project_data, disk=disk_name, body=snapshot_body)
+        .execute()
+    )
+    result = wait_for_operation(vm, oper=operation)
+    return result
