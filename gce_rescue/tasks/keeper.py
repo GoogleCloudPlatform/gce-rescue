@@ -14,53 +14,59 @@
 
 # pylint: disable=broad-exception-raised
 
-"""keeper that the progress of the tasks. """
+"""Keeper that the progress of the tasks."""
+
+import json
+import time
+import logging
 
 import googleapiclient.discovery
-from time import sleep
+
 from typing import Dict
-import logging
-import json
+
 
 _logger = logging.getLogger(__name__)
 
 
 def wait_for_operation(
-  instance_obj: googleapiclient.discovery.Resource,
-  oper: Dict
+    instance_obj: googleapiclient.discovery.Resource,
+    oper: Dict
 ) -> Dict:
-  """ Creating poll to wait the operation to finish. """
+    """Creating poll to wait the operation to finish."""
+    while True:
+        if oper['status'] == 'DONE':
+            _logger.info('done.')
+            if 'error' in oper:
+                raise Exception(oper['error'])
+            return oper
 
-  while True:
-    if oper['status'] == 'DONE':
-      _logger.info('done.')
-      if 'error' in oper:
-        raise Exception(oper['error'])
-      return oper
+        oper = (
+            instance_obj.compute.zoneOperations()
+            .get(**instance_obj.project_data, operation=oper['name'])
+            .execute()
+        )
+        time.sleep(1)
 
-    oper = instance_obj.compute.zoneOperations().get(
-      **instance_obj.project_data,
-      operation = oper['name']).execute()
-    sleep(1)
 
 def wait_for_os_boot(vm: googleapiclient.discovery.Resource) -> bool:
-  """Wait guest OS to complete the boot proccess."""
+    """Wait guest OS to complete the boot proccess."""
+    timeout = 60
+    wait_time = 2
+    end_string = f'END:{vm.ts}'
+    _logger.info('Waiting startup-script to complete.')
 
-  timeout = 60
-  wait_time = 2
-  end_string = f'END:{vm.ts}'
-  _logger.info('Waiting startup-script to complete.')
-  while True:
-    result = vm.compute.instances().getSerialPortOutput(
-      **vm.project_data,
-      instance = vm.name
-    ).execute()
+    while True:
+        result = (
+            vm.compute.instances()
+            .getSerialPortOutput(**vm.project_data, instance=vm.name)
+            .execute()
+        )
 
-    if end_string in json.dumps(result):
-      _logger.info('startup-script has ended.')
-      return True
+        if end_string in json.dumps(result):
+            _logger.info('startup-script has ended.')
+            return True
 
-    sleep(wait_time)
-    timeout -= wait_time
-    if not timeout:
-      return False
+        time.sleep(wait_time)
+        timeout -= wait_time
+        if not timeout:
+            return False
