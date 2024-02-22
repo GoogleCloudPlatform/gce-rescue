@@ -12,53 +12,52 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" Multitask test code """
+"""Multitask test code."""
+
+import time
 
 from absl.testing import absltest
 from gce_rescue.utils import ThreadHandler as Handler
-import time
+
 
 OUTPUT1 = 'task1 done'
 OUTPUT2 = 'task1 done'
 
 
 class MultitasksTest(absltest.TestCase):
-  status = {
-	  'task1_done': False,
-	  'task2_done': False,
-	}
+    status = {
+        'task1_done': False,
+        'task2_done': False,
+    }
 
+    @classmethod
+    def task1(cls):
+        for _ in range(0, 3):
+            # print(f'task 1, time {i}')
+            time.sleep(0.001)
+        MultitasksTest.status['task1_done'] = True
+        return OUTPUT1
 
-  @classmethod
-  def task1(cls):
-    for _ in range(0, 3):
-      # print(f'task 1, time {i}')
-      time.sleep(0.001)
-    MultitasksTest.status['task1_done'] = True
-    return OUTPUT1
+    @classmethod
+    def task2(cls):
+        for _ in range(0, 3):
+            # print(f'task 2, time {i}')
+            time.sleep(0.001)
+        MultitasksTest.status['task2_done'] = True
+        return OUTPUT2
 
-
-  @classmethod
-  def task2(cls):
-    for _ in range(0, 3):
-      # print(f'task 2, time {i}')
-      time.sleep(0.001)
-    MultitasksTest.status['task2_done'] = True
-    return OUTPUT2
-
-
-  def test_multitasks(self):
-    t1 = Handler(target=MultitasksTest.task1)
-    t2 = Handler(target=MultitasksTest.task2)
-    t1.start()
-    t2.start()
-    output1 = t1.result()
-    output2 = t2.result()
-    self.assertEqual(output1, OUTPUT1)
-    self.assertEqual(output2, OUTPUT2)
-    self.assertTrue(MultitasksTest.status['task1_done'])
-    self.assertTrue(MultitasksTest.status['task2_done'])
+    def test_multitasks(self):
+        t1 = Handler(target=MultitasksTest.task1)
+        t2 = Handler(target=MultitasksTest.task2)
+        t1.start()
+        t2.start()
+        output1 = t1.result()
+        output2 = t2.result()
+        self.assertEqual(output1, OUTPUT1)
+        self.assertEqual(output2, OUTPUT2)
+        self.assertTrue(MultitasksTest.status['task1_done'])
+        self.assertTrue(MultitasksTest.status['task2_done'])
 
 
 if __name__ == '__main__':
-  absltest.main()
+    absltest.main()
