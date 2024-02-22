@@ -14,130 +14,131 @@
 
 # pylint: disable=broad-exception-raised
 
-""" List of classes and functions to be used across the code. """
+"""List of classes and functions to be used across the code."""
 
-from time import sleep
+import sys
+import time
 import logging
 import multiprocessing
+
 from threading import Thread
-import sys
 from gce_rescue.config import get_config
 
 
 _logger = logging.getLogger(__name__)
 
-class Tracker():
-  """ Track tasks using multiprocessing and print progress bar. """
 
-  def __init__(self, target):
-    self.target = target
-    self._pivot = multiprocessing.Value('i', 1)
-    self._proc = None
+class Tracker:
+    """Track tasks using multiprocessing and print progress bar."""
 
-  def start(self):
-    self._proc = multiprocessing.Process(target=self._run)
-    self._proc.start()
-    print('┌── Configuring...')
+    def __init__(self, target):
+        self.target = target
+        self._pivot = multiprocessing.Value('i', 1)
+        self._proc = None
 
-  def advance(self, step=None):
-    if not step:
-      step = 1
-    self._pivot.value += step
+    def start(self):
+        self._proc = multiprocessing.Process(target=self._run)
+        self._proc.start()
+        print('┌── Configuring...')
 
-  def finish(self):
-    self._pivot.value = self.target
-    self._proc.join()
-    sleep(0.5)
-    print('├── Configurations finished.')
+    def advance(self, step=1):
+        self._pivot.value += step
 
-  def _loading(self):
-    chars = ['-', '|', '/', '|', '\\']
-    i = 0
-    while True:
-      yield chars[i]
-      i += 1
-      if i == len(chars):
+    def finish(self):
+        self._pivot.value = self.target
+        self._proc.join()
+        time.sleep(0.5)
+        print('├── Configurations finished.')
+
+    def _loading(self):
+        chars = ['──', '\\', '|', '/']
         i = 0
+        while True:
+            yield chars[i]
+            i += 1
+            if i == len(chars):
+                i = 0
 
-  def _run(self):
-    self._gen = self._loading()
-    while self._pivot.value < self.target:
-      try:
-        sleep(0.001)
+    def _run(self):
+        self._gen = self._loading()
+        while self._pivot.value < self.target:
+            try:
+                time.sleep(0.1)
+                self._print()
+            except Exception as exc:
+                raise f'{exc}: {self._pivot.value} = {self.target}'
+
         self._print()
-      except Exception as exc:
-        raise f'{exc}: {self._pivot.value} = {self.target}'
+        print('\r')
 
-    self._print()
-    print('\r')
-
-  def _print(self):
-    size = 60
-    loading = next(self._gen)
-    if self._pivot.value == self.target:
-      loading = '█'
-    count = self._pivot.value
-    total = self.target
-    x = int(size * self._pivot.value / self.target)
-    progress = '█' * x
-    bar = '.' * (size-x)
-    print(f'│   └── Progress {count}/{total} [{progress}{loading}{bar}]',
-      end='\r',
-      file=sys.stderr,
-      flush=True)
+    def _print(self):
+        size = 60
+        loading = next(self._gen)
+        if self._pivot.value == self.target:
+            loading = '█'
+        count = self._pivot.value
+        total = self.target
+        x = int(size * self._pivot.value / self.target)
+        progress = '█' * x
+        bar = '.' * (size - x)
+        print(
+            f'│   └── Progress {count}/{total} [{progress}{loading}{bar}]',
+            end='\r',
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 class ThreadHandler(Thread):
-  """Handler for multithread tasks."""
+    """Handler for multithread tasks."""
 
-  def __init__(
-      self,
-      group=None,
-      target=None,
-      name=None,
-      args=None,
-      kwargs=None
+    def __init__(self,
+            group=None,
+            target=None,
+            name=None,
+            args=None,
+            kwargs=None
     ):
+        if not args:
+            args = ()
+        if not kwargs:
+            kwargs = {}
 
-    if not args:
-      args = ()
+        Thread.__init__(self, group, target, name, args, kwargs)
+        self._result = None
 
-    if not kwargs:
-      kwargs = {}
+    def run(self):
+        if self._target is not None:
+            self._result = self._target(*self._args, **self._kwargs)
 
-    Thread.__init__(self, group, target, name, args, kwargs)
-    self._result = None
-
-  def run(self):
-    if self._target is not None:
-      self._result = self._target(*self._args, **self._kwargs)
-
-  def result(self, *args):
-    Thread.join(self, *args)
-    return self._result
+    def result(self, *args):
+        Thread.join(self, *args)
+        return self._result
 
 
 def set_logging(vm_name: str) -> None:
-  """ Set logfile and verbosity. """
+    """Set logfile and verbosity."""
+    level = 'DEBUG' if get_config('debug') else 'INFO'
+    log_level = getattr(logging, level.upper())
+    file_name = f'{vm_name}.log'
 
-  level = 'DEBUG' if get_config('debug') else 'INFO'
-  log_level = getattr(logging, level.upper())
-  file_name = f'{vm_name}.log'
-  logging.basicConfig(
-    filename=file_name,
-    filemode='a',
-    format='%(asctime)s,%(msecs)03d %(levelname)-8s [%(filename)s:%(lineno)d]\
-      %(message)s',
-    datefmt='%Y-%m-%d:%H:%M:%S',
-    level=log_level)
+    logging.basicConfig(
+        filename=file_name,
+        filemode='a',
+        format=(
+            '%(asctime)s,%(msecs)03d %(levelname)-8s '
+            '[%(filename)s:%(lineno)d] %(message)s'
+        ),
+        datefmt='%Y-%m-%d:%H:%M:%S',
+        level=log_level,
+    )
 
 
 def read_input(msg: str) -> None:
-  """Read user input if --force is not provided."""
-  print(msg, end='')
-  input_answer = input()
-  input_answer = input_answer.strip()
-  if input_answer.upper() != 'Y':
-    print(f'got input: "{input_answer}". Aborting')
-    sys.exit(1)
-    
+    """Read user input if --force is not provided."""
+    print(msg, end='')
+    input_answer = input()
+    input_answer = input_answer.strip()
+    if input_answer.upper() != 'Y':
+        print(f'got input: "{input_answer}". Aborting')
+        sys.exit(1)
