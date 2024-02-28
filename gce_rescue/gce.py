@@ -14,6 +14,7 @@
 
 """ Initilization Instance() with VM information. """
 import sys
+import logging
 
 from googleapiclient.discovery import Resource
 from googleapiclient.errors import HttpError
@@ -26,6 +27,7 @@ from gce_rescue.tasks.disks import list_disk, list_snapshot
 from gce_rescue.tasks.pre_validations import Validations
 from gce_rescue.config import get_config
 
+_logger = logging.getLogger(__name__)
 
 def get_instance_info(
   compute: Resource,
@@ -50,6 +52,10 @@ def guess_guest(data: Dict) -> str:
      Default: projects/debian-cloud/global/images/family/debian-11"""
 
   guests = get_config('source_guests')
+  if not data.get('disks'):
+    _logger.error('Unable to get disks for vm.'
+                  ' Check whether a boot disk is attached to your vm.')
+    raise Exception('No boot disk was found for vm')
   for disk in data['disks']:
     if disk['boot']:
       if 'architecture' in disk:
@@ -58,6 +64,8 @@ def guess_guest(data: Dict) -> str:
         arch = 'x86_64'
       guest_default = guests[arch][0]
       guest_name = guest_default.split('/')[-1]
+      if not disk.get('licenses'):
+        return guest_default
       for lic in disk['licenses']:
         if guest_name in lic:
           guest_default = guests[arch][1]

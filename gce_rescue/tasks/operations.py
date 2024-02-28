@@ -16,10 +16,13 @@
 
 from gce_rescue.gce import Instance
 from gce_rescue.tasks.keeper import wait_for_operation
+from gce_rescue.utils import tasks_wrapper
 import logging
 
 _logger = logging.getLogger(__name__)
 
+
+@tasks_wrapper
 def start_instance(vm: Instance) -> str:
   """Start instance."""
 
@@ -38,6 +41,7 @@ def start_instance(vm: Instance) -> str:
   return vm.status
 
 
+@tasks_wrapper
 def stop_instance(vm: Instance) -> str:
   """Stop instance."""
   _logger.info(f'Stopping {vm.name}...')

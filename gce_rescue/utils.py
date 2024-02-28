@@ -17,6 +17,10 @@
 """ List of classes and functions to be used across the code. """
 
 from time import sleep
+from datetime import datetime
+
+from googleapiclient.errors import HttpError
+
 import logging
 import multiprocessing
 from threading import Thread
@@ -140,4 +144,30 @@ def read_input(msg: str) -> None:
   if input_answer.upper() != 'Y':
     print(f'got input: "{input_answer}". Aborting')
     sys.exit(1)
-    
+
+
+def tasks_wrapper(task_func):
+  def inner(*args, **kwargs):
+    _logger.info('task %s '
+                 'started at: %s',
+                 task_func.__name__, datetime.now().strftime('%H:%M:%S'))
+    task_index = kwargs.pop('task_index', None)
+    total_tasks = kwargs.pop('total_tasks', None)
+    try:
+      res = task_func(*args, **kwargs)
+    except HttpError as e:
+      _logger.error('HttpError caught on task %s '
+                    'with error: %s', task_func.__name__, e)
+      return
+    _logger.info('task %s ended at: %s',
+                 task_func.__name__, datetime.now().strftime('%H:%M:%S'))
+    if task_index and total_tasks:
+      _logger.info('Progress: %i/%i tasks completed',
+                   task_index, total_tasks)
+      print('\n', f'finished {task_func.__name__} {task_index}/{total_tasks}'
+                  f' tasks completed')
+
+    return res
+
+  return inner
+

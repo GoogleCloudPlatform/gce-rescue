@@ -22,7 +22,7 @@ import googleapiclient.errors
 
 from gce_rescue.tasks.keeper import wait_for_operation
 from gce_rescue.tasks.backup import create_snapshot
-from gce_rescue.utils import ThreadHandler as Handler
+from gce_rescue.utils import ThreadHandler as Handler, tasks_wrapper
 from googleapiclient.errors import HttpError
 
 _logger = logging.getLogger(__name__)
@@ -130,6 +130,7 @@ def list_disk(vm, project_data: Dict, label_filter: str) -> Dict:
   return result['items']
 
 
+@tasks_wrapper
 def attach_disk(
   vm,
   disk_name: str,
@@ -189,6 +190,7 @@ def take_snapshot(vm, join_snapshot=None) -> None:
     snapshot_thread.join()
 
 
+@tasks_wrapper
 def create_rescue_disk(vm) -> None:
   device_name = vm.disks['device_name']
   # task1 = multitasks.Handler(
@@ -222,6 +224,8 @@ def list_snapshot(vm) -> str:
     return ''
   return snapshot_name
 
+
+@tasks_wrapper
 def restore_original_disk(vm) -> None:
   """ Restore tasks to the original disk """
   device_name = vm.disks['device_name']

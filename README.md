@@ -14,6 +14,18 @@ The advantage of using GCE Rescue is that it uses the resources already configur
 
 >Note: **`GCE Rescue is not an officially supported Google Cloud product`**. The Google Cloud Support team maintains this repository, but the product is experimental and, therefore, it can be unstable.
 
+## Requirements
+
+To install and use GCE Rescue, you must have:
+
+1. Python environment >= 3.7 ([read more](https://docs.python.org/3.7/tutorial/index.html))
+2. `gcloud` CLI ([read more](https://cloud.google.com/sdk/docs/install-sdk))
+
+> **Note**
+>
+> The requirement of Python >= 3.7 was inherited from the [`google-api-python-client`](https://github.com/googleapis/google-api-python-client/tree/main#supported-python-versions) package.
+>
+> Despite the fact that `gce-rescue` can be installed in some ways with a Python version < 3.7 and may work, this is not recommended and is not supported.
 
 ## Installation ##
 
@@ -147,10 +159,10 @@ $ gce-rescue --zone europe-central2-a --name test
 The instance "test" is currently configured to boot as rescue mode since 2022-11-01 12:05:08.
 Would you like to restore the original configuration ? [y/N]: y
 Restoring VM...
-- Configuring...
- \- Progress 4/4 [█████████████████████████████████████████████████████████████]
-- Configurations finished.
-- The instance test was restored! Use the snapshot below if you need to restore the modification made while the instance was in rescue mode.
+┌── Configuring...
+│   └── Progress 4/4 [█████████████████████████████████████████████████████████████]
+├── Configurations finished.
+└── The instance test was restored! Use the snapshot below if you need to restore the modification made while the instance was in rescue mode.
  Snapshot name: test-1668009968
  More information: https://cloud.google.com/compute/docs/disks/restore-snapshot
 
