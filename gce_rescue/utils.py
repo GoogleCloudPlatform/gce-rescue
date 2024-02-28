@@ -165,8 +165,8 @@ def tasks_wrapper(task_func):
     if task_index and total_tasks:
       _logger.info('Progress: %i/%i tasks completed',
                    task_index, total_tasks)
-      print(f'finished {task_func.__name__} {task_index}/{total_tasks}'
-            f' tasks completed')
+      print('\n', f'finished {task_func.__name__} {task_index}/{total_tasks}'
+                  f' tasks completed')
 
     return res
 
