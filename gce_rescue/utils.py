@@ -151,9 +151,8 @@ def tasks_wrapper(task_func):
     _logger.info('task %s '
                  'started at: %s',
                  task_func.__name__, datetime.now().strftime('%H:%M:%S'))
-    task_index = kwargs.pop('task_index') if kwargs.get('task_index') else None
-    total_tasks = kwargs.pop('total_tasks') if kwargs.get('total_tasks') \
-      else None
+    task_index = kwargs.pop('task_index', None)
+    total_tasks = kwargs.pop('total_tasks', None)
     try:
       res = task_func(*args, **kwargs)
     except HttpError as e:
