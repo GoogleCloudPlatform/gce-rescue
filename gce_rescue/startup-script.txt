@@ -9,8 +9,36 @@ hostname ${HOSTNAME}-rescue
 while [ true ]; do
     [[ -e /dev/disk/by-id/google-${disk} ]] && {
         mkdir -p /mnt/sysroot
-        disk_p=$(lsblk -rf /dev/disk/by-id/google-${disk} | egrep -i 'ext[3-4]|xfs|microsoft')
-        [[ /dev/${disk_p%% *} ]] && mount /dev/${disk_p%% *} /mnt/sysroot
+        fs=$(lsblk -rf /dev/disk/by-id/google-${disk} | egrep -i 'ext[3-4]|xfs|ntfs'| awk '{print $2}')
+        case $fs in
+            ntfs)
+                apt-get install -y ntfs-3g
+                disk_map=$(lsblk -rf /dev/disk/by-id/google-${disk}| egrep -i 'ntfs'| awk '{print $1}')
+                ntfsfix /dev/${disk_map}
+                [[ /dev/${disk_map} ]] && mount -t ntfs /dev/${disk_map} /mnt/sysroot
+                ;;
+
+            ext4|ext3|xfs)
+                disk_map=$(lsblk -rf /dev/disk/by-id/google-${disk}| egrep -i LVM2_member| awk '{print $1}')
+                if [[ -n ${disk_map} ]];
+                then
+                        apt-get install -y lvm2
+                        pvscan; vgscan
+                        vgname=$(vgs --devices /dev/${disk_map} -o vg_name --noheadings)
+                        vgchange -ay $vgname
+                        vgscan; lvscan
+                        disk_p=$(blkid -U $(lsblk -rf /dev/disk/by-id/google-${disk} | egrep -i 'ext[3-4]|xfs' | awk '{print $NF}'))
+                        [[ $disk_p ]] && mount $disk_p /mnt/sysroot
+                else
+                        disk_p=$(lsblk -rf /dev/disk/by-id/google-${disk} | egrep -i 'ext[3-4]|xfs')
+                        [[ /dev/${disk_p%% *} ]] && mount /dev/${disk_p%% *} /mnt/sysroot
+                fi
+                ;;
+
+            *)
+                echo "FS not supported ";;
+            
+            esac
 
         [[ -d /mnt/sysroot/proc ]] && mount -t proc proc /mnt/sysroot/proc
         [[ -d /mnt/sysroot/sys ]] && mount -t sysfs sys /mnt/sysroot/sys
