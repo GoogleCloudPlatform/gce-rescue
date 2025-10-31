@@ -127,7 +127,8 @@ def rescue_vm(project, zone, vm_name):
     attach_body = {
         'source': f'projects/{project}/zones/{zone}/disks/{rescue_disk_name}',
         'boot': True,
-        'autoDelete': False
+        'autoDelete': False,
+        'deviceName': rescue_disk_name  # Specify device name explicitly
     }
     compute.instances().attachDisk(
         project=project,
@@ -171,7 +172,8 @@ def rescue_vm(project, zone, vm_name):
     attach_body = {
         'source': f'projects/{project}/zones/{zone}/disks/{boot_disk["name"]}',
         'boot': False,
-        'autoDelete': False
+        'autoDelete': False,
+        'deviceName': boot_disk["name"]  # Specify device name explicitly
     }
     compute.instances().attachDisk(
         project=project,
@@ -254,7 +256,8 @@ def restore_vm(project, zone, vm_name):
     attach_body = {
         'source': f'projects/{project}/zones/{zone}/disks/{original_disk["name"]}',
         'boot': True,
-        'autoDelete': False
+        'autoDelete': False,
+        'deviceName': original_disk["name"]  # Specify device name explicitly
     }
     compute.instances().attachDisk(
         project=project,
