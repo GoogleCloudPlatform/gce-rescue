@@ -45,7 +45,18 @@ def authorize_check(project: str = None) -> bool:
     body =  body_data
   ).execute()
 
+  # BUG FIX: Handle case where result has no 'permissions' key
+  # This happens when user has none of the requested permissions
+  if 'permissions' not in result:
+    raise PermissionError(
+      f'Missing required permission: {permissions_list[0]}. '
+      'You need at least Compute Instance Admin or Compute Admin role.'
+    )
+
   if permissions_list != result['permissions']:
-    raise PermissionError()
+    raise PermissionError(
+      f'Insufficient permissions. Required: {permissions_list}, '
+      f'Granted: {result.get("permissions", [])}'
+    )
 
   return True

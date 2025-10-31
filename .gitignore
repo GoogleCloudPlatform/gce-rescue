@@ -28,3 +28,4 @@ vir-env/
 # Private planning/analysis documents (not for public repo)
 .private-docs/
 
+.claude/
