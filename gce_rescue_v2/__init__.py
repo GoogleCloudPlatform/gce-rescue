@@ -16,7 +16,9 @@ Example usage:
     >>> exit_rescue_mode('my-project', 'us-central1-a', 'my-vm')
 """
 
-__version__ = "2.0.0"
+from core.config import VERSION
+
+__version__ = VERSION
 __author__ = "GCE Rescue Team"
 
 # Main public API will be added as we build each module

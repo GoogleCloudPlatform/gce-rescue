@@ -1,0 +1,17 @@
+# GCE Rescue V2 - Dependencies
+# Python 3.7+
+
+# Google Cloud Authentication
+google-auth>=2.42.0
+
+# Google Cloud API Client
+google-api-python-client>=2.185.0
+
+# HTTP Authentication for Google APIs
+google-auth-httplib2>=0.2.0
+
+# HTTP Library
+httplib2>=0.22.0
+
+# YAML Support (for --format=yaml output)
+pyyaml>=6.0.1
