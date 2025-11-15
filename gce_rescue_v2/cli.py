@@ -326,9 +326,9 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         help='Skip snapshot creation (faster but riskier - not recommended)'
     )
     snapshot_group.add_argument(
-        '--async-snapshot',
+        '--wait-snapshot',
         action='store_true',
-        help='Start snapshot but don\'t wait for completion (FASTER - saves ~90s)'
+        help='Wait for snapshot to complete before proceeding (slower but ensures snapshot is ready)'
     )
     snapshot_group.add_argument(
         '--require-snapshot',
@@ -483,8 +483,8 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # Snapshot settings (default is True, can be disabled with --no-snapshot)
     if hasattr(args, 'snapshot'):
         config.create_snapshot = args.snapshot
-    if hasattr(args, 'async_snapshot') and args.async_snapshot:
-        config.async_snapshot = True
+    if hasattr(args, 'wait_snapshot') and args.wait_snapshot:
+        config.async_snapshot = False  # User wants to wait for snapshot completion
     if hasattr(args, 'require_snapshot') and args.require_snapshot:
         config.require_snapshot = True
     if hasattr(args, 'snapshot_name') and args.snapshot_name:
