@@ -185,37 +185,6 @@ class RescueOrchestrator:
                 "Attach Original Disk": attach_original
             }
 
-            # Step 0: Create safety snapshot (if enabled)
-            if self.config.create_snapshot:
-                if self.config.async_snapshot:
-                    self._log_info("  Creating safety snapshot (async mode - not waiting)...")
-                    self._log_info("    [!] Snapshot will complete in background (~2-5 min)")
-                else:
-                    self._log_info("  Creating safety snapshot...")
-                    self._log_info("    (This takes 2-5 minutes but ensures data safety)")
-
-                result = create_snapshot.execute(
-                    disk_name=self.original_disk_name,
-                    snapshot_name=None,  # Auto-generate
-                    description=f"Pre-rescue safety snapshot of {self.vm_name}",
-                    timeout=self.config.snapshot_timeout,
-                    wait=not self.config.async_snapshot  # Don't wait if async mode
-                )
-                self.state_tracker.add_operation("Create Snapshot", result.success, result.message, result.rollback_data)
-
-                if not result.success:
-                    self._log_error("  Failed to create safety snapshot")
-                    if self.config.require_snapshot:
-                        self._log_error("  Snapshot required but failed. Aborting.")
-                        return False
-                    else:
-                        self._log_error("  Continuing without snapshot (risky!)")
-                else:
-                    snapshot_name = result.rollback_data.get('snapshot_name')
-                    self._log_info(f"  [OK] {result.message}")
-                    if not self.config.async_snapshot:
-                        self._log_info(f"    Snapshot: {snapshot_name}")
-
             # Step 1: Stop VM
             self._log_info("  Stopping VM...")
             result = stop_vm.execute(vm_name=self.vm_name, timeout=self.config.vm_stop_timeout)
@@ -248,6 +217,38 @@ class RescueOrchestrator:
                 self._rollback()
                 return False
             self._log_info(f"  [OK] {result.message}")
+
+            # Step 3.5: Create safety snapshot (AFTER detaching to avoid instance lock)
+            if self.config.create_snapshot:
+                if self.config.async_snapshot:
+                    self._log_info("  Creating safety snapshot (async mode - not waiting)...")
+                    self._log_info("    [!] Snapshot will complete in background (~2-5 min)")
+                else:
+                    self._log_info("  Creating safety snapshot...")
+                    self._log_info("    (This takes 2-5 minutes but ensures data safety)")
+
+                result = create_snapshot.execute(
+                    disk_name=self.original_disk_name,
+                    snapshot_name=None,  # Auto-generate
+                    description=f"Pre-rescue safety snapshot of {self.vm_name}",
+                    timeout=self.config.snapshot_timeout,
+                    wait=not self.config.async_snapshot  # Don't wait if async mode
+                )
+                self.state_tracker.add_operation("Create Snapshot", result.success, result.message, result.rollback_data)
+
+                if not result.success:
+                    self._log_error("  Failed to create safety snapshot")
+                    if self.config.require_snapshot:
+                        self._log_error("  Snapshot required but failed. Aborting.")
+                        self._rollback()
+                        return False
+                    else:
+                        self._log_error("  Continuing without snapshot (risky!)")
+                else:
+                    snapshot_name = result.rollback_data.get('snapshot_name')
+                    self._log_info(f"  [OK] {result.message}")
+                    if not self.config.async_snapshot:
+                        self._log_info(f"    Snapshot: {snapshot_name}")
 
             # Step 4: Attach rescue disk as boot
             self._log_info("  Attaching rescue disk as boot...")
