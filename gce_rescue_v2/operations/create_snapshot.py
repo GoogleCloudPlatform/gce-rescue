@@ -25,7 +25,7 @@ class CreateSnapshotOperation(BaseOperation):
         return "Create Snapshot"
 
     def execute(self, disk_name: str, snapshot_name: str = None,
-                description: str = None, timeout: int = 600) -> OperationResult:
+                description: str = None, timeout: int = 600, wait: bool = True) -> OperationResult:
         """
         Create a snapshot of a disk.
 
@@ -34,6 +34,8 @@ class CreateSnapshotOperation(BaseOperation):
             snapshot_name: Custom name (auto-generated if None)
             description: Snapshot description
             timeout: Timeout in seconds (default: 600)
+            wait: Wait for snapshot completion (default: True)
+                  If False, returns immediately (async mode - FASTER!)
 
         Returns:
             OperationResult with snapshot name in rollback_data
@@ -68,7 +70,22 @@ class CreateSnapshotOperation(BaseOperation):
                 body=body
             ).execute()
 
-            # Wait for snapshot to complete
+            # If async mode, return immediately without waiting
+            if not wait:
+                self._log_debug(f"Snapshot creation started (async mode - not waiting)")
+                return OperationResult(
+                    operation_name=self.name,
+                    success=True,
+                    message=f"Snapshot started: {snapshot_name} (not waiting for completion)",
+                    rollback_data={
+                        'snapshot_name': snapshot_name,
+                        'disk_name': disk_name,
+                        'created_by_operation': True,
+                        'async_mode': True  # Mark as async for reference
+                    }
+                )
+
+            # Wait for snapshot to complete (sync mode)
             self._log_debug("Waiting for snapshot creation...")
             start_time = time.time()
 

@@ -35,6 +35,7 @@ class RescueConfig:
     # Snapshot settings (safety feature)
     create_snapshot: bool = True  # DEFAULT: Create snapshot for safety
     require_snapshot: bool = False  # Abort if snapshot creation fails
+    async_snapshot: bool = False  # Don't wait for snapshot completion (FASTER!)
     snapshot_name_prefix: str = 'pre-rescue'
     snapshot_timeout: int = 600  # 10 minutes for snapshot creation
 
