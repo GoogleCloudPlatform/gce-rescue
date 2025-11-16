@@ -299,7 +299,25 @@ class RestoreOrchestrator:
         """Rollback to rescue mode."""
         self._log_error("")
         self._log_error("Operation failed, rolling back to rescue mode...")
-        self.rollback_handler.rollback(self.state_tracker, self.operations_map)
+        rollback_success = self.rollback_handler.rollback(self.state_tracker, self.operations_map)
+
+        if not rollback_success:
+            self._log_error("")
+            self._log_error("=" * 60)
+            self._log_error("CRITICAL: ROLLBACK FAILED!")
+            self._log_error("=" * 60)
+            self._log_error("The system may be in an inconsistent state.")
+            self._log_error("Manual intervention is required!")
+            self._log_error("")
+            self._log_error("Check the following:")
+            self._log_error(f"  1. VM state: gcloud compute instances describe {self.vm_name} --zone={self.zone}")
+            self._log_error(f"  2. Attached disks: gcloud compute disks list --filter='users:{self.vm_name}'")
+            self._log_error("")
+            self._log_error("You may need to manually:")
+            self._log_error("  - Reattach disks in correct order")
+            self._log_error("  - Set correct boot disk")
+            self._log_error("  - Start VM")
+            self._log_error("=" * 60)
 
     def rollback(self) -> bool:
         """Public rollback method."""

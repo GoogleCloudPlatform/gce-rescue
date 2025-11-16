@@ -209,6 +209,7 @@ class CreateSnapshotOperation(BaseOperation):
         except Exception as e:
             self._log_error(f"Failed to delete snapshot: {str(e)}")
             self._log_error(f"You can delete it manually: gcloud compute snapshots delete {snapshot_name}")
-            # Don't fail rollback if snapshot delete fails
-            # User can delete manually later
-            return True
+            # Report failure properly - don't mask errors!
+            # The RollbackHandler will continue with other operations
+            # but will report that rollback had errors
+            return False
