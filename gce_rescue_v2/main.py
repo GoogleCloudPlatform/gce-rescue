@@ -108,7 +108,7 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
         logger.info("")
         logger.info("Your VM is now in rescue mode.")
         logger.info(f"Connect via SSH: gcloud compute ssh {vm_name} --zone={zone}")
-        logger.info(f"Original disk mounted at: /mnt/sysroot")
+        logger.info(f"Affected disk mounted at: /mnt/sysroot")
         logger.info("")
         logger.info("Check rescue logs inside VM:")
         logger.info(f"  cat /var/log/gce-rescue.log")

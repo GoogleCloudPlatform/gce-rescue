@@ -328,7 +328,7 @@ class RescueOrchestrator:
                     time.sleep(5)
 
             # Step 9: Re-attach original disk as secondary
-            self._log_info("  Attaching original disk as secondary...")
+            self._log_info("  Attaching affected disk as secondary...")
             time.sleep(5)  # Brief wait for VM stability
             result = attach_original.execute(vm_name=self.vm_name, disk_name=self.original_disk_name, boot=False)
             self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)

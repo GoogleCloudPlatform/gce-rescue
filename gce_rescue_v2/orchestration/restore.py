@@ -194,7 +194,7 @@ class RestoreOrchestrator:
             self._log_info(f"  [OK] {result.message}")
 
             # Step 3: Detach original disk
-            self._log_info("  Detaching original disk...")
+            self._log_info("  Detaching affected disk...")
             result = detach_original.execute(vm_name=self.vm_name, device_name=self.original_device_name)
             self.state_tracker.add_operation("Detach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:
@@ -203,7 +203,7 @@ class RestoreOrchestrator:
             self._log_info(f"  [OK] {result.message}")
 
             # Step 4: Re-attach original disk as boot
-            self._log_info("  Re-attaching original disk as boot...")
+            self._log_info("  Re-attaching affected disk as boot...")
             result = attach_original.execute(vm_name=self.vm_name, disk_name=self.original_disk_name, boot=True)
             self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:

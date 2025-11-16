@@ -23,9 +23,9 @@ sed -i "s/$(hostname)/$(hostname)-rescue/g" /etc/hosts
 hostname $(hostname)-rescue
 log "Hostname changed to: $(hostname)"
 
-# Wait for original disk and mount it
+# Wait for affected disk and mount it
 disk=DISK_NAME_PLACEHOLDER
-log "Looking for original disk: $disk"
+log "Looking for affected disk: $disk"
 
 mkdir -p /mnt/sysroot
 log "Created mount point: /mnt/sysroot"
