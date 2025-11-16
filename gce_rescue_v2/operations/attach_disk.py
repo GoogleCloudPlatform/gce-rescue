@@ -1,8 +1,8 @@
 """
-GCE Rescue - Attach Disk Operation
+Attach Disk operation.
 
-Attaches a disk to a VM.
-Rollback: Detaches the disk.
+Attaches a Compute Engine persistent disk to a VM instance. Rollback detaches
+the disk using the provided rollback metadata.
 """
 
 import time
@@ -10,31 +10,40 @@ from operations.base import BaseOperation, OperationResult
 
 
 class AttachDiskOperation(BaseOperation):
-    """
-    Attaches a disk to a VM.
+    """Operation that attaches a disk to a VM instance.
 
-    Rollback: Detaches the disk.
+    On success, returns rollback metadata sufficient to detach the disk during
+    rollback. Rollback only detaches the disk that was attached by this
+    operation (identified by device name).
     """
 
     @property
     def name(self) -> str:
-        """Display name for this operation."""
+        """Display name for this operation.
+
+        Returns:
+            str: Human-friendly operation name.
+        """
         return "Attach Disk"
 
     def execute(self, vm_name: str, disk_name: str, boot: bool = False,
                 auto_delete: bool = False, read_only: bool = False) -> OperationResult:
         """
-        Attach a disk to VM.
+        Attach a persistent disk to a VM instance.
 
         Args:
-            vm_name: Name of the VM
-            disk_name: Name of the disk to attach
-            boot: Whether this is the boot disk
-            auto_delete: Whether to auto-delete disk when VM deleted
-            read_only: Whether to attach as read-only
+            vm_name (str): Target VM instance name.
+            disk_name (str): Name of the disk to attach.
+            boot (bool): Whether to mark the disk as a boot device.
+            auto_delete (bool): Whether to auto-delete the disk with the VM.
+            read_only (bool): Attach in read-only mode when True; read-write otherwise.
 
         Returns:
-            OperationResult with success status and rollback data
+            OperationResult: Result containing success status, message, and
+            `rollback_data` with `vm_name` and `device_name` for detaching.
+
+        Raises:
+            None
         """
 
         self._log_debug(f"Executing {self.name}: {disk_name} to {vm_name}")
@@ -86,13 +95,17 @@ class AttachDiskOperation(BaseOperation):
 
     def rollback(self, rollback_data: dict) -> bool:
         """
-        Rollback: Detach the disk.
+        Detach the disk that was attached by this operation.
 
         Args:
-            rollback_data: Data from execute()
+            rollback_data (dict): Data from `execute()` including `vm_name` and
+                `device_name` to identify the attached disk.
 
         Returns:
-            True if rollback successful
+            bool: True if rollback succeeded; False if detachment failed.
+
+        Raises:
+            None
         """
 
         try:

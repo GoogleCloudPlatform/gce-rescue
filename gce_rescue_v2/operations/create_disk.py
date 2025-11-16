@@ -1,8 +1,8 @@
 """
-GCE Rescue - Create Disk Operation
+Create Disk operation.
 
-Creates a new disk from an image.
-Rollback: Deletes the disk.
+Creates a new Compute Engine persistent disk from an image. Rollback deletes
+the disk that was created by this operation.
 """
 
 import time
@@ -10,15 +10,20 @@ from operations.base import BaseOperation, OperationResult
 
 
 class CreateDiskOperation(BaseOperation):
-    """
-    Creates a new disk from an image.
+    """Operation that creates a new disk from an image.
 
-    Rollback: Deletes the created disk.
+    The operation provisions a disk with the provided size, type, and source
+    image. On success, rollback metadata is returned to allow deletion of the
+    created disk during rollback.
     """
 
     @property
     def name(self) -> str:
-        """Display name for this operation."""
+        """Display name for this operation.
+
+        Returns:
+            str: Human-friendly operation name.
+        """
         return "Create Disk"
 
     def execute(self, disk_name: str, size_gb: int = 10,
@@ -26,17 +31,24 @@ class CreateDiskOperation(BaseOperation):
                 source_image: str = 'projects/debian-cloud/global/images/family/debian-11',
                 timeout: int = 300) -> OperationResult:
         """
-        Create a new disk.
+        Create a new persistent disk from the specified image.
 
         Args:
-            disk_name: Name for the new disk
-            size_gb: Size in GB
-            disk_type: Type of disk (pd-standard, pd-ssd, pd-balanced)
-            source_image: Source image to use
-            timeout: Maximum seconds to wait
+            disk_name (str): Name for the new disk.
+            size_gb (int): Disk size in GiB.
+            disk_type (str): Disk type resource name (e.g., `pd-standard`,
+                `pd-ssd`, `pd-balanced`).
+            source_image (str): Full image or image family resource to clone
+                (e.g., `projects/debian-cloud/global/images/family/debian-11`).
+            timeout (int): Maximum seconds to wait for the disk to reach
+                status READY.
 
         Returns:
-            OperationResult with success status and rollback data
+            OperationResult: Result containing success flag, message, and
+            `rollback_data` with `disk_name` for deletion.
+
+        Raises:
+            None
         """
 
         self._log_debug(f"Executing {self.name}: {disk_name}")
@@ -106,13 +118,16 @@ class CreateDiskOperation(BaseOperation):
 
     def rollback(self, rollback_data: dict) -> bool:
         """
-        Rollback: Delete the created disk.
+        Delete the disk created by this operation.
 
         Args:
-            rollback_data: Data from execute()
+            rollback_data (dict): Data from `execute()` containing `disk_name`.
 
         Returns:
-            True if rollback successful
+            bool: True if rollback succeeded; False if delete failed.
+
+        Raises:
+            None
         """
 
         try:
