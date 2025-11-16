@@ -1,8 +1,8 @@
 """
-GCE Rescue - Create Snapshot Operation
+Create Snapshot operation.
 
-Creates a snapshot of a disk for safety.
-Rollback: Delete the snapshot (if created during this operation).
+Creates a safety snapshot of a Compute Engine disk prior to rescue
+operations. Rollback removes only snapshots created by this operation.
 """
 
 import time
@@ -10,35 +10,49 @@ from operations.base import BaseOperation, OperationResult
 
 
 class CreateSnapshotOperation(BaseOperation):
-    """
-    Creates a snapshot of a disk.
+    """Operation that creates a safety snapshot for a disk.
 
-    This is the ultimate safety net - if rollback fails, you can restore
-    from this snapshot.
-
-    Rollback: Delete the snapshot we created (only if created by this operation)
+    The snapshot acts as a restore point before entering rescue mode. The
+    rollback phase deletes the snapshot only when it was created by this
+    operation (pre-existing snapshots are preserved).
     """
 
     @property
     def name(self) -> str:
-        """Display name for this operation."""
+        """Display name for this operation.
+
+        Returns:
+            str: Human-friendly operation name.
+        """
         return "Create Snapshot"
 
     def execute(self, disk_name: str, snapshot_name: str = None,
                 description: str = None, timeout: int = 600, wait: bool = True) -> OperationResult:
         """
-        Create a snapshot of a disk.
+        Create a snapshot of the specified disk.
+
+        In synchronous mode (`wait=True`), polls until the snapshot reaches
+        status READY or a timeout occurs. In asynchronous mode (`wait=False`),
+        starts the snapshot and returns immediately.
 
         Args:
-            disk_name: Name of disk to snapshot
-            snapshot_name: Custom name (auto-generated if None)
-            description: Snapshot description
-            timeout: Timeout in seconds (default: 600)
-            wait: Wait for snapshot completion (default: True)
-                  If False, returns immediately (async mode - FASTER!)
+            disk_name (str): Name of the source disk to snapshot.
+            snapshot_name (str, optional): Custom snapshot name. If omitted,
+                an auto-generated name is used.
+            description (str, optional): Snapshot description text. Defaults
+                to a safety message when not provided.
+            timeout (int): Maximum seconds to wait in synchronous mode.
+                Default is 600.
+            wait (bool): Whether to wait for completion (synchronous). If
+                False, runs in async mode and returns immediately. Default True.
 
         Returns:
-            OperationResult with snapshot name in rollback_data
+            OperationResult: Result object containing success flag, message,
+            and `rollback_data` with `snapshot_name`, `disk_name`, and
+            creation metadata.
+
+        Raises:
+            None
         """
 
         # Auto-generate name if not provided
@@ -151,16 +165,20 @@ class CreateSnapshotOperation(BaseOperation):
 
     def rollback(self, rollback_data: dict) -> bool:
         """
-        Rollback: Delete the snapshot we created.
+        Delete the snapshot created by this operation.
 
-        Note: Only delete if we created it during this operation.
-        User-created snapshots are preserved.
+        Only snapshots marked as created by this operation are deleted.
+        Pre-existing snapshots (not created here) are preserved.
 
         Args:
-            rollback_data: Data from execute (contains snapshot_name)
+            rollback_data (dict): Data from `execute`, including
+                `snapshot_name` and `created_by_operation`.
 
         Returns:
-            True if rollback succeeded (or not needed)
+            bool: True if rollback succeeded or was not required.
+
+        Raises:
+            None
         """
 
         if not rollback_data.get('created_by_operation'):

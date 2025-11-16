@@ -194,22 +194,7 @@ class RescueOrchestrator:
                 return False
             self._log_info(f"  [OK] {result.message}")
 
-            # Step 2: Create rescue disk
-            self._log_info("  Creating rescue disk...")
-            result = create_disk.execute(
-                disk_name=rescue_disk_name,
-                size_gb=self.config.rescue_disk_size_gb,
-                disk_type=self.config.rescue_disk_type,
-                source_image=f'projects/{self.config.rescue_image_project}/global/images/family/{self.config.rescue_image_family}',
-                timeout=self.config.disk_create_timeout
-            )
-            self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._rollback()
-                return False
-            self._log_info(f"  [OK] {result.message}")
-
-            # Step 3: Detach boot disk
+            # Step 2: Detach boot disk (EARLY - enables snapshot immediately)
             self._log_info("  Detaching boot disk...")
             result = detach_boot.execute(vm_name=self.vm_name, device_name=self.original_device_name)
             self.state_tracker.add_operation("Detach Boot Disk", result.success, result.message, result.rollback_data)
@@ -218,11 +203,12 @@ class RescueOrchestrator:
                 return False
             self._log_info(f"  [OK] {result.message}")
 
-            # Step 3.5: Create safety snapshot (AFTER detaching to avoid instance lock)
+            # Step 3: Create safety snapshot (immediately after detach)
+            # Track snapshot name for later wait
+            pending_snapshot_name = None
             if self.config.create_snapshot:
                 if self.config.async_snapshot:
-                    self._log_info("  Creating safety snapshot (async mode - not waiting)...")
-                    self._log_info("    [!] Snapshot will complete in background (~2-5 min)")
+                    self._log_info("  Creating safety snapshot (async - will wait before attaching disk)...")
                 else:
                     self._log_info("  Creating safety snapshot...")
                     self._log_info("    (This takes 2-5 minutes but ensures data safety)")
@@ -245,12 +231,27 @@ class RescueOrchestrator:
                     else:
                         self._log_error("  Continuing without snapshot (risky!)")
                 else:
-                    snapshot_name = result.rollback_data.get('snapshot_name')
+                    pending_snapshot_name = result.rollback_data.get('snapshot_name')
                     self._log_info(f"  [OK] {result.message}")
                     if not self.config.async_snapshot:
-                        self._log_info(f"    Snapshot: {snapshot_name}")
+                        self._log_info(f"    Snapshot: {pending_snapshot_name}")
 
-            # Step 4: Attach rescue disk as boot
+            # Step 4: Create rescue disk (runs while snapshot progresses in background)
+            self._log_info("  Creating rescue disk...")
+            result = create_disk.execute(
+                disk_name=rescue_disk_name,
+                size_gb=self.config.rescue_disk_size_gb,
+                disk_type=self.config.rescue_disk_type,
+                source_image=f'projects/{self.config.rescue_image_project}/global/images/family/{self.config.rescue_image_family}',
+                timeout=self.config.disk_create_timeout
+            )
+            self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data)
+            if not result.success:
+                self._rollback()
+                return False
+            self._log_info(f"  [OK] {result.message}")
+
+            # Step 5: Attach rescue disk as boot
             self._log_info("  Attaching rescue disk as boot...")
             result = attach_rescue.execute(vm_name=self.vm_name, disk_name=rescue_disk_name, boot=True)
             self.state_tracker.add_operation("Attach Rescue Disk", result.success, result.message, result.rollback_data)
@@ -259,7 +260,7 @@ class RescueOrchestrator:
                 return False
             self._log_info(f"  [OK] {result.message}")
 
-            # Step 5: Set rescue metadata
+            # Step 6: Set rescue metadata
             self._log_info("  Setting rescue metadata...")
             startup_script = self._generate_startup_script()
             metadata_items = [
@@ -274,7 +275,7 @@ class RescueOrchestrator:
                 return False
             self._log_info(f"  [OK] {result.message}")
 
-            # Step 6: Start VM in rescue mode
+            # Step 7: Start VM in rescue mode
             self._log_info("  Starting VM in rescue mode...")
             result = start_vm.execute(vm_name=self.vm_name, timeout=self.config.vm_start_timeout)
             self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data)
@@ -283,9 +284,52 @@ class RescueOrchestrator:
                 return False
             self._log_info(f"  [OK] {result.message}")
 
-            # Step 7: Re-attach original disk as secondary
-            self._log_info("  Re-attaching original disk...")
-            time.sleep(10)  # Wait for VM to fully boot
+            # Step 8: Wait for snapshot completion (if async mode)
+            if pending_snapshot_name and self.config.async_snapshot:
+                self._log_info("  Waiting for snapshot to complete...")
+                snapshot_start_time = time.time()
+                snapshot_timeout = self.config.snapshot_timeout
+
+                while True:
+                    elapsed = time.time() - snapshot_start_time
+                    if elapsed > snapshot_timeout:
+                        self._log_error(f"  Snapshot timeout after {snapshot_timeout}s")
+                        if self.config.require_snapshot:
+                            self._log_error("  Snapshot required but timed out. Aborting.")
+                            self._rollback()
+                            return False
+                        else:
+                            self._log_error("  Continuing without verified snapshot (risky!)")
+                            break
+
+                    try:
+                        snapshot = self.compute.snapshots().get(
+                            project=self.project,
+                            snapshot=pending_snapshot_name
+                        ).execute()
+
+                        status = snapshot.get('status', 'UNKNOWN')
+
+                        if status == 'READY':
+                            self._log_info(f"  [OK] Snapshot ready: {pending_snapshot_name}")
+                            break
+                        elif status == 'FAILED':
+                            self._log_error(f"  Snapshot failed: {pending_snapshot_name}")
+                            if self.config.require_snapshot:
+                                self._rollback()
+                                return False
+                            break
+                        else:
+                            # Still creating, show progress
+                            self._log_debug(f"    Snapshot status: {status} ({elapsed:.0f}s)")
+                    except Exception as e:
+                        self._log_debug(f"    Checking snapshot... ({elapsed:.0f}s)")
+
+                    time.sleep(5)
+
+            # Step 9: Re-attach original disk as secondary
+            self._log_info("  Attaching original disk as secondary...")
+            time.sleep(5)  # Brief wait for VM stability
             result = attach_original.execute(vm_name=self.vm_name, disk_name=self.original_disk_name, boot=False)
             self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:
