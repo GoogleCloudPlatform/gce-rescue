@@ -1,0 +1,3 @@
+# Gemini CLI ignore patterns
+# Empty file = allow access to everything not in .gitignore
+# If this doesn't work, Gemini may be using global config

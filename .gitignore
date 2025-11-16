@@ -30,3 +30,10 @@ vir-env/
 .private-docs/
 
 .claude/
+
+# AI context files (local session management - don't commit)
+# NOTE: Allowing .ai-context/*.md so Gemini/Codex can update their context files
+# These files exist locally but won't be committed (not staged)
+ai-context/
+# !.ai-context/README.md 
+
