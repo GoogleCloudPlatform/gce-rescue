@@ -58,13 +58,31 @@ if [ -n "$disk_p" ]; then
 
     # Mount main filesystem
     log "Mounting /dev/${disk_p%% *} to /mnt/sysroot..."
-    if mount /dev/${disk_p%% *} /mnt/sysroot; then
+
+    # For XFS, use nouuid option to handle duplicate UUIDs
+    # (common when mounting a boot disk as secondary)
+    if [ "$fs_type" = "xfs" ]; then
+        log "Using nouuid option for XFS filesystem"
+        mount_cmd="mount -o nouuid /dev/${disk_p%% *} /mnt/sysroot"
+    else
+        mount_cmd="mount /dev/${disk_p%% *} /mnt/sysroot"
+    fi
+
+    if $mount_cmd; then
         log "SUCCESS: Main filesystem mounted"
         log "Mount info: $(df -h /mnt/sysroot | tail -1)"
     else
         log "ERROR: Failed to mount main filesystem"
-        echo "FAILED: Mount error" > "$STATUS_FILE"
-        exit 1
+        log "Trying alternative mount options..."
+        # Fallback: try with nouuid anyway (covers edge cases)
+        if mount -o nouuid /dev/${disk_p%% *} /mnt/sysroot 2>/dev/null; then
+            log "SUCCESS: Mounted with nouuid option"
+            log "Mount info: $(df -h /mnt/sysroot | tail -1)"
+        else
+            log "ERROR: All mount attempts failed"
+            echo "FAILED: Mount error" > "$STATUS_FILE"
+            exit 1
+        fi
     fi
 
     # Mount proc, sys, dev for chroot
