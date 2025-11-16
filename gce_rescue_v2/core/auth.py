@@ -16,6 +16,9 @@ import httplib2
 from core.exceptions import AuthenticationError
 from core.config import VERSION
 
+# OAuth scopes required for Google Compute Engine API
+SCOPES = ['https://www.googleapis.com/auth/compute']
+
 
 class AuthManager:
     """
@@ -56,25 +59,17 @@ class AuthManager:
         """
 
         try:
-            # Get default credentials
-            credentials, project = google.auth.default()
+            # Get default credentials with required scopes
+            credentials, project = google.auth.default(scopes=SCOPES)
 
-            # Validate credentials
+            # Validate credentials - service account creds need refresh to get token
             if not credentials.valid:
-                # Try to refresh if possible
-                if credentials.expired and credentials.refresh_token:
-                    try:
-                        print("  Refreshing expired credentials...")
-                        credentials.refresh(Request())
-                    except Exception as e:
-                        raise AuthenticationError(
-                            "Credentials expired and refresh failed",
-                            fix="gcloud auth application-default login"
-                        )
-                else:
+                try:
+                    credentials.refresh(Request())
+                except Exception as e:
                     raise AuthenticationError(
-                        "Credentials are invalid",
-                        fix="gcloud auth application-default login"
+                        f"Credentials refresh failed: {str(e)}",
+                        fix="Check GOOGLE_APPLICATION_CREDENTIALS or run: gcloud auth application-default login"
                     )
 
             return credentials, project
