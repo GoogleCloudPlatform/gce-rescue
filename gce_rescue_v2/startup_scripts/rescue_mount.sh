@@ -57,29 +57,63 @@ if [ -n "$disk_p" ]; then
     log "Detected filesystem: $fs_type on /dev/$dev_name"
 
     # Mount main filesystem
-    log "Mounting /dev/${disk_p%% *} to /mnt/sysroot..."
+    dev_path="/dev/${disk_p%% *}"
+    log "Mounting $dev_path to /mnt/sysroot..."
+
+    mount_success=false
 
     # For XFS, use nouuid option to handle duplicate UUIDs
     # (common when mounting a boot disk as secondary)
     if [ "$fs_type" = "xfs" ]; then
         log "Using nouuid option for XFS filesystem"
-        mount_cmd="mount -o nouuid /dev/${disk_p%% *} /mnt/sysroot"
+        if mount -o nouuid "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"; then
+            mount_success=true
+        fi
     else
-        mount_cmd="mount /dev/${disk_p%% *} /mnt/sysroot"
+        if mount "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"; then
+            mount_success=true
+        fi
     fi
 
-    if $mount_cmd; then
+    # Check if mount actually succeeded (check mount point)
+    if mountpoint -q /mnt/sysroot; then
+        mount_success=true
         log "SUCCESS: Main filesystem mounted"
         log "Mount info: $(df -h /mnt/sysroot | tail -1)"
     else
-        log "ERROR: Failed to mount main filesystem"
-        log "Trying alternative mount options..."
-        # Fallback: try with nouuid anyway (covers edge cases)
-        if mount -o nouuid /dev/${disk_p%% *} /mnt/sysroot 2>/dev/null; then
-            log "SUCCESS: Mounted with nouuid option"
-            log "Mount info: $(df -h /mnt/sysroot | tail -1)"
-        else
+        log "First mount attempt did not succeed, trying alternatives..."
+
+        # Try with nouuid and norecovery (for XFS with dirty journal)
+        if [ "$fs_type" = "xfs" ]; then
+            log "Trying XFS with nouuid,norecovery options..."
+            if mount -o nouuid,norecovery "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"; then
+                if mountpoint -q /mnt/sysroot; then
+                    mount_success=true
+                    log "SUCCESS: Mounted XFS with norecovery option"
+                    log "WARNING: Mounted read-only due to dirty journal"
+                    log "Mount info: $(df -h /mnt/sysroot | tail -1)"
+                fi
+            fi
+        fi
+
+        # Final fallback: try read-only
+        if [ "$mount_success" = "false" ]; then
+            log "Trying read-only mount..."
+            if mount -o ro,nouuid "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"; then
+                if mountpoint -q /mnt/sysroot; then
+                    mount_success=true
+                    log "SUCCESS: Mounted read-only"
+                    log "WARNING: Filesystem mounted as READ-ONLY"
+                    log "Mount info: $(df -h /mnt/sysroot | tail -1)"
+                fi
+            fi
+        fi
+
+        if [ "$mount_success" = "false" ]; then
             log "ERROR: All mount attempts failed"
+            log "Manual intervention required. Try:"
+            log "  mount -o nouuid $dev_path /mnt/sysroot"
+            log "  or check dmesg for mount errors"
             echo "FAILED: Mount error" > "$STATUS_FILE"
             exit 1
         fi
