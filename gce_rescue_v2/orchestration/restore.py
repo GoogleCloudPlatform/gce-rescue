@@ -155,6 +155,9 @@ class RestoreOrchestrator:
             # Get disk info
             self._get_disk_info()
 
+            # Check snapshot status (warn if failed or missing)
+            self._check_snapshot_status()
+
             # Create operations
             stop_vm = StopVMOperation(self.compute, self.project, self.zone, self.logger)
             detach_rescue = DetachDiskOperation(self.compute, self.project, self.zone, self.logger)
@@ -294,6 +297,66 @@ class RestoreOrchestrator:
         ]
 
         return clean_items
+
+    def _check_snapshot_status(self):
+        """Check if safety snapshot was created successfully during rescue."""
+        try:
+            # List snapshots with rescue prefix for this VM
+            snapshots = self.compute.snapshots().list(
+                project=self.project,
+                filter=f'name:pre-rescue-{self.vm_name}-*'
+            ).execute()
+
+            if not snapshots.get('items'):
+                self._log_info("")
+                self._log_info("  " + "=" * 56)
+                self._log_info("  WARNING: No safety snapshot found!")
+                self._log_info("  " + "=" * 56)
+                self._log_info("  No backup was created during rescue.")
+                self._log_info("  Proceed with caution - there is no recovery point.")
+                self._log_info("  " + "=" * 56)
+                self._log_info("")
+                return
+
+            # Get the most recent snapshot (sorted by creation time)
+            snapshot_items = snapshots.get('items', [])
+            most_recent = sorted(
+                snapshot_items,
+                key=lambda x: x.get('creationTimestamp', ''),
+                reverse=True
+            )[0]
+
+            snapshot_name = most_recent.get('name')
+            status = most_recent.get('status', 'UNKNOWN')
+
+            if status == 'READY':
+                self._log_info(f"  Safety snapshot verified: {snapshot_name}")
+            elif status == 'CREATING':
+                self._log_info("")
+                self._log_info("  " + "=" * 56)
+                self._log_info("  WARNING: Safety snapshot still creating!")
+                self._log_info("  " + "=" * 56)
+                self._log_info(f"  Snapshot: {snapshot_name}")
+                self._log_info("  Status: CREATING (not yet complete)")
+                self._log_info("  The snapshot may still complete successfully.")
+                self._log_info("  " + "=" * 56)
+                self._log_info("")
+            elif status == 'FAILED':
+                self._log_info("")
+                self._log_info("  " + "=" * 56)
+                self._log_info("  WARNING: Safety snapshot FAILED!")
+                self._log_info("  " + "=" * 56)
+                self._log_info(f"  Snapshot: {snapshot_name}")
+                self._log_info("  Your VM will be restored, but NO BACKUP exists!")
+                self._log_info("  Consider creating a manual snapshot before proceeding.")
+                self._log_info("  " + "=" * 56)
+                self._log_info("")
+            else:
+                self._log_info(f"  Safety snapshot status: {status}")
+
+        except Exception as e:
+            self._log_debug(f"Could not check snapshot status: {str(e)}")
+            # Don't fail restore if we can't check snapshot status
 
     def _rollback(self):
         """Rollback to rescue mode."""

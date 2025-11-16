@@ -562,6 +562,19 @@ def handle_rescue(args: argparse.Namespace) -> int:
     # Get project from args or gcloud config
     project = args.project or get_gcloud_config('core/project')
 
+    # Interactive confirmation (unless --quiet)
+    if not args.quiet:
+        print(f"\nYou are about to rescue VM '{args.instance_name}' in zone '{args.zone}'.")
+        print("This will:")
+        print("  - Stop the VM")
+        print("  - Create a rescue disk and boot from it")
+        print("  - Attach the affected disk as secondary")
+        print("")
+        response = input("Do you want to continue? [y/N]: ").strip().lower()
+        if response not in ('y', 'yes'):
+            print("\nOperation cancelled.")
+            return 0
+
     # Convert to config
     config = args_to_rescue_config(args)
 
@@ -596,6 +609,20 @@ def handle_restore(args: argparse.Namespace) -> int:
 
     # Get project from args or gcloud config
     project = args.project or get_gcloud_config('core/project')
+
+    # Interactive confirmation (unless --quiet)
+    if not args.quiet:
+        print(f"\nYou are about to restore VM '{args.instance_name}' in zone '{args.zone}'.")
+        print("This will:")
+        print("  - Stop the VM")
+        print("  - Remove the rescue disk")
+        print("  - Re-attach the affected disk as boot")
+        print("  - Start the VM normally")
+        print("")
+        response = input("Do you want to continue? [y/N]: ").strip().lower()
+        if response not in ('y', 'yes'):
+            print("\nOperation cancelled.")
+            return 0
 
     # Convert to config
     config = args_to_restore_config(args)
