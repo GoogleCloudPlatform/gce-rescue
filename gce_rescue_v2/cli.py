@@ -166,7 +166,7 @@ NOTES
     After rescue completes, SSH into the VM:
         $ gcloud compute ssh my-vm --zone=us-central1-a
 
-    Original disk is mounted at /mnt/sysroot
+    Affected disk is mounted at /mnt/sysroot
 
     To exit rescue mode:
         $ gce-rescue restore my-vm --zone=us-central1-a
@@ -356,7 +356,7 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
     script_group.add_argument(
         '--mount-point',
         metavar='PATH',
-        help='Mount point for original disk. Default: /mnt/sysroot'
+        help='Mount point for affected disk. Default: /mnt/sysroot'
     )
 
     # Timeout flags
