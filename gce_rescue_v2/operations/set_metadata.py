@@ -1,8 +1,8 @@
 """
-GCE Rescue - Set Metadata Operation
+Set Metadata operation.
 
-Sets metadata on a VM.
-Rollback: Restores original metadata.
+Replaces instance metadata with the provided items, preserving the original
+metadata for rollback. Rollback restores the prior metadata set.
 """
 
 import time
@@ -10,27 +10,36 @@ from operations.base import BaseOperation, OperationResult
 
 
 class SetMetadataOperation(BaseOperation):
-    """
-    Sets metadata on a VM.
+    """Operation that sets instance metadata.
 
-    Rollback: Restores original metadata.
+    Uses the current metadata fingerprint to update the VM's metadata. On
+    success, stores the previous metadata to enable rollback.
     """
 
     @property
     def name(self) -> str:
-        """Display name for this operation."""
+        """Display name for this operation.
+
+        Returns:
+            str: Human-friendly operation name.
+        """
         return "Set Metadata"
 
     def execute(self, vm_name: str, metadata_items: list) -> OperationResult:
         """
-        Set metadata on VM.
+        Replace the metadata of the specified VM instance.
 
         Args:
-            vm_name: Name of the VM
-            metadata_items: List of metadata items [{'key': 'k', 'value': 'v'}, ...]
+            vm_name (str): Name of the VM instance.
+            metadata_items (list): List of metadata items as dictionaries of
+                form {'key': str, 'value': str}.
 
         Returns:
-            OperationResult with success status and rollback data
+            OperationResult: Result including `rollback_data` with `vm_name`
+            and `original_metadata` for restoration.
+
+        Raises:
+            None
         """
 
         self._log_debug(f"Executing {self.name} for {vm_name}")
@@ -87,13 +96,17 @@ class SetMetadataOperation(BaseOperation):
 
     def rollback(self, rollback_data: dict) -> bool:
         """
-        Rollback: Restore original metadata.
+        Restore the original metadata captured during execution.
 
         Args:
-            rollback_data: Data from execute()
+            rollback_data (dict): Data from `execute()` including `vm_name`
+                and `original_metadata`.
 
         Returns:
-            True if rollback successful
+            bool: True if rollback succeeded; False otherwise.
+
+        Raises:
+            None
         """
 
         try:
