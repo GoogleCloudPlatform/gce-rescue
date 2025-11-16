@@ -28,7 +28,7 @@ class CreateDiskOperation(BaseOperation):
 
     def execute(self, disk_name: str, size_gb: int = 10,
                 disk_type: str = 'pd-standard',
-                source_image: str = 'projects/debian-cloud/global/images/family/debian-11',
+                source_image: str = 'projects/debian-cloud/global/images/family/debian-12',
                 timeout: int = 300) -> OperationResult:
         """
         Create a new persistent disk from the specified image.
@@ -39,7 +39,7 @@ class CreateDiskOperation(BaseOperation):
             disk_type (str): Disk type resource name (e.g., `pd-standard`,
                 `pd-ssd`, `pd-balanced`).
             source_image (str): Full image or image family resource to clone
-                (e.g., `projects/debian-cloud/global/images/family/debian-11`).
+                (e.g., `projects/debian-cloud/global/images/family/debian-12`).
             timeout (int): Maximum seconds to wait for the disk to reach
                 status READY.
 

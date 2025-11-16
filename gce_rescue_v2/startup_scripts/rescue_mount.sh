@@ -66,16 +66,12 @@ if [ -n "$disk_p" ]; then
     # (common when mounting a boot disk as secondary)
     if [ "$fs_type" = "xfs" ]; then
         log "Using nouuid option for XFS filesystem"
-        if mount -o nouuid "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"; then
-            mount_success=true
-        fi
+        mount -o nouuid "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"
     else
-        if mount "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"; then
-            mount_success=true
-        fi
+        mount "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"
     fi
 
-    # Check if mount actually succeeded (check mount point)
+    # Check if mount actually succeeded (check mount point, not exit code)
     if mountpoint -q /mnt/sysroot; then
         mount_success=true
         log "SUCCESS: Main filesystem mounted"
@@ -86,26 +82,24 @@ if [ -n "$disk_p" ]; then
         # Try with nouuid and norecovery (for XFS with dirty journal)
         if [ "$fs_type" = "xfs" ]; then
             log "Trying XFS with nouuid,norecovery options..."
-            if mount -o nouuid,norecovery "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"; then
-                if mountpoint -q /mnt/sysroot; then
-                    mount_success=true
-                    log "SUCCESS: Mounted XFS with norecovery option"
-                    log "WARNING: Mounted read-only due to dirty journal"
-                    log "Mount info: $(df -h /mnt/sysroot | tail -1)"
-                fi
+            mount -o nouuid,norecovery "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"
+            if mountpoint -q /mnt/sysroot; then
+                mount_success=true
+                log "SUCCESS: Mounted XFS with norecovery option"
+                log "WARNING: Mounted read-only due to dirty journal"
+                log "Mount info: $(df -h /mnt/sysroot | tail -1)"
             fi
         fi
 
         # Final fallback: try read-only
         if [ "$mount_success" = "false" ]; then
             log "Trying read-only mount..."
-            if mount -o ro,nouuid "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"; then
-                if mountpoint -q /mnt/sysroot; then
-                    mount_success=true
-                    log "SUCCESS: Mounted read-only"
-                    log "WARNING: Filesystem mounted as READ-ONLY"
-                    log "Mount info: $(df -h /mnt/sysroot | tail -1)"
-                fi
+            mount -o ro,nouuid "$dev_path" /mnt/sysroot 2>&1 | tee -a "$LOGFILE"
+            if mountpoint -q /mnt/sysroot; then
+                mount_success=true
+                log "SUCCESS: Mounted read-only"
+                log "WARNING: Filesystem mounted as READ-ONLY"
+                log "Mount info: $(df -h /mnt/sysroot | tail -1)"
             fi
         fi
 
