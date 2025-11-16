@@ -1,8 +1,8 @@
 """
-GCE Rescue - Stop VM Operation
+Stop VM operation.
 
-Stops a VM instance.
-Rollback: Restarts the VM if it was running before.
+Stops a Compute Engine VM instance, waiting until it reaches TERMINATED.
+Rollback restarts the VM only if it was originally running prior to execution.
 """
 
 import time
@@ -10,36 +10,36 @@ from operations.base import BaseOperation, OperationResult
 
 
 class StopVMOperation(BaseOperation):
-    """
-    Stops a VM instance.
+    """Operation that stops a VM instance.
 
-    Rollback: Restarts the VM if it was running before.
-
-    Example:
-        operation = StopVMOperation(compute, project, zone, logger)
-        result = operation.execute(vm_name='my-instance')
-
-        if result.success:
-            print("VM stopped!")
-            # Later, if we need to rollback:
-            operation.rollback(result.rollback_data)
+    Captures the original VM status so rollback can restart the VM only when it
+    was RUNNING before stopping.
     """
 
     @property
     def name(self) -> str:
-        """Display name for this operation."""
+        """Display name for this operation.
+
+        Returns:
+            str: Human-friendly operation name.
+        """
         return "Stop VM"
 
     def execute(self, vm_name: str, timeout: int = 300) -> OperationResult:
         """
-        Stop the VM instance.
+        Stop the specified VM and wait until it is TERMINATED.
 
         Args:
-            vm_name: Name of the VM to stop
-            timeout: Maximum seconds to wait for VM to stop (default: 5 minutes)
+            vm_name (str): Name of the VM to stop.
+            timeout (int): Maximum seconds to wait for the VM to reach
+                TERMINATED. Default is 300.
 
         Returns:
-            OperationResult with success status and rollback data
+            OperationResult: Result including `rollback_data` with `vm_name`
+            and `original_status`.
+
+        Raises:
+            None
         """
 
         self._log_debug(f"Executing {self.name} for {vm_name}")
@@ -131,13 +131,17 @@ class StopVMOperation(BaseOperation):
 
     def rollback(self, rollback_data: dict) -> bool:
         """
-        Rollback: Restart the VM if it was running before.
+        Restart the VM if it was RUNNING before execution.
 
         Args:
-            rollback_data: Data from execute() containing original VM state
+            rollback_data (dict): Data from `execute()` with `vm_name` and
+                `original_status`.
 
         Returns:
-            True if rollback successful, False otherwise
+            bool: True if rollback succeeded or not needed; False otherwise.
+
+        Raises:
+            None
         """
 
         try:

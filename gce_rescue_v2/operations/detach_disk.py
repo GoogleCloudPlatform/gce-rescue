@@ -1,8 +1,8 @@
 """
-GCE Rescue - Detach Disk Operation
+Detach Disk operation.
 
-Detaches a disk from a VM.
-Rollback: Re-attaches the disk.
+Detaches a Compute Engine persistent disk from a VM instance. Rollback re-
+attaches the disk using the captured original configuration.
 """
 
 import time
@@ -10,27 +10,36 @@ from operations.base import BaseOperation, OperationResult
 
 
 class DetachDiskOperation(BaseOperation):
-    """
-    Detaches a disk from a VM.
+    """Operation that detaches a disk from a VM.
 
-    Rollback: Re-attaches the disk with original settings.
+    The operation captures the current attachment configuration to enable
+    accurate re-attachment during rollback.
     """
 
     @property
     def name(self) -> str:
-        """Display name for this operation."""
+        """Display name for this operation.
+
+        Returns:
+            str: Human-friendly operation name.
+        """
         return "Detach Disk"
 
     def execute(self, vm_name: str, device_name: str) -> OperationResult:
         """
-        Detach a disk from VM.
+        Detach a disk from the specified VM instance.
 
         Args:
-            vm_name: Name of the VM
-            device_name: Device name of disk to detach
+            vm_name (str): Name of the target VM instance.
+            device_name (str): Device name of the disk to detach (e.g.,
+                the `deviceName` field from instance.disks[]).
 
         Returns:
-            OperationResult with success status and rollback data
+            OperationResult: Result including `rollback_data` with `vm_name`
+            and `disk_info` for re-attachment.
+
+        Raises:
+            None
         """
 
         self._log_debug(f"Executing {self.name}: {device_name} from {vm_name}")
@@ -99,13 +108,17 @@ class DetachDiskOperation(BaseOperation):
 
     def rollback(self, rollback_data: dict) -> bool:
         """
-        Rollback: Re-attach the disk.
+        Re-attach the disk that was detached by this operation.
 
         Args:
-            rollback_data: Data from execute()
+            rollback_data (dict): Data from `execute()` including `vm_name`
+                and `disk_info` (source, boot, autoDelete, deviceName, mode).
 
         Returns:
-            True if rollback successful
+            bool: True if rollback succeeded; False if re-attachment failed.
+
+        Raises:
+            None
         """
 
         try:

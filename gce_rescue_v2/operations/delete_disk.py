@@ -1,8 +1,8 @@
 """
-GCE Rescue - Delete Disk Operation
+Delete Disk operation.
 
-Deletes a disk.
-Rollback: Cannot undo deletion (disk is gone).
+Permanently deletes a Compute Engine persistent disk. This operation is
+irreversible and should only be used after completing the rescue workflow.
 """
 
 import time
@@ -10,29 +10,34 @@ from operations.base import BaseOperation, OperationResult
 
 
 class DeleteDiskOperation(BaseOperation):
-    """
-    Deletes a disk.
+    """Operation that permanently deletes a disk.
 
-    WARNING: Rollback is NOT possible - disk is permanently deleted!
-    Only use this operation at the very end, after confirming success.
+    This operation cannot be rolled back. Use only when it is safe to remove
+    the resource and there is no need to restore it.
     """
 
     @property
     def name(self) -> str:
-        """Display name for this operation."""
+        """Display name for this operation.
+
+        Returns:
+            str: Human-friendly operation name.
+        """
         return "Delete Disk"
 
     def execute(self, disk_name: str) -> OperationResult:
         """
-        Delete a disk.
-
-        WARNING: This operation cannot be rolled back!
+        Permanently delete a persistent disk.
 
         Args:
-            disk_name: Name of the disk to delete
+            disk_name (str): Name of the disk to delete.
 
         Returns:
-            OperationResult with success status (no rollback data - can't undo!)
+            OperationResult: Result with success status. `rollback_data` is
+            always None because deletion is irreversible.
+
+        Raises:
+            None
         """
 
         self._log_debug(f"Executing {self.name}: {disk_name}")
@@ -69,17 +74,16 @@ class DeleteDiskOperation(BaseOperation):
 
     def rollback(self, rollback_data: dict) -> bool:
         """
-        Rollback: NOT POSSIBLE - disk is already deleted.
-
-        This is a permanent operation. Do not use DeleteDiskOperation
-        in a sequence that might need rollback. Only use it after
-        confirming all operations succeeded.
+        Rollback is not possible for a deleted disk.
 
         Args:
-            rollback_data: Unused (None)
+            rollback_data (dict): Unused.
 
         Returns:
-            False (cannot rollback deletion)
+            bool: Always False to indicate deletion cannot be undone.
+
+        Raises:
+            None
         """
 
         self._log_error("Cannot rollback disk deletion - disk is gone!")

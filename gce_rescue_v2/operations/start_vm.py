@@ -1,8 +1,8 @@
 """
-GCE Rescue - Start VM Operation
+Start VM operation.
 
-Starts a VM instance.
-Rollback: Stops the VM if it was stopped before.
+Starts a Compute Engine VM instance, waiting until it reaches RUNNING. Rollback
+stops the VM only if it was previously stopped (TERMINATED) before execution.
 """
 
 import time
@@ -10,27 +10,36 @@ from operations.base import BaseOperation, OperationResult
 
 
 class StartVMOperation(BaseOperation):
-    """
-    Starts a VM instance.
+    """Operation that starts a VM instance.
 
-    Rollback: Stops the VM if it was stopped before.
+    Records the original VM status so rollback can stop the VM only when it
+    was originally in TERMINATED state prior to execution.
     """
 
     @property
     def name(self) -> str:
-        """Display name for this operation."""
+        """Display name for this operation.
+
+        Returns:
+            str: Human-friendly operation name.
+        """
         return "Start VM"
 
     def execute(self, vm_name: str, timeout: int = 300) -> OperationResult:
         """
-        Start the VM instance.
+        Start the specified VM and wait until it is RUNNING.
 
         Args:
-            vm_name: Name of the VM to start
-            timeout: Maximum seconds to wait for VM to start
+            vm_name (str): Name of the VM to start.
+            timeout (int): Maximum seconds to wait for the VM to reach
+                RUNNING. Default is 300.
 
         Returns:
-            OperationResult with success status and rollback data
+            OperationResult: Result including `rollback_data` with `vm_name`
+            and `original_status`.
+
+        Raises:
+            None
         """
 
         self._log_debug(f"Executing {self.name} for {vm_name}")
@@ -118,13 +127,18 @@ class StartVMOperation(BaseOperation):
 
     def rollback(self, rollback_data: dict) -> bool:
         """
-        Rollback: Stop the VM if it was stopped before.
+        Stop the VM if it was originally TERMINATED before execution.
 
         Args:
-            rollback_data: Data from execute()
+            rollback_data (dict): Data from `execute()` including `vm_name`
+                and `original_status`.
 
         Returns:
-            True if rollback successful
+            bool: True if rollback succeeded or was not needed; False on stop
+            timeout or error.
+
+        Raises:
+            None
         """
 
         try:
