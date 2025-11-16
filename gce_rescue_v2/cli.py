@@ -303,7 +303,7 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
     image_group.add_argument(
         '--rescue-image-family',
         metavar='FAMILY',
-        help='Image family for rescue disk. Default: debian-11'
+        help='Image family for rescue disk. Default: debian-12'
     )
     image_group.add_argument(
         '--rescue-image-project',
