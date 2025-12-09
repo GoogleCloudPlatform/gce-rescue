@@ -6,7 +6,7 @@ stops the VM only if it was previously stopped (TERMINATED) before execution.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult
+from operations.base import BaseOperation, OperationResult, extract_error_message
 
 
 class StartVMOperation(BaseOperation):
@@ -117,12 +117,13 @@ class StartVMOperation(BaseOperation):
                 )
 
         except Exception as e:
-            self._log_error(f"Failed to start VM: {str(e)}")
+            error_msg = extract_error_message(e)
+            self._log_error(f"Failed to start VM: {error_msg}")
             return OperationResult(
                 operation_name=self.name,
                 success=False,
-                message="Failed to start VM",
-                error=str(e)
+                message=f"Failed to start VM: {error_msg}",
+                error=error_msg
             )
 
     def rollback(self, rollback_data: dict) -> bool:

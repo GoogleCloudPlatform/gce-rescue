@@ -6,7 +6,7 @@ metadata for rollback. Rollback restores the prior metadata set.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult
+from operations.base import BaseOperation, OperationResult, extract_error_message
 
 
 class SetMetadataOperation(BaseOperation):
@@ -64,14 +64,20 @@ class SetMetadataOperation(BaseOperation):
                 'items': metadata_items
             }
 
-            self.compute.instances().setMetadata(
+            operation = self.compute.instances().setMetadata(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
                 body=new_metadata
             ).execute()
 
-            time.sleep(2)
+            # Wait for operation to complete
+            if not self._wait_for_operation(operation):
+                return OperationResult(
+                    operation_name=self.name,
+                    success=False,
+                    message="Timeout waiting for metadata operation"
+                )
 
             self._log_debug("Metadata set")
 
@@ -86,12 +92,13 @@ class SetMetadataOperation(BaseOperation):
             )
 
         except Exception as e:
-            self._log_error(f"Failed to set metadata: {str(e)}")
+            error_msg = extract_error_message(e)
+            self._log_error(f"Failed to set metadata: {error_msg}")
             return OperationResult(
                 operation_name=self.name,
                 success=False,
-                message="Failed to set metadata",
-                error=str(e)
+                message=f"Failed to set metadata: {error_msg}",
+                error=error_msg
             )
 
     def rollback(self, rollback_data: dict) -> bool:
@@ -131,14 +138,15 @@ class SetMetadataOperation(BaseOperation):
                 'items': original_metadata.get('items', [])
             }
 
-            self.compute.instances().setMetadata(
+            operation = self.compute.instances().setMetadata(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
                 body=restore_metadata
             ).execute()
 
-            time.sleep(2)
+            # Wait for operation to complete
+            self._wait_for_operation(operation)
 
             self._log_info(f"  [OK] Metadata restored")
             return True

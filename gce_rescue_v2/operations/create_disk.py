@@ -6,7 +6,7 @@ the disk that was created by this operation.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult
+from operations.base import BaseOperation, OperationResult, extract_error_message
 
 
 class CreateDiskOperation(BaseOperation):
@@ -108,12 +108,13 @@ class CreateDiskOperation(BaseOperation):
             )
 
         except Exception as e:
-            self._log_error(f"Failed to create disk: {str(e)}")
+            error_msg = extract_error_message(e)
+            self._log_error(f"Failed to create disk: {error_msg}")
             return OperationResult(
                 operation_name=self.name,
                 success=False,
-                message="Failed to create disk",
-                error=str(e)
+                message=f"Failed to create disk: {error_msg}",
+                error=error_msg
             )
 
     def rollback(self, rollback_data: dict) -> bool:

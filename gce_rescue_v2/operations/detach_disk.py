@@ -6,7 +6,7 @@ attaches the disk using the captured original configuration.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult
+from operations.base import BaseOperation, OperationResult, extract_error_message
 
 
 class DetachDiskOperation(BaseOperation):
@@ -75,15 +75,20 @@ class DetachDiskOperation(BaseOperation):
             self._log_debug(f"Detaching disk: {disk_info}")
 
             # Detach the disk
-            self.compute.instances().detachDisk(
+            operation = self.compute.instances().detachDisk(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
                 deviceName=device_name
             ).execute()
 
-            # Wait a bit for detachment
-            time.sleep(2)
+            # Wait for operation to complete
+            if not self._wait_for_operation(operation):
+                return OperationResult(
+                    operation_name=self.name,
+                    success=False,
+                    message="Timeout waiting for disk detach operation"
+                )
 
             self._log_debug("Disk detached")
 
@@ -98,12 +103,13 @@ class DetachDiskOperation(BaseOperation):
             )
 
         except Exception as e:
-            self._log_error(f"Failed to detach disk: {str(e)}")
+            error_msg = extract_error_message(e)
+            self._log_error(f"Failed to detach disk: {error_msg}")
             return OperationResult(
                 operation_name=self.name,
                 success=False,
-                message="Failed to detach disk",
-                error=str(e)
+                message=f"Failed to detach disk: {error_msg}",
+                error=error_msg
             )
 
     def rollback(self, rollback_data: dict) -> bool:
@@ -137,14 +143,15 @@ class DetachDiskOperation(BaseOperation):
                 'mode': disk_info['mode']
             }
 
-            self.compute.instances().attachDisk(
+            operation = self.compute.instances().attachDisk(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
                 body=attach_body
             ).execute()
 
-            time.sleep(2)
+            # Wait for operation to complete
+            self._wait_for_operation(operation)
 
             self._log_info(f"  [OK] Disk re-attached")
             return True
