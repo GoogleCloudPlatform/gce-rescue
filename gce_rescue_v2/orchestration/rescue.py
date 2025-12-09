@@ -163,26 +163,26 @@ class RescueOrchestrator:
             # Get original disk info
             self._get_original_disk_info()
 
-            # Create operations
-            create_snapshot = CreateSnapshotOperation(self.compute, self.project, self.zone, self.logger)
+            # Create operations (in execution order)
             stop_vm = StopVMOperation(self.compute, self.project, self.zone, self.logger)
-            create_disk = CreateDiskOperation(self.compute, self.project, self.zone, self.logger)
             detach_boot = DetachDiskOperation(self.compute, self.project, self.zone, self.logger)
+            create_snapshot = CreateSnapshotOperation(self.compute, self.project, self.zone, self.logger)
+            create_disk = CreateDiskOperation(self.compute, self.project, self.zone, self.logger)
             attach_rescue = AttachDiskOperation(self.compute, self.project, self.zone, self.logger)
             set_metadata = SetMetadataOperation(self.compute, self.project, self.zone, self.logger)
             start_vm = StartVMOperation(self.compute, self.project, self.zone, self.logger)
             attach_original = AttachDiskOperation(self.compute, self.project, self.zone, self.logger)
 
-            # Build operations map for rollback
+            # Build operations map for rollback (in execution order)
             self.operations_map = {
-                "Create Snapshot": create_snapshot,
-                "Stop VM": stop_vm,
-                "Create Rescue Disk": create_disk,
-                "Detach Boot Disk": detach_boot,
-                "Attach Rescue Disk": attach_rescue,
-                "Set Metadata": set_metadata,
-                "Start VM": start_vm,
-                "Attach Original Disk": attach_original
+                "Stop VM": stop_vm,                       # Step 1
+                "Detach Boot Disk": detach_boot,          # Step 2
+                "Create Snapshot": create_snapshot,       # Step 3
+                "Create Rescue Disk": create_disk,        # Step 4
+                "Attach Rescue Disk": attach_rescue,      # Step 5
+                "Set Metadata": set_metadata,             # Step 6
+                "Start VM": start_vm,                     # Step 7
+                "Attach Original Disk": attach_original   # Step 9
             }
 
             # Step 1: Stop VM
@@ -362,7 +362,14 @@ class RescueOrchestrator:
 
     def _generate_startup_script(self) -> str:
         """Generate startup script for rescue mode."""
+        import re
         from pathlib import Path
+
+        # Validate disk name to prevent shell injection (defense in depth)
+        # GCP disk names must match: [a-z]([-a-z0-9]*[a-z0-9])?
+        if not re.match(r'^[a-z]([-a-z0-9]*[a-z0-9])?$', self.original_disk_name):
+            self._log_error(f"Invalid disk name format: {self.original_disk_name}")
+            raise ValueError(f"Disk name contains invalid characters: {self.original_disk_name}")
 
         # Use V2's own startup script template
         script_file = Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount.sh'

@@ -12,6 +12,65 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import time
+import json
+
+
+def extract_error_message(exception: Exception) -> str:
+    """
+    Extract a clean, user-friendly error message from GCP API exceptions.
+
+    GCP HttpError exceptions contain verbose JSON with nested error details.
+    This function extracts just the meaningful message for display.
+
+    Args:
+        exception: Any exception, but optimized for googleapiclient.errors.HttpError
+
+    Returns:
+        Clean error message string
+
+    Example:
+        Input (raw HttpError):
+            <HttpError 404 ... {"error": {"message": "The resource 'disk-1' was not found"}}>
+        Output:
+            "The resource 'disk-1' was not found"
+    """
+    error_str = str(exception)
+
+    # Try to extract message from GCP HttpError JSON response
+    try:
+        # HttpError format: <HttpError XXX ... {json}>
+        # Find the JSON part (starts with '{')
+        json_start = error_str.find('{')
+        if json_start != -1:
+            json_str = error_str[json_start:]
+            # Find matching closing brace
+            brace_count = 0
+            json_end = 0
+            for i, char in enumerate(json_str):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        json_end = i + 1
+                        break
+
+            if json_end > 0:
+                error_data = json.loads(json_str[:json_end])
+                # GCP error format: {"error": {"message": "...", "errors": [...]}}
+                if 'error' in error_data:
+                    error_info = error_data['error']
+                    if 'message' in error_info:
+                        return error_info['message']
+                    if 'errors' in error_info and error_info['errors']:
+                        return error_info['errors'][0].get('message', error_str)
+    except (json.JSONDecodeError, KeyError, IndexError):
+        pass
+
+    # Fallback: return original string, but truncate if too long
+    if len(error_str) > 200:
+        return error_str[:200] + "..."
+    return error_str
 
 
 @dataclass
@@ -173,3 +232,63 @@ class BaseOperation(ABC):
 
             # Wait before checking again
             time.sleep(5)
+
+    def _wait_for_operation(self, operation: dict, timeout: int = 300) -> bool:
+        """
+        Wait for a GCP Zone Operation to complete.
+
+        GCP API calls return an operation object that runs asynchronously.
+        This method polls the operation status until it reaches 'DONE'.
+
+        Args:
+            operation: The operation response from a GCP API call
+            timeout: Maximum seconds to wait (default: 300)
+
+        Returns:
+            True if operation completed successfully, False if timeout or error
+
+        Example:
+            operation = compute.instances().attachDisk(...).execute()
+            if self._wait_for_operation(operation):
+                print("Disk attached!")
+        """
+        operation_name = operation.get('name')
+        if not operation_name:
+            self._log_debug("No operation name found, assuming synchronous completion")
+            return True
+
+        self._log_debug(f"Waiting for operation: {operation_name}")
+        start_time = time.time()
+
+        while True:
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                self._log_error(f"Operation timeout after {timeout}s: {operation_name}")
+                return False
+
+            # Poll operation status
+            try:
+                result = self.compute.zoneOperations().get(
+                    project=self.project,
+                    zone=self.zone,
+                    operation=operation_name
+                ).execute()
+
+                status = result.get('status', 'UNKNOWN')
+                self._log_debug(f"Operation {operation_name}: {status} ({elapsed:.0f}s)")
+
+                if status == 'DONE':
+                    # Check for errors
+                    if 'error' in result:
+                        errors = result['error'].get('errors', [])
+                        error_msg = '; '.join([e.get('message', 'Unknown error') for e in errors])
+                        self._log_error(f"Operation failed: {error_msg}")
+                        return False
+                    return True
+
+            except Exception as e:
+                self._log_debug(f"Error polling operation: {e}")
+
+            # Wait before polling again
+            time.sleep(2)

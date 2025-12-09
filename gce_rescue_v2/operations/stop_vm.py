@@ -6,7 +6,7 @@ Rollback restarts the VM only if it was originally running prior to execution.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult
+from operations.base import BaseOperation, OperationResult, extract_error_message
 
 
 class StopVMOperation(BaseOperation):
@@ -121,12 +121,13 @@ class StopVMOperation(BaseOperation):
                 )
 
         except Exception as e:
-            self._log_error(f"Failed to stop VM: {str(e)}")
+            error_msg = extract_error_message(e)
+            self._log_error(f"Failed to stop VM: {error_msg}")
             return OperationResult(
                 operation_name=self.name,
                 success=False,
-                message=f"Failed to stop VM",
-                error=str(e)
+                message=f"Failed to stop VM: {error_msg}",
+                error=error_msg
             )
 
     def rollback(self, rollback_data: dict) -> bool:

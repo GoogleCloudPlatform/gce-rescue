@@ -252,7 +252,15 @@ class RestoreOrchestrator:
             return False
 
     def _get_disk_info(self):
-        """Get rescue and original disk information."""
+        """
+        Get rescue and original disk information.
+
+        Reads VM metadata to identify the original disk name, then finds both
+        rescue and original disks from the VM's attached disks list.
+
+        Raises:
+            ValueError: If required disk information cannot be determined
+        """
         vm = self.compute.instances().get(
             project=self.project,
             zone=self.zone,
@@ -266,6 +274,17 @@ class RestoreOrchestrator:
                 self.original_disk_name = item['value']
                 break
 
+        # Validate we found the original disk name in metadata
+        if not self.original_disk_name:
+            self._log_error("Could not find 'rescue-original-disk' in VM metadata")
+            self._log_error("The VM may not be in proper rescue mode, or metadata was corrupted.")
+            self._log_error("")
+            self._log_error("To identify your original boot disk manually:")
+            self._log_error(f"  gcloud compute instances describe {self.vm_name} --zone={self.zone}")
+            self._log_error("")
+            self._log_error("Look for a disk that is NOT the rescue disk (doesn't contain 'rescue-disk' in name)")
+            raise ValueError("Missing 'rescue-original-disk' metadata - cannot identify original boot disk")
+
         # Find rescue and original disks
         for disk in vm.get('disks', []):
             disk_name = disk['source'].split('/')[-1]
@@ -278,6 +297,20 @@ class RestoreOrchestrator:
             elif disk_name == self.original_disk_name:
                 self.original_device_name = device_name
                 self._log_debug(f"Original disk: {disk_name}")
+
+        # Validate we found both disks
+        if not self.rescue_disk_name:
+            self._log_error("Could not find rescue disk attached to VM")
+            self._log_error("Expected a disk with 'rescue-disk' in its name")
+            raise ValueError("Rescue disk not found - VM may not be in rescue mode")
+
+        if not self.original_device_name:
+            self._log_error(f"Could not find original disk '{self.original_disk_name}' attached to VM")
+            self._log_error("The original boot disk may have been detached or deleted")
+            self._log_error("")
+            self._log_error("Check attached disks:")
+            self._log_error(f"  gcloud compute instances describe {self.vm_name} --zone={self.zone} --format='value(disks)'")
+            raise ValueError(f"Original disk '{self.original_disk_name}' not found on VM")
 
     def _get_clean_metadata(self) -> list:
         """Get metadata with rescue items removed."""
