@@ -323,10 +323,17 @@ class RestoreOrchestrator:
         metadata = vm.get('metadata', {})
         items = metadata.get('items', [])
 
-        # Remove rescue-related metadata
+        # Remove rescue-related metadata (including both Linux and Windows startup scripts)
+        rescue_keys = [
+            'rescue-mode',
+            'startup-script',                  # Linux startup script
+            'windows-startup-script-ps1',      # Windows startup script
+            'rescue-original-disk',
+            'rescue-os-type'
+        ]
         clean_items = [
             item for item in items
-            if item['key'] not in ['rescue-mode', 'startup-script', 'rescue-original-disk']
+            if item['key'] not in rescue_keys
         ]
 
         return clean_items

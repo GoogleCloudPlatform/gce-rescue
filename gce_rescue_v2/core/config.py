@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # Version for usage tracking
-VERSION = '2.0.0-alpha'
+VERSION = '2.0.0-beta'
+
+# OS Types
+OS_TYPE_LINUX = 'linux'
+OS_TYPE_WINDOWS = 'windows'
 
 
 @dataclass
@@ -29,8 +33,15 @@ class RescueConfig:
     # Rescue disk settings
     rescue_disk_size_gb: int = 10
     rescue_disk_type: str = 'pd-standard'
+
+    # Linux rescue image (default)
     rescue_image_family: str = 'debian-12'  # Use newer kernel for XFS/Btrfs compatibility
     rescue_image_project: str = 'debian-cloud'
+
+    # Windows rescue image (auto-selected for Windows VMs)
+    windows_rescue_image_family: str = 'windows-2022'
+    windows_rescue_image_project: str = 'windows-cloud'
+    windows_rescue_disk_size_gb: int = 50  # Windows needs more space
 
     # Snapshot settings (safety feature)
     create_snapshot: bool = True  # DEFAULT: Create snapshot for safety
