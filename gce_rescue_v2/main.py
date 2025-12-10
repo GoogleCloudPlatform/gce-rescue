@@ -13,10 +13,10 @@ Usage:
     success = restore_vm('my-vm', 'us-central1-a', project='my-project')
 """
 
-from core.auth import AuthManager
-from core.config import RescueConfig, RestoreConfig, OS_TYPE_WINDOWS
-from utils.logger import setup_logging
-from orchestration import RescueOrchestrator, RestoreOrchestrator
+from .core.auth import AuthManager
+from .core.config import RescueConfig, RestoreConfig, OS_TYPE_WINDOWS
+from .utils.logger import setup_logging
+from .orchestration import RescueOrchestrator, RestoreOrchestrator
 
 
 def rescue_vm(vm_name: str, zone: str, project: str = None,
@@ -254,7 +254,7 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
                 instance=vm_name
             ).execute()
             # Note: rescue-os-type was removed during restore, so check disk features
-            from utils.os_detection import detect_os_type
+            from .utils.os_detection import detect_os_type
             os_type = detect_os_type(vm)
         except Exception:
             pass  # Default to Linux instructions if detection fails

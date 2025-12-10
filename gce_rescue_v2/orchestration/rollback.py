@@ -6,8 +6,8 @@ Undoes operations in reverse order with dependency checking.
 """
 
 from typing import List, Set
-from orchestration.state import StateTracker, OperationState
-from operations.base import BaseOperation
+from .state import StateTracker, OperationState
+from ..operations.base import BaseOperation
 
 
 # Define operation dependencies for safe rollback

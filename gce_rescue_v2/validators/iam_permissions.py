@@ -6,7 +6,7 @@ Validates that the user has required IAM permissions for rescue operations.
 
 from googleapiclient.errors import HttpError
 
-from validators.base import BaseValidator, ValidationResult
+from .base import BaseValidator, ValidationResult
 
 
 class IAMPermissionsValidator(BaseValidator):

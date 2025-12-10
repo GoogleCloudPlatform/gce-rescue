@@ -6,7 +6,7 @@ stops the VM only if it was previously stopped (TERMINATED) before execution.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult, extract_error_message
+from .base import BaseOperation, OperationResult, extract_error_message
 
 
 class StartVMOperation(BaseOperation):

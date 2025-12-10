@@ -6,7 +6,7 @@ irreversible and should only be used after completing the rescue workflow.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult, extract_error_message
+from .base import BaseOperation, OperationResult, extract_error_message
 
 
 class DeleteDiskOperation(BaseOperation):

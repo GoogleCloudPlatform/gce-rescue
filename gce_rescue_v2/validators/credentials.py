@@ -8,7 +8,7 @@ import google.auth
 from google.auth.exceptions import DefaultCredentialsError
 from google.auth.transport.requests import Request
 
-from validators.base import BaseValidator, ValidationResult
+from .base import BaseValidator, ValidationResult
 
 # OAuth scopes required for Google Compute Engine API
 SCOPES = ['https://www.googleapis.com/auth/compute']

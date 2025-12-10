@@ -13,14 +13,14 @@ Coordinates the restore workflow (exit rescue mode):
 """
 
 import time
-from core.config import RestoreConfig
-from validators import (
+from ..core.config import RestoreConfig
+from ..validators import (
     ValidationRunner,
     CredentialsValidator,
     IAMPermissionsValidator,
     VMRestoreStateValidator
 )
-from operations import (
+from ..operations import (
     StopVMOperation,
     DetachDiskOperation,
     AttachDiskOperation,
@@ -28,8 +28,8 @@ from operations import (
     StartVMOperation,
     DeleteDiskOperation
 )
-from orchestration.state import StateTracker
-from orchestration.rollback import RollbackHandler
+from .state import StateTracker
+from .rollback import RollbackHandler
 
 
 class RestoreOrchestrator:
