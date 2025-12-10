@@ -5,6 +5,9 @@ This module handles Google Cloud authentication and client creation.
 It extracts and enhances the authentication logic from the original get_client() function.
 """
 
+import logging
+import warnings
+
 import google.auth
 from google.auth.exceptions import DefaultCredentialsError
 from google.auth.transport.requests import Request
@@ -15,6 +18,10 @@ import httplib2
 
 from .exceptions import AuthenticationError
 from .config import VERSION
+
+# Suppress httplib2 timeout warnings (they're harmless and noisy)
+warnings.filterwarnings('ignore', message='.*httplib2 transport does not support per-request timeout.*')
+logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
 # OAuth scopes required for Google Compute Engine API
 SCOPES = ['https://www.googleapis.com/auth/compute']
