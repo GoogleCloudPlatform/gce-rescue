@@ -340,6 +340,16 @@ def handle_rescue(args: argparse.Namespace) -> int:
     # Get project from args or gcloud config
     project = args.project or get_gcloud_config('core/project')
 
+    # Validate project is set
+    if not project:
+        print("ERROR: No project specified.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Please specify a project using one of these methods:", file=sys.stderr)
+        print("  1. --project=PROJECT_ID flag", file=sys.stderr)
+        print("  2. gcloud config set project PROJECT_ID", file=sys.stderr)
+        print("  3. Set CLOUDSDK_CORE_PROJECT environment variable", file=sys.stderr)
+        return 1
+
     # Interactive confirmation (unless --quiet)
     if not args.quiet:
         print(f"\nYou are about to rescue VM '{args.instance_name}' in zone '{args.zone}'.")
@@ -387,6 +397,16 @@ def handle_restore(args: argparse.Namespace) -> int:
 
     # Get project from args or gcloud config
     project = args.project or get_gcloud_config('core/project')
+
+    # Validate project is set
+    if not project:
+        print("ERROR: No project specified.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Please specify a project using one of these methods:", file=sys.stderr)
+        print("  1. --project=PROJECT_ID flag", file=sys.stderr)
+        print("  2. gcloud config set project PROJECT_ID", file=sys.stderr)
+        print("  3. Set CLOUDSDK_CORE_PROJECT environment variable", file=sys.stderr)
+        return 1
 
     # Interactive confirmation (unless --quiet)
     if not args.quiet:
