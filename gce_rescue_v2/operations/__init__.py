@@ -31,15 +31,15 @@ Usage:
         operation.rollback(rollback_data)
 """
 
-from operations.base import BaseOperation, OperationResult
-from operations.stop_vm import StopVMOperation
-from operations.start_vm import StartVMOperation
-from operations.create_disk import CreateDiskOperation
-from operations.attach_disk import AttachDiskOperation
-from operations.detach_disk import DetachDiskOperation
-from operations.set_metadata import SetMetadataOperation
-from operations.delete_disk import DeleteDiskOperation
-from operations.create_snapshot import CreateSnapshotOperation
+from .base import BaseOperation, OperationResult
+from .stop_vm import StopVMOperation
+from .start_vm import StartVMOperation
+from .create_disk import CreateDiskOperation
+from .attach_disk import AttachDiskOperation
+from .detach_disk import DetachDiskOperation
+from .set_metadata import SetMetadataOperation
+from .delete_disk import DeleteDiskOperation
+from .create_snapshot import CreateSnapshotOperation
 
 __all__ = [
     # Base classes

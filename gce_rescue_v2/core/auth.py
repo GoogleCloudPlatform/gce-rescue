@@ -13,8 +13,8 @@ import googleapiclient.http
 import google_auth_httplib2
 import httplib2
 
-from core.exceptions import AuthenticationError
-from core.config import VERSION
+from .exceptions import AuthenticationError
+from .config import VERSION
 
 # OAuth scopes required for Google Compute Engine API
 SCOPES = ['https://www.googleapis.com/auth/compute']

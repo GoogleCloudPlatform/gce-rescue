@@ -18,8 +18,8 @@ import os
 import json
 import yaml
 from typing import Optional, Dict, Any
-from core.config import RescueConfig, RestoreConfig, VERSION
-from main import rescue_vm, restore_vm
+from .core.config import RescueConfig, RestoreConfig, VERSION
+from .main import rescue_vm, restore_vm
 
 
 class OutputFormatter:

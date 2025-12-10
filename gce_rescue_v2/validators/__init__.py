@@ -27,15 +27,15 @@ Usage:
         return False
 """
 
-from validators.base import (
+from .base import (
     BaseValidator,
     ValidationResult,
     ValidationResults,
     ValidationRunner
 )
-from validators.credentials import CredentialsValidator
-from validators.iam_permissions import IAMPermissionsValidator
-from validators.vm_state import VMStateValidator, VMRestoreStateValidator
+from .credentials import CredentialsValidator
+from .iam_permissions import IAMPermissionsValidator
+from .vm_state import VMStateValidator, VMRestoreStateValidator
 
 __all__ = [
     # Base classes

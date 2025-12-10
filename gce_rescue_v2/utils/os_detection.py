@@ -8,7 +8,7 @@ Detects whether a VM is running Windows or Linux based on:
 """
 
 from typing import Dict, Any
-from core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS
+from ..core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS
 
 
 def detect_os_type(vm: Dict[str, Any]) -> str:

@@ -6,7 +6,7 @@ the disk that was created by this operation.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult, extract_error_message
+from .base import BaseOperation, OperationResult, extract_error_message
 
 
 class CreateDiskOperation(BaseOperation):

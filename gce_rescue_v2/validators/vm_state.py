@@ -6,7 +6,7 @@ Validates that the VM exists and is in a valid state for rescue operations.
 
 from googleapiclient.errors import HttpError
 
-from validators.base import BaseValidator, ValidationResult
+from .base import BaseValidator, ValidationResult
 
 
 class VMStateValidator(BaseValidator):

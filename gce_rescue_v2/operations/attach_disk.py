@@ -6,7 +6,7 @@ the disk using the provided rollback metadata.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult, extract_error_message
+from .base import BaseOperation, OperationResult, extract_error_message
 
 
 class AttachDiskOperation(BaseOperation):

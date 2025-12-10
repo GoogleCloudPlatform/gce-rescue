@@ -6,7 +6,7 @@ metadata for rollback. Rollback restores the prior metadata set.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult, extract_error_message
+from .base import BaseOperation, OperationResult, extract_error_message
 
 
 class SetMetadataOperation(BaseOperation):

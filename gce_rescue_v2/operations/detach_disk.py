@@ -6,7 +6,7 @@ attaches the disk using the captured original configuration.
 """
 
 import time
-from operations.base import BaseOperation, OperationResult, extract_error_message
+from .base import BaseOperation, OperationResult, extract_error_message
 
 
 class DetachDiskOperation(BaseOperation):

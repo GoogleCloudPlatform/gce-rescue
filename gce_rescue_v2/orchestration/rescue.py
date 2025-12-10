@@ -10,15 +10,15 @@ Coordinates the rescue workflow:
 """
 
 import time
-from core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX
-from utils.os_detection import detect_os_type, get_os_display_name
-from validators import (
+from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX
+from ..utils.os_detection import detect_os_type, get_os_display_name
+from ..validators import (
     ValidationRunner,
     CredentialsValidator,
     IAMPermissionsValidator,
     VMStateValidator
 )
-from operations import (
+from ..operations import (
     StopVMOperation,
     CreateDiskOperation,
     DetachDiskOperation,
@@ -27,8 +27,8 @@ from operations import (
     StartVMOperation,
     CreateSnapshotOperation
 )
-from orchestration.state import StateTracker
-from orchestration.rollback import RollbackHandler
+from .state import StateTracker
+from .rollback import RollbackHandler
 
 
 class RescueOrchestrator:
