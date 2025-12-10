@@ -16,7 +16,7 @@ Example usage:
     >>> exit_rescue_mode('my-project', 'us-central1-a', 'my-vm')
 """
 
-from core.config import VERSION
+from .core.config import VERSION
 
 __version__ = VERSION
 __author__ = "GCE Rescue Team"
