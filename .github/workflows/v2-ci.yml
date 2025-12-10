@@ -1,0 +1,65 @@
+name: V2 CI
+
+on:
+  push:
+    branches:
+      - v2-beta
+      - 'feature/v2*'
+    paths:
+      - 'gce_rescue_v2/**'
+      - '.github/workflows/v2-ci.yml'
+  pull_request:
+    branches:
+      - v2-beta
+      - main
+    paths:
+      - 'gce_rescue_v2/**'
+
+jobs:
+  test-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r gce_rescue_v2/requirements.txt
+        pip install pytest pytest-cov
+
+    - name: Run V2 tests
+      run: |
+        cd gce_rescue_v2
+        python -m pytest tests/ -v --tb=short
+
+  lint-v2:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install linters
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8
+
+    - name: Run flake8 (errors only)
+      run: |
+        cd gce_rescue_v2
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics

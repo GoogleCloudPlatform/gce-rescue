@@ -102,26 +102,27 @@ def create_parser() -> argparse.ArgumentParser:
     # Main parser
     parser = argparse.ArgumentParser(
         prog='gce-rescue',
-        description='Google Compute Engine VM Rescue Tool',
+        description='Google Compute Engine VM Rescue Tool (Beta)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES
-    To rescue a VM:
+    Rescue a VM:
         $ gce-rescue rescue my-vm --zone=us-central1-a
 
-    To rescue with custom disk:
-        $ gce-rescue rescue my-vm --zone=us-central1-a \\
-            --rescue-disk-size=50 --rescue-disk-type=pd-ssd
+    Rescue without snapshot (faster):
+        $ gce-rescue rescue my-vm --zone=us-central1-a --no-snapshot
 
-    To restore a VM:
+    Restore a VM:
         $ gce-rescue restore my-vm --zone=us-central1-a
 
-NOTES
-    This tool follows gcloud conventions and will be integrated into
-    gcloud SDK in the future as:
-        gcloud compute instances rescue <instance-name>
+    Automation (no prompts):
+        $ gce-rescue rescue my-vm --zone=us-central1-a --quiet
 
-For more information, visit: https://github.com/your-org/gce-rescue
+SUPPORTED OS
+    - Linux (auto-detected): Boots Debian 12 rescue environment
+    - Windows (auto-detected): Boots Windows Server 2022 rescue environment
+
+For more information: https://github.com/gokulr94/gce-rescue
         """
     )
 
@@ -143,33 +144,27 @@ For more information, visit: https://github.com/your-org/gce-rescue
     rescue_parser = subparsers.add_parser(
         'rescue',
         help='Boot a VM into rescue mode',
-        description='Boot a VM into rescue mode by creating a rescue disk and attaching the original boot disk as secondary.',
+        description='Boot a VM into rescue mode. Automatically detects OS (Linux/Windows) and uses appropriate rescue environment.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES
-    To rescue a VM:
+    Rescue a VM:
         $ gce-rescue rescue my-vm --zone=us-central1-a
 
-    To rescue with a 50GB SSD disk:
-        $ gce-rescue rescue my-vm --zone=us-central1-a \\
-            --rescue-disk-size=50 --rescue-disk-type=pd-ssd
+    Rescue without snapshot (faster but riskier):
+        $ gce-rescue rescue my-vm --zone=us-central1-a --no-snapshot
 
-    To rescue with snapshot backup:
-        $ gce-rescue rescue my-vm --zone=us-central1-a --snapshot
-
-    To use Ubuntu rescue image:
-        $ gce-rescue rescue my-vm --zone=us-central1-a \\
-            --rescue-image-family=ubuntu-2204-lts \\
-            --rescue-image-project=ubuntu-os-cloud
-
-NOTES
-    After rescue completes, SSH into the VM:
+AFTER RESCUE
+    Linux VMs:
         $ gcloud compute ssh my-vm --zone=us-central1-a
+        Affected disk mounted at: /mnt/sysroot
 
-    Affected disk is mounted at /mnt/sysroot
+    Windows VMs:
+        Connect via RDP using credentials shown after rescue
+        Affected disk mounted at: D:\\ (or next available drive)
 
-    To exit rescue mode:
-        $ gce-rescue restore my-vm --zone=us-central1-a
+TO EXIT RESCUE MODE
+    $ gce-rescue restore my-vm --zone=us-central1-a
         """
     )
 
@@ -184,16 +179,14 @@ NOTES
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES
-    To restore a VM:
+    Restore a VM:
         $ gce-rescue restore my-vm --zone=us-central1-a
 
-    To restore and keep the rescue disk:
-        $ gce-rescue restore my-vm --zone=us-central1-a \\
-            --keep-rescue-disk
+    Restore and keep rescue disk (for analysis):
+        $ gce-rescue restore my-vm --zone=us-central1-a --keep-rescue-disk
 
 NOTES
-    The rescue disk will be deleted by default. Use --keep-rescue-disk
-    to retain it for analysis.
+    The rescue disk is deleted by default after restore.
         """
     )
 
@@ -231,191 +224,66 @@ def _add_common_args(parser: argparse.ArgumentParser):
         help='GCP project ID. Defaults to gcloud config project.'
     )
 
-    # Output flags (gcloud standard)
+    # Output flags
     output = parser.add_argument_group('OUTPUT FLAGS')
     output.add_argument(
         '--format',
         metavar='FORMAT',
-        choices=['json', 'yaml', 'table', 'csv', 'disable'],
+        choices=['json', 'yaml', 'table', 'disable'],
         default='table',
-        help='Output format. One of: json, yaml, table, csv, disable. Default: table'
+        help='Output format: json, yaml, table, disable. Default: table'
     )
     output.add_argument(
         '--verbosity',
         metavar='VERBOSITY',
-        choices=['debug', 'info', 'warning', 'error', 'critical'],
+        choices=['debug', 'info', 'warning', 'error'],
         default='info',
-        help='Logging verbosity. One of: debug, info, warning, error, critical. Default: info'
-    )
-    output.add_argument(
-        '--log-file',
-        metavar='LOG_FILE',
-        help='Write logs to this file.'
+        help='Logging verbosity: debug, info, warning, error. Default: info'
     )
 
-    # Interactive flags (gcloud standard)
-    interactive = parser.add_argument_group('INTERACTIVE FLAGS')
+    # Interactive flags
+    interactive = parser.add_argument_group('OTHER FLAGS')
     interactive.add_argument(
         '--quiet',
         action='store_true',
-        help='Disable interactive prompts. Useful for automation.'
-    )
-
-    # Other flags
-    other = parser.add_argument_group('OTHER FLAGS')
-    other.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Print what would be done without actually doing it.'
-    )
-    other.add_argument(
-        '--no-rollback',
-        action='store_true',
-        help='Disable automatic rollback on failure. Not recommended.'
+        help='Disable interactive prompts (for automation)'
     )
 
 
 def _add_rescue_args(parser: argparse.ArgumentParser):
     """Add rescue-specific arguments."""
 
-    # Rescue disk configuration
-    disk_group = parser.add_argument_group('RESCUE DISK FLAGS')
-    disk_group.add_argument(
-        '--rescue-disk-size',
-        type=int,
-        metavar='SIZE',
-        help='Size of rescue disk in GB. Default: 10'
-    )
-    disk_group.add_argument(
-        '--rescue-disk-type',
-        metavar='TYPE',
-        choices=['pd-standard', 'pd-ssd', 'pd-balanced'],
-        help='Type of rescue disk. One of: pd-standard, pd-ssd, pd-balanced. Default: pd-standard'
-    )
-    disk_group.add_argument(
-        '--rescue-disk-name',
-        metavar='NAME',
-        help='Custom name for rescue disk. Default: auto-generated'
-    )
-
-    # Rescue image configuration
-    image_group = parser.add_argument_group('RESCUE IMAGE FLAGS')
-    image_group.add_argument(
-        '--rescue-image-family',
-        metavar='FAMILY',
-        help='Image family for rescue disk. Default: debian-12'
-    )
-    image_group.add_argument(
-        '--rescue-image-project',
-        metavar='PROJECT',
-        help='Project containing rescue image. Default: debian-cloud'
-    )
-
-    # Snapshot flags (safety feature)
-    snapshot_group = parser.add_argument_group('SNAPSHOT FLAGS (Safety)')
+    # Snapshot flags (safety feature) - the only rescue-specific option for beta
+    snapshot_group = parser.add_argument_group('SNAPSHOT FLAGS')
     snapshot_group.add_argument(
         '--snapshot',
         action='store_true',
         default=True,
-        help='Create snapshot of boot disk before rescue (default: enabled for safety)'
+        help='Create snapshot of boot disk before rescue (default: enabled)'
     )
     snapshot_group.add_argument(
         '--no-snapshot',
         dest='snapshot',
         action='store_false',
-        help='Skip snapshot creation (faster but riskier - not recommended)'
-    )
-    snapshot_group.add_argument(
-        '--wait-snapshot',
-        action='store_true',
-        help='Wait for snapshot to complete before proceeding (slower but ensures snapshot is ready)'
-    )
-    snapshot_group.add_argument(
-        '--require-snapshot',
-        action='store_true',
-        help='Abort if snapshot creation fails (maximum safety mode)'
-    )
-    snapshot_group.add_argument(
-        '--snapshot-name',
-        metavar='NAME',
-        help='Custom snapshot name (auto-generated if not provided)'
-    )
-
-    # Startup script flags
-    script_group = parser.add_argument_group('STARTUP SCRIPT FLAGS')
-    script_group.add_argument(
-        '--startup-script',
-        metavar='FILE',
-        help='Path to custom startup script.'
-    )
-    script_group.add_argument(
-        '--no-startup-script',
-        action='store_true',
-        help='Skip startup script (manual mounting).'
-    )
-    script_group.add_argument(
-        '--mount-point',
-        metavar='PATH',
-        help='Mount point for affected disk. Default: /mnt/sysroot'
-    )
-
-    # Timeout flags
-    timeout_group = parser.add_argument_group('TIMEOUT FLAGS')
-    timeout_group.add_argument(
-        '--vm-stop-timeout',
-        type=int,
-        metavar='SECONDS',
-        help='Timeout for VM stop in seconds. Default: 300'
-    )
-    timeout_group.add_argument(
-        '--vm-start-timeout',
-        type=int,
-        metavar='SECONDS',
-        help='Timeout for VM start in seconds. Default: 300'
-    )
-    timeout_group.add_argument(
-        '--disk-create-timeout',
-        type=int,
-        metavar='SECONDS',
-        help='Timeout for disk creation in seconds. Default: 600'
+        help='Skip snapshot creation (faster but riskier)'
     )
 
 
 def _add_restore_args(parser: argparse.ArgumentParser):
     """Add restore-specific arguments."""
 
-    # Restore configuration
+    # Restore configuration - only essential option for beta
     restore_group = parser.add_argument_group('RESTORE FLAGS')
     restore_group.add_argument(
         '--keep-rescue-disk',
         action='store_true',
-        help='Keep rescue disk after restore instead of deleting it.'
-    )
-    restore_group.add_argument(
-        '--rescue-disk-name',
-        metavar='NAME',
-        help='Name of rescue disk. Auto-detected if not provided.'
-    )
-
-    # Timeout flags
-    timeout_group = parser.add_argument_group('TIMEOUT FLAGS')
-    timeout_group.add_argument(
-        '--vm-stop-timeout',
-        type=int,
-        metavar='SECONDS',
-        help='Timeout for VM stop in seconds. Default: 300'
-    )
-    timeout_group.add_argument(
-        '--vm-start-timeout',
-        type=int,
-        metavar='SECONDS',
-        help='Timeout for VM start in seconds. Default: 300'
+        help='Keep rescue disk after restore instead of deleting it'
     )
 
 
 def validate_args(args: argparse.Namespace) -> bool:
     """
-    Validate arguments (gcloud-style validation).
+    Validate arguments.
 
     Args:
         args: Parsed arguments
@@ -423,42 +291,7 @@ def validate_args(args: argparse.Namespace) -> bool:
     Returns:
         True if valid, False with error message
     """
-
-    # Snapshot name requires snapshot
-    if hasattr(args, 'snapshot_name') and args.snapshot_name and not args.snapshot:
-        print(f"ERROR: (gce-rescue) Invalid flag combination:", file=sys.stderr)
-        print(f"  --snapshot-name requires --snapshot", file=sys.stderr)
-        return False
-
-    # Startup script must exist
-    if hasattr(args, 'startup_script') and args.startup_script:
-        if not os.path.exists(args.startup_script):
-            print(f"ERROR: (gce-rescue) File not found:", file=sys.stderr)
-            print(f"  --startup-script: {args.startup_script}", file=sys.stderr)
-            return False
-
-    # Disk size validation
-    if hasattr(args, 'rescue_disk_size') and args.rescue_disk_size:
-        if args.rescue_disk_size < 10:
-            print(f"ERROR: (gce-rescue) Invalid value:", file=sys.stderr)
-            print(f"  --rescue-disk-size must be at least 10 GB", file=sys.stderr)
-            return False
-        if args.rescue_disk_size > 65536:
-            print(f"ERROR: (gce-rescue) Invalid value:", file=sys.stderr)
-            print(f"  --rescue-disk-size cannot exceed 65536 GB", file=sys.stderr)
-            return False
-
-    # Timeout validation
-    timeout_flags = ['vm_stop_timeout', 'vm_start_timeout', 'disk_create_timeout']
-    for flag in timeout_flags:
-        if hasattr(args, flag):
-            value = getattr(args, flag)
-            if value and value < 10:
-                flag_name = flag.replace('_', '-')
-                print(f"ERROR: (gce-rescue) Invalid value:", file=sys.stderr)
-                print(f"  --{flag_name} must be at least 10 seconds", file=sys.stderr)
-                return False
-
+    # For beta, minimal validation - all flags have safe defaults
     return True
 
 
@@ -466,58 +299,16 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     """Convert arguments to RescueConfig."""
     config = RescueConfig()
 
-    # Disk settings
-    if hasattr(args, 'rescue_disk_size') and args.rescue_disk_size:
-        config.rescue_disk_size_gb = args.rescue_disk_size
-    if hasattr(args, 'rescue_disk_type') and args.rescue_disk_type:
-        config.rescue_disk_type = args.rescue_disk_type
-    if hasattr(args, 'rescue_disk_name') and args.rescue_disk_name:
-        config.rescue_disk_name = args.rescue_disk_name
-
-    # Image settings
-    if hasattr(args, 'rescue_image_family') and args.rescue_image_family:
-        config.rescue_image_family = args.rescue_image_family
-    if hasattr(args, 'rescue_image_project') and args.rescue_image_project:
-        config.rescue_image_project = args.rescue_image_project
-
-    # Snapshot settings (default is True, can be disabled with --no-snapshot)
+    # Snapshot setting (only configurable rescue option in beta)
     if hasattr(args, 'snapshot'):
         config.create_snapshot = args.snapshot
-    if hasattr(args, 'wait_snapshot') and args.wait_snapshot:
-        config.async_snapshot = False  # User wants to wait for snapshot completion
-    if hasattr(args, 'require_snapshot') and args.require_snapshot:
-        config.require_snapshot = True
-    if hasattr(args, 'snapshot_name') and args.snapshot_name:
-        config.snapshot_name_prefix = args.snapshot_name
-
-    # Startup script
-    if hasattr(args, 'startup_script') and args.startup_script:
-        with open(args.startup_script, 'r') as f:
-            config.startup_script = f.read()
-    if hasattr(args, 'no_startup_script') and args.no_startup_script:
-        config.startup_script = None
-    if hasattr(args, 'mount_point') and args.mount_point:
-        config.mount_point = args.mount_point
-
-    # Timeouts
-    if hasattr(args, 'vm_stop_timeout') and args.vm_stop_timeout:
-        config.vm_stop_timeout = args.vm_stop_timeout
-    if hasattr(args, 'vm_start_timeout') and args.vm_start_timeout:
-        config.vm_start_timeout = args.vm_start_timeout
-    if hasattr(args, 'disk_create_timeout') and args.disk_create_timeout:
-        config.disk_create_timeout = args.disk_create_timeout
-
-    # Safety settings
-    config.dry_run = args.dry_run
-    config.auto_rollback = not args.no_rollback
 
     # Verbosity to log level
     verbosity_map = {
         'debug': 'DEBUG',
         'info': 'INFO',
         'warning': 'WARNING',
-        'error': 'ERROR',
-        'critical': 'CRITICAL'
+        'error': 'ERROR'
     }
     config.log_level = verbosity_map.get(args.verbosity, 'INFO')
 
@@ -528,28 +319,15 @@ def args_to_restore_config(args: argparse.Namespace) -> RestoreConfig:
     """Convert arguments to RestoreConfig."""
     config = RestoreConfig()
 
-    # Rescue disk settings
+    # Keep rescue disk setting (only configurable restore option in beta)
     config.delete_rescue_disk = not args.keep_rescue_disk
-    if hasattr(args, 'rescue_disk_name') and args.rescue_disk_name:
-        config.rescue_disk_name = args.rescue_disk_name
-
-    # Timeouts
-    if hasattr(args, 'vm_stop_timeout') and args.vm_stop_timeout:
-        config.vm_stop_timeout = args.vm_stop_timeout
-    if hasattr(args, 'vm_start_timeout') and args.vm_start_timeout:
-        config.vm_start_timeout = args.vm_start_timeout
-
-    # Safety settings
-    config.dry_run = args.dry_run
-    config.auto_rollback = not args.no_rollback
 
     # Verbosity to log level
     verbosity_map = {
         'debug': 'DEBUG',
         'info': 'INFO',
         'warning': 'WARNING',
-        'error': 'ERROR',
-        'critical': 'CRITICAL'
+        'error': 'ERROR'
     }
     config.log_level = verbosity_map.get(args.verbosity, 'INFO')
 

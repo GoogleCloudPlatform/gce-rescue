@@ -28,6 +28,7 @@ vir-env/
 
 # Private planning/analysis documents (not for public repo)
 .private-docs/
+docs/internal/
 
 .claude/
 
@@ -37,3 +38,6 @@ vir-env/
 ai-context/
 # !.ai-context/README.md 
 
+
+.gemini/
+gha-creds-*.json

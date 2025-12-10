@@ -14,7 +14,7 @@ Usage:
 """
 
 from core.auth import AuthManager
-from core.config import RescueConfig, RestoreConfig
+from core.config import RescueConfig, RestoreConfig, OS_TYPE_WINDOWS
 from utils.logger import setup_logging
 from orchestration import RescueOrchestrator, RestoreOrchestrator
 
@@ -100,23 +100,58 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
             logger.error("Rescue failed.")
             return False
         
-        # Success!
+        # Success! Show OS-appropriate instructions
         logger.info("")
         logger.info("=" * 60)
         logger.info("[OK] Rescue completed successfully!")
         logger.info("=" * 60)
         logger.info("")
         logger.info("Your VM is now in rescue mode.")
-        logger.info(f"Connect via SSH: gcloud compute ssh {vm_name} --zone={zone}")
-        logger.info(f"Affected disk mounted at: /mnt/sysroot")
-        logger.info("")
-        logger.info("Check rescue logs inside VM:")
-        logger.info(f"  cat /var/log/gce-rescue.log")
+
+        # Show OS-specific connection and mount instructions
+        if orchestrator.os_type == OS_TYPE_WINDOWS:
+            # Get external IP for RDP connection
+            vm = compute.instances().get(project=project, zone=zone, instance=vm_name).execute()
+            external_ip = None
+            for iface in vm.get('networkInterfaces', []):
+                for access in iface.get('accessConfigs', []):
+                    if access.get('natIP'):
+                        external_ip = access.get('natIP')
+                        break
+
+            logger.info("")
+            logger.info("=" * 50)
+            logger.info("  Windows RDP Login Credentials")
+            logger.info("=" * 50)
+            if external_ip:
+                logger.info(f"  IP Address: {external_ip}")
+            logger.info(f"  Username:   rescue_admin")
+            logger.info(f"  Password:   {orchestrator.windows_rescue_password}")
+            logger.info("=" * 50)
+            logger.info("")
+            logger.info("Note: Wait 2-3 minutes for Windows to fully boot before connecting.")
+            logger.info("")
+            logger.info("Affected disk mounted at: D:\\ (or next available drive letter)")
+            logger.info("")
+            logger.info("Check rescue logs inside VM:")
+            logger.info("  type C:\\gce-rescue.log")
+            logger.info("")
+            logger.info("Common Windows repair tasks:")
+            logger.info("  - Edit files: notepad D:\\path\\to\\file")
+            logger.info("  - Registry: Load hive from D:\\Windows\\System32\\config\\ in regedit")
+            logger.info("  - Boot repair: bcdboot D:\\Windows /s C:")
+        else:
+            logger.info(f"Connect via SSH: gcloud compute ssh {vm_name} --zone={zone}")
+            logger.info("Affected disk mounted at: /mnt/sysroot")
+            logger.info("")
+            logger.info("Check rescue logs inside VM:")
+            logger.info("  cat /var/log/gce-rescue.log")
+
         logger.info("")
         logger.info("When done, restore your VM:")
         logger.info(f"  python cli.py restore {vm_name} --zone={zone}")
         logger.info("")
-        
+
         return True
         
     except Exception as e:
@@ -209,16 +244,34 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
             logger.error("Restore failed.")
             return False
         
-        # Success!
+        # Success! Show OS-appropriate instructions
+        # Check metadata for OS type (stored during rescue)
+        os_type = None
+        try:
+            vm = compute.instances().get(
+                project=project,
+                zone=zone,
+                instance=vm_name
+            ).execute()
+            # Note: rescue-os-type was removed during restore, so check disk features
+            from utils.os_detection import detect_os_type
+            os_type = detect_os_type(vm)
+        except Exception:
+            pass  # Default to Linux instructions if detection fails
+
         logger.info("")
         logger.info("=" * 60)
         logger.info("[OK] Restore completed successfully!")
         logger.info("=" * 60)
         logger.info("")
         logger.info("Your VM has been restored to normal operation.")
-        logger.info(f"Connect via SSH: gcloud compute ssh {vm_name} --zone={zone}")
+
+        if os_type == OS_TYPE_WINDOWS:
+            logger.info(f"Connect via RDP: gcloud compute reset-windows-password {vm_name} --zone={zone}")
+        else:
+            logger.info(f"Connect via SSH: gcloud compute ssh {vm_name} --zone={zone}")
         logger.info("")
-        
+
         return True
         
     except Exception as e:

@@ -3,13 +3,15 @@ GCE Rescue - Rescue Orchestrator
 
 Coordinates the rescue workflow:
 1. Validates (credentials, permissions, VM state)
-2. Executes operations in sequence
-3. Tracks state
-4. Rolls back on failure
+2. Detects OS type (Linux or Windows)
+3. Executes operations in sequence
+4. Tracks state
+5. Rolls back on failure
 """
 
 import time
-from core.config import RescueConfig
+from core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX
+from utils.os_detection import detect_os_type, get_os_display_name
 from validators import (
     ValidationRunner,
     CredentialsValidator,
@@ -92,6 +94,13 @@ class RescueOrchestrator:
         # Store original disk info
         self.original_disk_name = None
         self.original_device_name = None
+
+        # OS detection (will be set during execution)
+        self.os_type = None
+        self.vm_info = None
+
+        # Windows rescue credentials (generated for RDP access)
+        self.windows_rescue_password = None
 
     def _log_info(self, message: str):
         """Log info message."""
@@ -237,12 +246,23 @@ class RescueOrchestrator:
                         self._log_info(f"    Snapshot: {pending_snapshot_name}")
 
             # Step 4: Create rescue disk (runs while snapshot progresses in background)
-            self._log_info("  Creating rescue disk...")
+            # Select rescue image based on OS type
+            if self.os_type == OS_TYPE_WINDOWS:
+                rescue_image_project = self.config.windows_rescue_image_project
+                rescue_image_family = self.config.windows_rescue_image_family
+                rescue_disk_size = self.config.windows_rescue_disk_size_gb
+                self._log_info(f"  Creating Windows rescue disk ({rescue_disk_size}GB)...")
+            else:
+                rescue_image_project = self.config.rescue_image_project
+                rescue_image_family = self.config.rescue_image_family
+                rescue_disk_size = self.config.rescue_disk_size_gb
+                self._log_info(f"  Creating Linux rescue disk ({rescue_disk_size}GB)...")
+
             result = create_disk.execute(
                 disk_name=rescue_disk_name,
-                size_gb=self.config.rescue_disk_size_gb,
+                size_gb=rescue_disk_size,
                 disk_type=self.config.rescue_disk_type,
-                source_image=f'projects/{self.config.rescue_image_project}/global/images/family/{self.config.rescue_image_family}',
+                source_image=f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}',
                 timeout=self.config.disk_create_timeout
             )
             self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data)
@@ -263,10 +283,18 @@ class RescueOrchestrator:
             # Step 6: Set rescue metadata
             self._log_info("  Setting rescue metadata...")
             startup_script = self._generate_startup_script()
+
+            # Use appropriate startup script key based on OS type
+            if self.os_type == OS_TYPE_WINDOWS:
+                script_key = 'windows-startup-script-ps1'
+            else:
+                script_key = 'startup-script'
+
             metadata_items = [
-                {'key': 'startup-script', 'value': startup_script},
+                {'key': script_key, 'value': startup_script},
                 {'key': 'rescue-mode', 'value': str(int(time.time()))},
-                {'key': 'rescue-original-disk', 'value': self.original_disk_name}
+                {'key': 'rescue-original-disk', 'value': self.original_disk_name},
+                {'key': 'rescue-os-type', 'value': self.os_type}
             ]
             result = set_metadata.execute(vm_name=self.vm_name, metadata_items=metadata_items)
             self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
@@ -346,14 +374,18 @@ class RescueOrchestrator:
             return False
 
     def _get_original_disk_info(self):
-        """Get original boot disk information."""
-        vm = self.compute.instances().get(
+        """Get original boot disk information and detect OS type."""
+        self.vm_info = self.compute.instances().get(
             project=self.project,
             zone=self.zone,
             instance=self.vm_name
         ).execute()
 
-        for disk in vm.get('disks', []):
+        # Detect OS type
+        self.os_type = detect_os_type(self.vm_info)
+        self._log_info(f"  Detected OS: {get_os_display_name(self.os_type)}")
+
+        for disk in self.vm_info.get('disks', []):
             if disk.get('boot'):
                 self.original_disk_name = disk['source'].split('/')[-1]
                 self.original_device_name = disk['deviceName']
@@ -361,28 +393,118 @@ class RescueOrchestrator:
                 break
 
     def _generate_startup_script(self) -> str:
-        """Generate startup script for rescue mode."""
+        """Generate startup script for rescue mode based on OS type."""
         import re
+        import secrets
+        import string
         from pathlib import Path
 
-        # Validate disk name to prevent shell injection (defense in depth)
+        # Validate disk name to prevent injection (defense in depth)
         # GCP disk names must match: [a-z]([-a-z0-9]*[a-z0-9])?
         if not re.match(r'^[a-z]([-a-z0-9]*[a-z0-9])?$', self.original_disk_name):
             self._log_error(f"Invalid disk name format: {self.original_disk_name}")
             raise ValueError(f"Disk name contains invalid characters: {self.original_disk_name}")
 
-        # Use V2's own startup script template
-        script_file = Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount.sh'
+        # Select script based on OS type
+        if self.os_type == OS_TYPE_WINDOWS:
+            script_file = Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount_windows.ps1'
+            fallback_script = self._get_windows_fallback_script()
+
+            # Generate secure password for Windows rescue admin account
+            # 16 chars: uppercase, lowercase, digits, special chars (Windows complexity)
+            alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+            self.windows_rescue_password = ''.join(secrets.choice(alphabet) for _ in range(16))
+        else:
+            script_file = Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount.sh'
+            fallback_script = self._get_linux_fallback_script()
 
         if script_file.exists():
             with open(script_file, 'r') as f:
                 script = f.read()
                 # Replace disk name placeholder
                 script = script.replace('DISK_NAME_PLACEHOLDER', self.original_disk_name)
+                # Replace password placeholder for Windows
+                if self.os_type == OS_TYPE_WINDOWS and self.windows_rescue_password:
+                    script = script.replace('PASSWORD_PLACEHOLDER', self.windows_rescue_password)
                 return script
 
         # Fallback: inline script if template not found
         self._log_error("Warning: Startup script template not found, using fallback")
+        return fallback_script
+
+    def _get_windows_fallback_script(self) -> str:
+        """Generate fallback PowerShell script for Windows rescue mode."""
+        return f'''# GCE Rescue Mode - Windows Fallback Script
+$ErrorActionPreference = "Continue"
+$diskName = "{self.original_disk_name}"
+$logFile = "C:\\gce-rescue.log"
+
+function Write-Log {{
+    param([string]$Message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logMessage = "[$timestamp] $Message"
+    Write-Host $logMessage
+    Add-Content -Path $logFile -Value $logMessage
+}}
+
+Write-Log "=== GCE Rescue Mode - Windows ==="
+Write-Log "Affected disk: $diskName"
+
+# Wait for disk
+$maxAttempts = 60
+$attempt = 0
+$diskFound = $false
+
+while ($attempt -lt $maxAttempts) {{
+    $attempt++
+    $disks = Get-Disk | Where-Object {{ $_.Number -ne 0 }}
+    if ($disks) {{
+        Write-Log "Found $($disks.Count) additional disk(s)"
+        $diskFound = $true
+        break
+    }}
+    Write-Log "Waiting for disk... attempt $attempt/$maxAttempts"
+    Start-Sleep -Seconds 5
+}}
+
+if (-not $diskFound) {{
+    Write-Log "ERROR: Affected disk not found"
+    exit 1
+}}
+
+# Process disks
+foreach ($disk in $disks) {{
+    Write-Log "Processing Disk $($disk.Number)"
+    try {{
+        if ($disk.OperationalStatus -eq 'Offline') {{
+            Set-Disk -Number $disk.Number -IsOffline $false
+        }}
+        if ($disk.IsReadOnly) {{
+            Set-Disk -Number $disk.Number -IsReadOnly $false
+        }}
+        $partitions = Get-Partition -DiskNumber $disk.Number | Where-Object {{ $_.Type -ne 'Reserved' -and $_.Size -gt 1GB }}
+        foreach ($partition in $partitions) {{
+            if (-not $partition.DriveLetter) {{
+                $usedLetters = (Get-Partition | Where-Object {{ $_.DriveLetter }}).DriveLetter
+                foreach ($letter in 'D', 'E', 'F', 'G', 'H') {{
+                    if ($letter -notin $usedLetters) {{
+                        Set-Partition -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -NewDriveLetter $letter
+                        Write-Log "Mounted partition at $letter`:"
+                        break
+                    }}
+                }}
+            }}
+        }}
+    }} catch {{
+        Write-Log "ERROR: $_"
+    }}
+}}
+
+Write-Log "=== GCE Rescue Ready ==="
+'''
+
+    def _get_linux_fallback_script(self) -> str:
+        """Generate fallback Bash script for Linux rescue mode."""
         return f"""#!/bin/bash
 # GCE Rescue Mode - Fallback Script
 LOGFILE="/var/log/gce-rescue.log"

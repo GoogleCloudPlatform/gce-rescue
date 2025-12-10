@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gce-rescue"
+version = "2.0.0-beta.1"
+description = "Rescue unbootable Google Compute Engine VMs"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+authors = [
+    {name = "GCE Rescue Team", email = "gce-rescue-dev@google.com"}
+]
+keywords = ["gcp", "gce", "google-cloud", "rescue", "vm", "recovery"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Recovery Tools",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "google-auth>=2.42.0",
+    "google-api-python-client>=2.185.0",
+    "google-auth-httplib2>=0.2.0",
+    "httplib2>=0.22.0",
+    "pyyaml>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+gce-rescue = "gce_rescue_v2.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/gokulr94/gce-rescue"
+Repository = "https://github.com/gokulr94/gce-rescue"
+Issues = "https://github.com/gokulr94/gce-rescue/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gce_rescue_v2*"]
+
+[tool.setuptools.package-data]
+gce_rescue_v2 = ["startup_scripts/*.sh", "startup_scripts/*.ps1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
