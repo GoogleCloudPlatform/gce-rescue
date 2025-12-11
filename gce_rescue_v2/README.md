@@ -11,7 +11,7 @@
 | **Windows Support** | Linux only | Linux + Windows |
 | **Auto-Rollback** | Manual recovery needed | Automatic on failure |
 | **CLI Commands** | Single toggle command | Separate `rescue` / `restore` |
-| **Safety Snapshots** | Always created | Optional (`--no-snapshot`) |
+| **Safety Snapshots** | Optional (`--skip-snapshot`) | Optional (`--no-snapshot`) |
 | **OS Detection** | N/A | Automatic Linux/Windows |
 | **Output Formats** | Text only | JSON, YAML, Table |
 
@@ -241,12 +241,12 @@ Connect via RDP: gcloud compute reset-windows-password win-server --zone=us-cent
 
 ## Upgrading from V1
 
-| V1 | V2 |
-|----|----|
-| `gce-rescue -n VM -z ZONE` | `gce-rescue-v2 rescue VM --zone ZONE` |
-| Same command to restore | `gce-rescue-v2 restore VM --zone ZONE` |
-| Linux only | Linux + Windows |
-| Manual recovery on failure | Automatic rollback |
+| Action | V1 | V2 |
+|--------|----|----|
+| Enter rescue | `gce-rescue -n VM -z ZONE` | `gce-rescue-v2 rescue VM --zone ZONE` |
+| Exit rescue | `gce-rescue -n VM -z ZONE` (same) | `gce-rescue-v2 restore VM --zone ZONE` |
+| Skip snapshot | `--skip-snapshot` | `--no-snapshot` |
+| No prompts | `-f` or `--force` | `--quiet` |
 
 ## Support
 
