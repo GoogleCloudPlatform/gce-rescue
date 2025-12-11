@@ -11,7 +11,7 @@ Tests:
 
 import pytest
 from unittest.mock import Mock, patch
-from operations.start_vm import StartVMOperation
+from gce_rescue_v2.operations.start_vm import StartVMOperation
 
 class TestStartVMOperation:
 

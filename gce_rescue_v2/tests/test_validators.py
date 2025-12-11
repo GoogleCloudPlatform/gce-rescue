@@ -14,10 +14,10 @@ import pytest
 from google.auth.exceptions import DefaultCredentialsError
 from googleapiclient.errors import HttpError
 
-from validators.base import ValidationRunner, BaseValidator
-from validators.credentials import CredentialsValidator
-from validators.iam_permissions import IAMPermissionsValidator
-from validators.vm_state import VMStateValidator
+from gce_rescue_v2.validators.base import ValidationRunner, BaseValidator
+from gce_rescue_v2.validators.credentials import CredentialsValidator
+from gce_rescue_v2.validators.iam_permissions import IAMPermissionsValidator
+from gce_rescue_v2.validators.vm_state import VMStateValidator
 
 
 class TestCredentialsValidator:
@@ -216,7 +216,7 @@ class TestValidationRunner:
             return "Pass"
 
         def validate(self):
-            from validators.base import ValidationResult
+            from gce_rescue_v2.validators.base import ValidationResult
 
             return ValidationResult(validator_name=self.name, passed=True, message="ok")
 
@@ -226,7 +226,7 @@ class TestValidationRunner:
             return "Fail"
 
         def validate(self):
-            from validators.base import ValidationResult
+            from gce_rescue_v2.validators.base import ValidationResult
 
             return ValidationResult(validator_name=self.name, passed=False, message="bad")
 

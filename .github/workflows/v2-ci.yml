@@ -35,13 +35,15 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r gce_rescue_v2/requirements.txt
         pip install pytest pytest-cov
+
+    - name: Install package
+      run: |
+        pip install -e .
 
     - name: Run V2 tests
       run: |
-        cd gce_rescue_v2
-        python -m pytest tests/ -v --tb=short
+        python -m pytest gce_rescue_v2/tests/ -v --tb=short
 
   lint-v2:
     runs-on: ubuntu-latest

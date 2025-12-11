@@ -9,7 +9,7 @@ Tests:
 
 import pytest
 from unittest.mock import Mock, patch
-from operations.attach_disk import AttachDiskOperation
+from gce_rescue_v2.operations.attach_disk import AttachDiskOperation
 
 class TestAttachDiskOperation:
 

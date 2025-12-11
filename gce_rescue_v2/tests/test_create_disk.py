@@ -10,7 +10,7 @@ Tests:
 
 import pytest
 from unittest.mock import Mock, patch
-from operations.create_disk import CreateDiskOperation
+from gce_rescue_v2.operations.create_disk import CreateDiskOperation
 
 class TestCreateDiskOperation:
 

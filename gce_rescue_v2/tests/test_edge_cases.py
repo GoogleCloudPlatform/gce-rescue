@@ -9,12 +9,12 @@ from unittest.mock import Mock
 import pytest
 from googleapiclient.errors import HttpError
 
-from operations.attach_disk import AttachDiskOperation
-from operations.stop_vm import StopVMOperation
-from operations.create_snapshot import CreateSnapshotOperation
-from validators.vm_state import VMStateValidator
-from orchestration.rollback import RollbackHandler
-from orchestration.state import StateTracker
+from gce_rescue_v2.operations.attach_disk import AttachDiskOperation
+from gce_rescue_v2.operations.stop_vm import StopVMOperation
+from gce_rescue_v2.operations.create_snapshot import CreateSnapshotOperation
+from gce_rescue_v2.validators.vm_state import VMStateValidator
+from gce_rescue_v2.orchestration.rollback import RollbackHandler
+from gce_rescue_v2.orchestration.state import StateTracker
 
 
 def _exec(payload=None, exc=None):
