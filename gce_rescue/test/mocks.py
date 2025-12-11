@@ -50,10 +50,10 @@ def mock_api_object(mocks_list: List[str]):
   responses = []
   for mock in mocks_list:
     if mock not in mock_data:
-      raise Exception(ValueError, mock)
+      raise ValueError(f'Unknown mock: {mock}')
     file_name = os.path.join(os.path.dirname(__file__), mock_data[mock])
     if not pathlib.Path(file_name).is_file():
-      raise Exception(FileNotFoundError, file_name)
+      raise FileNotFoundError(f'Mock file not found: {file_name}')
     with open(file_name, encoding='utf-8') as fd:
       data = json.load(fd)
     responses.append(

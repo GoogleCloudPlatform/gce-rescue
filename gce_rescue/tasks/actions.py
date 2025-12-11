@@ -113,7 +113,7 @@ def _list_tasks(vm: Instance, action: str) -> List:
   }
 
   if action not in all_tasks:
-    _logger.info(f'Unable to find "{action}".')
+    _logger.info('Unable to find "%s".', action)
     raise ValueError()
   return all_tasks[action]
 
@@ -124,7 +124,7 @@ def call_tasks(vm: Instance, action: str) -> None:
   async_backup_thread = None
   if action == 'set_rescue_mode':
     if get_config('skip-snapshot'):
-      _logger.info(f'Skipping snapshot backup.')
+      _logger.info('Skipping snapshot backup.')
     else:
       take_snapshot(vm)
       async_backup_thread = True
@@ -141,7 +141,7 @@ def call_tasks(vm: Instance, action: str) -> None:
     tracker.advance(step = 1)
 
   if async_backup_thread:
-    _logger.info(f'Waiting for async backup to finish')
+    _logger.info('Waiting for async backup to finish')
     take_snapshot(vm, join_snapshot=True)
     _logger.info('done.')
   tracker.finish()
