@@ -44,12 +44,12 @@ def _create_rescue_disk(vm, source_disk: str) -> Dict:
     if e.status_code == 404:
       _logger.info('Creating rescue disk %s...', vm.rescue_disk)
     else:
-      raise Exception(e) from e
+      raise googleapiclient.errors.HttpError(e.resp, e.content) from e
 
   if 'name' in chk_disk_exist.keys():
     if 'users' in chk_disk_exist.keys():
       disk_users = chk_disk_exist['users']
-      raise Exception(
+      raise RuntimeError(
         f'Disk {vm.rescue_disk} is currently in use: {disk_users}'
       )
     _logger.info('Disk %s already exist. Skipping...', vm.rescue_disk)
@@ -146,7 +146,7 @@ def attach_disk(
     request = _set_disk_label(vm, disk_name)
     if request['status'] != 'DONE':
       _logger.error('Unable to set label to disk %s.', disk_name)
-      raise Exception(request)
+      raise RuntimeError(f'Failed to set label: {request}')
     else:
       _logger.info('Label configured successfully disk %s.', disk_name)
   attach_disk_body = {
