@@ -32,16 +32,6 @@ When your VM won't boot, GCE Rescue:
 
 If anything fails, it **automatically rolls back** to the original state.
 
-## Common Use Cases
-
-| Problem | How to Fix |
-|---------|------------|
-| Bad `/etc/fstab` entry | Edit `/mnt/affected-disk/etc/fstab` |
-| Full disk | Delete files from `/mnt/affected-disk/var/log/` |
-| Locked out (firewall/SSH) | Fix config in `/mnt/affected-disk/etc/` |
-| Failed OS update | Restore packages or boot config |
-| Corrupted boot loader | Run `grub-install` in chroot |
-
 ## Requirements
 
 - **Python 3.9+** and **gcloud CLI** installed
@@ -78,25 +68,78 @@ gce-rescue-v2 restore VM_NAME --zone ZONE [--project PROJECT] [--quiet]
 | `--quiet` | No confirmation prompts (for automation) |
 | `--format` | Output format: `table`, `json`, `yaml` |
 
-## After Rescue
+## Example: Linux VM
 
-### Linux
+Fix a bad `/etc/fstab` entry that prevents boot:
 
 ```bash
-gcloud compute ssh my-vm --zone us-central1-a
+# 1. Rescue the VM
+$ gce-rescue-v2 rescue web-server --zone us-central1-a
 
-# Your broken disk is at /mnt/affected-disk
-ls /mnt/affected-disk/
-sudo nano /mnt/affected-disk/etc/fstab
+Creating snapshot... done
+Stopping VM... done
+Creating rescue disk... done
+Starting in rescue mode... done
+
+Rescue complete! Connect with:
+  gcloud compute ssh web-server --zone us-central1-a
+
+Your disk is mounted at: /mnt/affected-disk
+
+# 2. SSH in and fix the issue
+$ gcloud compute ssh web-server --zone us-central1-a
+
+user@web-server:~$ sudo nano /mnt/affected-disk/etc/fstab
+# Comment out or fix the bad entry, save and exit
+
+user@web-server:~$ exit
+
+# 3. Restore the VM
+$ gce-rescue-v2 restore web-server --zone us-central1-a
+
+Stopping VM... done
+Restoring boot disk... done
+Starting VM... done
+
+Restore complete! Your VM is back to normal.
 ```
 
-### Windows
+## Example: Windows VM
+
+Fix a misconfigured service that prevents boot:
 
 ```bash
-# Get RDP credentials
-gcloud compute reset-windows-password my-vm --zone us-central1-a
+# 1. Rescue the VM
+$ gce-rescue-v2 rescue win-server --zone us-central1-a
 
-# Connect via RDP - your disk is at D:\ or E:\
+Creating snapshot... done
+Stopping VM... done
+Creating rescue disk... done
+Starting in rescue mode... done
+
+Rescue complete! Get RDP credentials with:
+  gcloud compute reset-windows-password win-server --zone us-central1-a
+
+Your disk is mounted at: D:\ or E:\
+
+# 2. Get RDP credentials and connect
+$ gcloud compute reset-windows-password win-server --zone us-central1-a
+
+ip_address: 35.192.0.1
+username: rescue_admin
+password: A1b2C3d4E5f6
+
+# 3. RDP into the VM, fix files on D:\ or E:\
+#    Example: D:\Windows\System32\config\
+
+# 4. Restore the VM
+$ gce-rescue-v2 restore win-server --zone us-central1-a
+
+Stopping VM... done
+Restoring boot disk... done
+Starting VM... done
+
+Restore complete! Your VM is back to normal.
 ```
 
 ## Upgrading from V1
@@ -107,12 +150,6 @@ gcloud compute reset-windows-password my-vm --zone us-central1-a
 | Same command to restore | `gce-rescue-v2 restore VM --zone ZONE` |
 | Linux only | Linux + Windows |
 | Manual recovery on failure | Automatic rollback |
-
-## Limitations
-
-- **Shielded VMs**: Disable Secure Boot temporarily
-- **Encrypted disks (CMEK/LUKS/BitLocker)**: Requires manual decryption
-- **LVM/RAID**: Run `vgchange -ay` manually after rescue
 
 ## Support
 
