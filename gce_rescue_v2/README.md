@@ -2,92 +2,201 @@
 
 A tool to rescue unbootable Google Compute Engine (GCE) virtual machines by booting them into a rescue environment.
 
-## Overview
+> **Beta Notice**: This is a beta release. Please report issues at [GitHub Issues](https://github.com/GoogleCloudPlatform/gce-rescue/issues).
 
-When a VM becomes unbootable due to misconfiguration, corrupted files, or boot issues, GCE Rescue V2 allows you to:
+---
 
-1. **Rescue**: Boot the VM from a temporary rescue disk, with the original boot disk attached as a secondary disk for repair
-2. **Restore**: Return the VM to its original state after repairs are complete
+## What's New in V2
 
-## Features
+| Feature | V1 | V2 |
+|---------|----|----|
+| **Windows Support** | Linux only | Linux + Windows |
+| **Auto-Rollback** | Manual recovery needed | Automatic on failure |
+| **CLI Style** | Single toggle command | Separate `rescue` / `restore` |
+| **Safety Snapshots** | Always created | Optional (default: on) |
+| **OS Detection** | N/A | Automatic Linux/Windows |
+| **Output Formats** | Text only | JSON, YAML, Table |
 
-- **Automatic Rollback**: If any operation fails, the system automatically rolls back to the previous state
-- **Safety Snapshots**: Creates a snapshot of the boot disk before rescue (optional but recommended)
-- **Clean Error Messages**: User-friendly error messages instead of raw API responses
-- **Modular Architecture**: Each operation is isolated and can be individually tested
+---
 
-## Requirements
+## When to Use GCE Rescue
 
-- **Python**: 3.9 or higher
-- **Google Cloud SDK**: `gcloud` CLI installed and configured
-- **Authentication**: Valid GCP credentials with required permissions
-- **IAM Permissions**:
-  - `compute.instances.get`
-  - `compute.instances.stop`
-  - `compute.instances.start`
-  - `compute.instances.attachDisk`
-  - `compute.instances.detachDisk`
-  - `compute.instances.setMetadata`
-  - `compute.disks.create`
-  - `compute.disks.delete`
-  - `compute.snapshots.create` (if snapshots enabled)
+Use this tool when your VM won't boot due to:
 
-## Installation
+- **Bad `/etc/fstab` entry** - VM hangs on boot
+- **Corrupted boot loader** - GRUB/Windows Boot Manager issues
+- **Full disk** - No space left, services won't start
+- **Misconfigured firewall** - Locked out of SSH/RDP
+- **Broken system files** - Deleted critical files
+- **Failed updates** - Kernel or Windows Update broke the system
 
-```bash
-# Option 1: Install directly from GitHub (recommended for beta)
-pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git@v2-beta
+---
 
-# Option 2: Clone and install locally
-git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
-cd gce-rescue
-git checkout v2-beta
-pip install -e .
+## How It Works
 
-# Verify installation
-gce-rescue-v2 --help
 ```
+┌─────────────────────────────────────────────────────────────────┐
+│                        RESCUE MODE                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   BEFORE RESCUE              AFTER RESCUE                        │
+│   ┌──────────────┐           ┌──────────────┐                   │
+│   │     VM       │           │     VM       │                   │
+│   ├──────────────┤           ├──────────────┤                   │
+│   │ [Boot Disk]  │  ──────►  │ [Rescue Disk]│ ◄── Boots from    │
+│   │  (broken)    │           │  (Debian 12) │     rescue OS     │
+│   └──────────────┘           ├──────────────┤                   │
+│                              │ [Boot Disk]  │ ◄── Mounted at    │
+│                              │  (broken)    │     /mnt/affected │
+│                              └──────────────┘                   │
+│                                                                  │
+│   You can now SSH in and fix files on the broken disk!          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Quick Start
 
-### Rescue a VM
+### 1. Install
 
 ```bash
-# Basic rescue
-gce-rescue-v2 rescue my-vm --zone us-central1-a
+# Install from GitHub
+pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git@v2-beta
 
-# With explicit project
-gce-rescue-v2 rescue my-vm --zone us-central1-a --project my-project
-
-# Skip snapshot (faster, but less safe)
-gce-rescue-v2 rescue my-vm --zone us-central1-a --no-snapshot
+# Verify
+gce-rescue-v2 --version
 ```
 
-### Connect to Rescued VM
-
-After rescue completes, SSH into the VM:
+### 2. Authenticate
 
 ```bash
-gcloud compute ssh my-vm --zone us-central1-a
+# Login with your Google account
+gcloud auth application-default login
+
+# Set your project (optional - can also use --project flag)
+gcloud config set project YOUR_PROJECT_ID
 ```
 
-The original boot disk is mounted at `/mnt/affected-disk`. You can now:
-- Edit configuration files
-- Fix fstab entries
-- Repair boot loader
-- Recover data
+### 3. Rescue a VM
 
-### Restore the VM
+```bash
+# Linux VM
+gce-rescue-v2 rescue my-linux-vm --zone us-central1-a
 
-When repairs are complete, restore the VM to normal:
+# Windows VM (auto-detected)
+gce-rescue-v2 rescue my-windows-vm --zone us-central1-a
+```
+
+### 4. Connect and Fix
+
+**Linux:**
+```bash
+gcloud compute ssh my-linux-vm --zone us-central1-a
+
+# Your broken disk is at /mnt/affected-disk
+sudo nano /mnt/affected-disk/etc/fstab
+```
+
+**Windows:**
+```bash
+# Get RDP credentials
+gcloud compute reset-windows-password my-windows-vm --zone us-central1-a
+
+# Connect via RDP, broken disk is at D:\ or E:\
+```
+
+### 5. Restore
 
 ```bash
 gce-rescue-v2 restore my-vm --zone us-central1-a
 ```
 
+---
+
+## Installation Options
+
+### Option 1: Install from GitHub (Recommended for Beta)
+
+```bash
+pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git@v2-beta
+```
+
+### Option 2: Clone and Install Locally
+
+```bash
+git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
+cd gce-rescue
+git checkout v2-beta
+pip install -e .
+```
+
+### Option 3: Run Without Installing
+
+```bash
+git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
+cd gce-rescue
+git checkout v2-beta
+pip install -r gce_rescue_v2/requirements.txt
+
+# Run directly
+python -m gce_rescue_v2.cli rescue my-vm --zone us-central1-a
+```
+
+### Verify Installation
+
+```bash
+gce-rescue-v2 --version
+# Output: gce-rescue-v2 2.0.0-beta.1
+
+gce-rescue-v2 --help
+```
+
+---
+
+## Requirements
+
+### System Requirements
+
+| Requirement | Details |
+|-------------|---------|
+| **Python** | 3.9 or higher |
+| **gcloud CLI** | Installed and configured |
+| **Network** | Access to GCP APIs |
+
+### IAM Permissions
+
+Your account needs these permissions on the target VM:
+
+```
+compute.instances.get
+compute.instances.stop
+compute.instances.start
+compute.instances.attachDisk
+compute.instances.detachDisk
+compute.instances.setMetadata
+compute.disks.create
+compute.disks.delete
+compute.disks.get
+compute.snapshots.create (if using snapshots)
+```
+
+**Quick setup** - Grant the `Compute Instance Admin (v1)` role:
+
+```bash
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="user:YOUR_EMAIL" \
+  --role="roles/compute.instanceAdmin.v1"
+```
+
+---
+
 ## Command Reference
 
 ### Rescue Command
+
+Put a VM into rescue mode:
 
 ```bash
 gce-rescue-v2 rescue <VM_NAME> --zone <ZONE> [OPTIONS]
@@ -96,12 +205,30 @@ gce-rescue-v2 rescue <VM_NAME> --zone <ZONE> [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--zone` | GCP zone (required) | - |
-| `--project` | GCP project ID | Current gcloud project |
-| `--snapshot` / `--no-snapshot` | Create safety snapshot | `--snapshot` |
-| `--disk-size` | Rescue disk size in GB | 10 |
-| `--format` | Output format (json, yaml, table) | table |
+| `--project` | GCP project ID | Current gcloud config |
+| `--no-snapshot` | Skip safety snapshot | Snapshot enabled |
+| `--quiet` | No confirmation prompts | Interactive |
+| `--format` | Output: `json`, `yaml`, `table`, `disable` | `table` |
+
+**Examples:**
+
+```bash
+# Basic rescue
+gce-rescue-v2 rescue web-server --zone us-central1-a
+
+# With explicit project
+gce-rescue-v2 rescue web-server --zone us-central1-a --project my-project
+
+# Skip snapshot (faster)
+gce-rescue-v2 rescue web-server --zone us-central1-a --no-snapshot
+
+# Automation-friendly (no prompts, JSON output)
+gce-rescue-v2 rescue web-server --zone us-central1-a --quiet --format json
+```
 
 ### Restore Command
+
+Return a VM to normal operation:
 
 ```bash
 gce-rescue-v2 restore <VM_NAME> --zone <ZONE> [OPTIONS]
@@ -110,226 +237,373 @@ gce-rescue-v2 restore <VM_NAME> --zone <ZONE> [OPTIONS]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--zone` | GCP zone (required) | - |
-| `--project` | GCP project ID | Current gcloud project |
-| `--keep-disk` | Don't delete rescue disk | Delete |
-| `--format` | Output format (json, yaml, table) | table |
+| `--project` | GCP project ID | Current gcloud config |
+| `--keep-rescue-disk` | Don't delete rescue disk | Delete |
+| `--quiet` | No confirmation prompts | Interactive |
+| `--format` | Output format | `table` |
 
-## How It Works
-
-### Rescue Workflow
-
-```
-1. Validate       → Check permissions, VM state
-2. Stop VM        → Gracefully stop the instance
-3. Snapshot       → Create safety snapshot (optional)
-4. Detach Boot    → Remove original boot disk
-5. Create Rescue  → Create new disk from Debian image
-6. Attach Rescue  → Attach rescue disk as boot
-7. Attach Orig    → Attach original disk as secondary
-8. Set Metadata   → Add startup script to mount disk
-9. Start VM       → Boot into rescue environment
-```
-
-### Restore Workflow
-
-```
-1. Validate       → Check VM is in rescue mode
-2. Stop VM        → Stop the rescue environment
-3. Detach Rescue  → Remove rescue disk
-4. Detach Orig    → Detach original disk
-5. Attach Boot    → Re-attach original disk as boot
-6. Clear Metadata → Remove rescue startup script
-7. Start VM       → Boot normally
-8. Delete Rescue  → Clean up rescue disk (optional)
-```
-
-## Example Session
+**Examples:**
 
 ```bash
-# VM is unbootable - let's rescue it
+# Basic restore
+gce-rescue-v2 restore web-server --zone us-central1-a
+
+# Keep rescue disk for inspection
+gce-rescue-v2 restore web-server --zone us-central1-a --keep-rescue-disk
+```
+
+---
+
+## Linux Rescue Guide
+
+### After Rescue
+
+1. **SSH into the VM:**
+   ```bash
+   gcloud compute ssh my-vm --zone us-central1-a
+   ```
+
+2. **Your broken disk is mounted at `/mnt/affected-disk`:**
+   ```bash
+   ls /mnt/affected-disk/
+   # etc  home  root  var  ...
+   ```
+
+### Common Fixes
+
+**Fix /etc/fstab:**
+```bash
+sudo nano /mnt/affected-disk/etc/fstab
+# Comment out or fix the bad entry
+```
+
+**Reset root password:**
+```bash
+sudo chroot /mnt/affected-disk
+passwd root
+exit
+```
+
+**Check disk space:**
+```bash
+df -h /mnt/affected-disk
+# Free up space if needed
+sudo rm /mnt/affected-disk/var/log/*.gz
+```
+
+**Repair GRUB:**
+```bash
+sudo chroot /mnt/affected-disk
+grub-install /dev/sdb
+update-grub
+exit
+```
+
+**View boot logs:**
+```bash
+cat /mnt/affected-disk/var/log/boot.log
+journalctl -D /mnt/affected-disk/var/log/journal/
+```
+
+---
+
+## Windows Rescue Guide
+
+### After Rescue
+
+1. **Get RDP credentials:**
+   ```bash
+   gcloud compute reset-windows-password my-windows-vm --zone us-central1-a
+   ```
+
+2. **Connect via RDP** using the IP and credentials shown
+
+3. **Find the affected disk** - Look for drive `D:\` or `E:\` in File Explorer
+
+### Common Fixes
+
+**Edit system files:**
+```
+Open Notepad as Administrator
+File > Open > D:\Windows\System32\drivers\etc\hosts
+```
+
+**Repair boot configuration:**
+```powershell
+# Open Command Prompt as Administrator
+bcdboot D:\Windows /s C:
+```
+
+**Access Registry:**
+```
+1. Open regedit
+2. Select HKEY_LOCAL_MACHINE
+3. File > Load Hive
+4. Navigate to D:\Windows\System32\config\SYSTEM
+5. Give it a name like "OFFLINE_SYSTEM"
+6. Make your changes
+7. File > Unload Hive
+```
+
+**Check Event Logs:**
+```
+Event Viewer > Open Saved Log > D:\Windows\System32\winevt\Logs\System.evtx
+```
+
+---
+
+## Example: Full Rescue Session
+
+```bash
+# 1. VM is unbootable - rescue it
 $ gce-rescue-v2 rescue web-server --zone us-central1-a
 
-Pre-flight Validation:
-  [OK] Credentials valid
-  [OK] IAM permissions verified
-  [OK] VM state valid (RUNNING)
+GCE Rescue V2 - Rescue Mode
+============================
+
+Target: web-server (us-central1-a)
+OS Type: Linux (auto-detected)
+
+Pre-flight Checks:
+  ✓ Credentials valid
+  ✓ IAM permissions verified
+  ✓ VM exists and is accessible
+  ✓ VM state: RUNNING
+
+This will:
+  1. Stop the VM
+  2. Create a safety snapshot
+  3. Boot from a rescue disk (Debian 12)
+  4. Mount original disk at /mnt/affected-disk
+
+Proceed? [Y/n]: y
 
 Executing Rescue:
-  [OK] VM stopped (45s)
-  [OK] Snapshot created: pre-rescue-web-server-1702060800
-  [OK] Boot disk detached
-  [OK] Rescue disk created
-  [OK] Rescue disk attached as boot
-  [OK] Original disk attached as secondary
-  [OK] Startup script configured
-  [OK] VM started (30s)
+  ✓ Creating snapshot... done (15s)
+  ✓ Stopping VM... done (45s)
+  ✓ Creating rescue disk... done (30s)
+  ✓ Configuring boot order... done
+  ✓ Starting VM... done (60s)
 
-Rescue Complete!
+════════════════════════════════════════════════════════
+  RESCUE COMPLETE
+════════════════════════════════════════════════════════
 
-Connect to VM:
-  gcloud compute ssh web-server --zone us-central1-a
+Connect to your VM:
+  $ gcloud compute ssh web-server --zone us-central1-a
 
-Original disk mounted at:
+Affected disk location:
   /mnt/affected-disk
 
-When done, restore with:
-  gce-rescue-v2 restore web-server --zone us-central1-a
+When finished, restore with:
+  $ gce-rescue-v2 restore web-server --zone us-central1-a
 
-# SSH and fix the issue
+Safety snapshot created:
+  rescue-snapshot-web-server-1702060800
+
+
+# 2. SSH in and fix the issue
 $ gcloud compute ssh web-server --zone us-central1-a
 user@web-server:~$ sudo nano /mnt/affected-disk/etc/fstab
 user@web-server:~$ exit
 
-# Restore the VM
+# 3. Restore the VM
 $ gce-rescue-v2 restore web-server --zone us-central1-a
 
-Pre-flight Validation:
-  [OK] Credentials valid
-  [OK] IAM permissions verified
-  [OK] VM is in rescue mode
+GCE Rescue V2 - Restore Mode
+============================
+
+Target: web-server (us-central1-a)
+Status: Currently in rescue mode
+
+This will:
+  1. Stop the VM
+  2. Remove rescue disk
+  3. Restore original boot disk
+  4. Start the VM normally
+
+Proceed? [Y/n]: y
 
 Executing Restore:
-  [OK] VM stopped (40s)
-  [OK] Rescue disk detached
-  [OK] Original disk detached
-  [OK] Original disk attached as boot
-  [OK] Rescue metadata cleared
-  [OK] VM started (35s)
-  [OK] Rescue disk deleted
+  ✓ Stopping VM... done (40s)
+  ✓ Detaching rescue disk... done
+  ✓ Restoring boot configuration... done
+  ✓ Starting VM... done (35s)
+  ✓ Cleaning up rescue disk... done
 
-Restore Complete!
-VM is now running with original boot disk.
+════════════════════════════════════════════════════════
+  RESTORE COMPLETE
+════════════════════════════════════════════════════════
+
+Your VM is now running with the original boot disk.
 ```
 
-## Windows Support
+---
 
-GCE Rescue V2 includes full support for Windows VMs:
+## Automatic Rollback
 
-- **Automatic OS Detection**: Detects Windows vs Linux VMs automatically
-- **Windows Server 2022**: Uses Windows Server 2022 Datacenter as rescue environment
-- **PowerShell Script**: Automatically mounts affected disk with drive letters (D:, E:, etc.)
-- **Desktop Instructions**: Creates a helpful instructions file on the desktop
+If something goes wrong during rescue, V2 automatically rolls back:
 
-### Rescue a Windows VM
+```
+Executing Rescue:
+  ✓ Creating snapshot... done
+  ✓ Stopping VM... done
+  ✓ Creating rescue disk... done
+  ✗ Attaching rescue disk... FAILED (quota exceeded)
 
-```bash
-# The tool automatically detects Windows VMs
-gce-rescue-v2 rescue my-windows-vm --zone us-central1-a
+Automatic Rollback:
+  ✓ Deleting rescue disk... done
+  ✓ Starting VM... done
+
+Rescue failed but VM has been restored to original state.
+Error: Quota exceeded for disk creation in zone us-central1-a
 ```
 
-### Connect to Rescued Windows VM
-
-After rescue completes, connect via RDP:
-
-```bash
-gcloud compute reset-windows-password my-windows-vm --zone us-central1-a
-```
-
-The affected disk is automatically mounted. Look for additional drive letters (D:, E:, etc.)
-
-**Common Windows repair tasks:**
-- Edit files: `notepad D:\Windows\System32\config\SOFTWARE`
-- Registry repair: Load hive in regedit from `D:\Windows\System32\config\`
-- Boot repair: `bcdboot D:\Windows /s C:`
+---
 
 ## Known Limitations
 
-| Limitation | Description | Workaround |
-|------------|-------------|------------|
-| **CMEK Encrypted Disks** | Encrypted disks not supported | Feature planned for future |
-| **Shielded VMs** | Secure Boot may block rescue disk | Disable Secure Boot temporarily |
-| **LVM/RAID** | Auto-mount doesn't work | Manually activate LVM in rescue shell |
-| **LUKS Encryption** | Encrypted partitions need passphrase | Manually unlock in rescue shell |
-| **BitLocker** | BitLocker encrypted drives need recovery key | Unlock with `manage-bde -unlock D: -RecoveryPassword KEY` |
+| Limitation | Impact | Workaround |
+|------------|--------|------------|
+| **CMEK Encrypted Disks** | Cannot create rescue disk | Decrypt disk first |
+| **Shielded VMs** | Secure Boot blocks rescue disk | Disable Secure Boot temporarily |
+| **Sole-Tenant VMs** | May fail to start rescue | Use standard VM temporarily |
+| **LVM/RAID** | Not auto-mounted | Manually run `vgchange -ay` |
+| **LUKS Encryption** | Not auto-mounted | Manually run `cryptsetup luksOpen` |
+| **BitLocker** | Not auto-mounted | Use recovery key with `manage-bde` |
+
+---
 
 ## Troubleshooting
 
-### "Permission denied" errors
-
-Ensure your account has the required IAM permissions:
+### "Permission denied" error
 
 ```bash
-gcloud projects add-iam-policy-binding PROJECT_ID \
-  --member="user:your-email@example.com" \
-  --role="roles/compute.instanceAdmin.v1"
+# Check your current account
+gcloud auth list
+
+# Re-authenticate
+gcloud auth application-default login
+
+# Verify permissions
+gcloud compute instances describe VM_NAME --zone ZONE
 ```
 
 ### VM won't start after rescue
 
-The rescue disk may have failed to attach. Check:
-
 ```bash
-gcloud compute instances describe VM_NAME --zone ZONE --format="value(disks)"
+# Check VM status
+gcloud compute instances describe VM_NAME --zone ZONE --format="value(status)"
+
+# Check attached disks
+gcloud compute instances describe VM_NAME --zone ZONE --format="yaml(disks)"
+
+# View serial console for boot errors
+gcloud compute instances get-serial-port-output VM_NAME --zone ZONE
 ```
 
 ### Disk not mounted at /mnt/affected-disk
 
-SSH into the VM and check:
-
 ```bash
-# Check startup script logs
+# SSH into the rescue VM
+gcloud compute ssh VM_NAME --zone ZONE
+
+# Check available disks
+lsblk
+
+# Check rescue script log
 cat /var/log/gce-rescue.log
 
-# Manually mount if needed
-sudo mount /dev/disk/by-id/google-DISK_NAME-part1 /mnt/affected-disk
+# Manually mount
+sudo mkdir -p /mnt/affected-disk
+sudo mount /dev/sdb1 /mnt/affected-disk
 ```
+
+### Rescue takes too long
+
+- Use `--no-snapshot` to skip snapshot creation
+- Check if the zone has capacity issues
+- Try a different zone if possible
+
+---
+
+## Differences from V1
+
+### Command Changes
+
+| Action | V1 | V2 |
+|--------|----|----|
+| Enter rescue | `gce-rescue -n VM -z ZONE` | `gce-rescue-v2 rescue VM --zone ZONE` |
+| Exit rescue | `gce-rescue -n VM -z ZONE` (same) | `gce-rescue-v2 restore VM --zone ZONE` |
+| Skip snapshot | `--skip-snapshot` | `--no-snapshot` |
+| Force mode | `-f` / `--force` | `--quiet` |
+
+### Behavior Changes
+
+- V2 has **separate** rescue and restore commands (clearer intent)
+- V2 **auto-detects** Windows vs Linux
+- V2 **auto-rolls back** on failure
+- V2 mounts disk at `/mnt/affected-disk` (V1: `/mnt/sysroot`)
+
+---
 
 ## Architecture
 
 ```
 gce_rescue_v2/
 ├── cli.py              # Command-line interface
-├── main.py             # Entry point functions
+├── main.py             # Entry points: rescue_vm(), restore_vm()
 ├── core/
 │   ├── config.py       # Configuration dataclasses
-│   ├── auth.py         # GCP authentication
-│   └── exceptions.py   # Custom exceptions
-├── operations/         # Individual operations
-│   ├── base.py         # Base operation class
+│   └── auth.py         # GCP authentication
+├── operations/         # Individual GCP operations
 │   ├── stop_vm.py
 │   ├── start_vm.py
 │   ├── create_disk.py
-│   ├── delete_disk.py
 │   ├── attach_disk.py
-│   ├── detach_disk.py
-│   ├── create_snapshot.py
-│   └── set_metadata.py
+│   └── ...
 ├── orchestration/      # Workflow coordination
 │   ├── rescue.py       # Rescue workflow
 │   ├── restore.py      # Restore workflow
-│   ├── rollback.py     # Rollback handler
-│   └── state.py        # State tracking
+│   └── rollback.py     # Automatic rollback
 ├── validators/         # Pre-flight checks
 │   ├── credentials.py
-│   ├── iam_permissions.py
 │   └── vm_state.py
-├── utils/              # Utility functions
-│   └── os_detection.py # OS type detection
-└── startup_scripts/
-    ├── rescue_mount.sh           # Linux auto-mount script
-    └── rescue_mount_windows.ps1  # Windows auto-mount script
+└── startup_scripts/    # Auto-mount scripts
+    ├── rescue_mount.sh
+    └── rescue_mount_windows.ps1
 ```
+
+---
 
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make changes and add tests
-4. Run tests: `pytest gce_rescue_v2/tests/`
-5. Submit a pull request
+3. Run tests: `pytest gce_rescue_v2/tests/ -v`
+4. Submit a pull request
 
-## License
-
-Apache License 2.0 - See [LICENSE](../LICENSE) for details.
-
-## Version
-
-Current version: **2.0.0-beta.1**
+---
 
 ## Support
 
-- **Issues**: https://github.com/GoogleCloudPlatform/gce-rescue/issues
+- **Issues**: [GitHub Issues](https://github.com/GoogleCloudPlatform/gce-rescue/issues)
 - **Documentation**: This README
+- **V1 Documentation**: [Main README](../README.md)
+
+---
+
+## Version
+
+**Current**: 2.0.0-beta.1
+
+**Changelog**: See [CHANGELOG.md](../CHANGELOG.md)
+
+---
+
+## License
+
+Apache License 2.0 - See [LICENSE](../LICENSE)
 
 ---
 
