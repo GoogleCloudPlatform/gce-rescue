@@ -8,8 +8,8 @@ Future command structure:
     gcloud compute instances restore <instance-name> --zone=<zone>
 
 Current standalone usage:
-    gce-rescue rescue <instance-name> --zone=<zone>
-    gce-rescue restore <instance-name> --zone=<zone>
+    gce-rescue-v2 rescue <instance-name> --zone=<zone>
+    gce-rescue-v2 restore <instance-name> --zone=<zone>
 """
 
 import argparse
@@ -101,28 +101,28 @@ def create_parser() -> argparse.ArgumentParser:
 
     # Main parser
     parser = argparse.ArgumentParser(
-        prog='gce-rescue',
+        prog='gce-rescue-v2',
         description='Google Compute Engine VM Rescue Tool (Beta)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES
     Rescue a VM:
-        $ gce-rescue rescue my-vm --zone=us-central1-a
+        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a
 
     Rescue without snapshot (faster):
-        $ gce-rescue rescue my-vm --zone=us-central1-a --no-snapshot
+        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a --no-snapshot
 
     Restore a VM:
-        $ gce-rescue restore my-vm --zone=us-central1-a
+        $ gce-rescue-v2 restore my-vm --zone=us-central1-a
 
     Automation (no prompts):
-        $ gce-rescue rescue my-vm --zone=us-central1-a --quiet
+        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a --quiet
 
 SUPPORTED OS
     - Linux (auto-detected): Boots Debian 12 rescue environment
     - Windows (auto-detected): Boots Windows Server 2022 rescue environment
 
-For more information: https://github.com/gokulr94/gce-rescue
+For more information: https://github.com/GoogleCloudPlatform/gce-rescue
         """
     )
 
@@ -130,7 +130,7 @@ For more information: https://github.com/gokulr94/gce-rescue
     parser.add_argument(
         '--version',
         action='version',
-        version=f'gce-rescue v{VERSION}'
+        version=f'gce-rescue-v2 {VERSION}'
     )
 
     # Subcommands
@@ -149,10 +149,10 @@ For more information: https://github.com/gokulr94/gce-rescue
         epilog="""
 EXAMPLES
     Rescue a VM:
-        $ gce-rescue rescue my-vm --zone=us-central1-a
+        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a
 
     Rescue without snapshot (faster but riskier):
-        $ gce-rescue rescue my-vm --zone=us-central1-a --no-snapshot
+        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a --no-snapshot
 
 AFTER RESCUE
     Linux VMs:
@@ -164,7 +164,7 @@ AFTER RESCUE
         Affected disk mounted at: D:\\ (or next available drive)
 
 TO EXIT RESCUE MODE
-    $ gce-rescue restore my-vm --zone=us-central1-a
+    $ gce-rescue-v2 restore my-vm --zone=us-central1-a
         """
     )
 
@@ -180,10 +180,10 @@ TO EXIT RESCUE MODE
         epilog="""
 EXAMPLES
     Restore a VM:
-        $ gce-rescue restore my-vm --zone=us-central1-a
+        $ gce-rescue-v2 restore my-vm --zone=us-central1-a
 
     Restore and keep rescue disk (for analysis):
-        $ gce-rescue restore my-vm --zone=us-central1-a --keep-rescue-disk
+        $ gce-rescue-v2 restore my-vm --zone=us-central1-a --keep-rescue-disk
 
 NOTES
     The rescue disk is deleted by default after restore.

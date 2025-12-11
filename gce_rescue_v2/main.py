@@ -149,7 +149,7 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
 
         logger.info("")
         logger.info("When done, restore your VM:")
-        logger.info(f"  python cli.py restore {vm_name} --zone={zone}")
+        logger.info(f"  gce-rescue-v2 restore {vm_name} --zone={zone}")
         logger.info("")
 
         return True

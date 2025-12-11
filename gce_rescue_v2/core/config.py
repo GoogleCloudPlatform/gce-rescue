@@ -7,8 +7,8 @@ This module manages configuration options for GCE Rescue operations.
 from dataclasses import dataclass, field
 from typing import Optional
 
-# Version for usage tracking
-VERSION = '2.0.0-beta'
+# Version for usage tracking (SemVer: MAJOR.MINOR.PATCH-PRERELEASE)
+VERSION = '2.0.0-beta.1'
 
 # OS Types
 OS_TYPE_LINUX = 'linux'
