@@ -26,18 +26,5 @@ poetry.lock
 vir-env/
 .env
 
-# Private planning/analysis documents (not for public repo)
-.private-docs/
-docs/internal/
-
-.claude/
-
-# AI context files (local session management - don't commit)
-# NOTE: Allowing .ai-context/*.md so Gemini/Codex can update their context files
-# These files exist locally but won't be committed (not staged)
-ai-context/
-# !.ai-context/README.md 
-
-
-.gemini/
-gha-creds-*.json
+# Private/local files
+private-docs/
