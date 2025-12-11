@@ -8,12 +8,11 @@
 
 | Feature | V1 | V2 |
 |---------|----|----|
-| **Windows Support** | Linux only | Linux + Windows |
-| **Auto-Rollback** | Manual recovery needed | Automatic on failure |
-| **CLI Commands** | Single toggle command | Separate `rescue` / `restore` |
-| **Safety Snapshots** | Optional (`--skip-snapshot`) | Optional (`--no-snapshot`) |
-| **OS Detection** | N/A | Automatic Linux/Windows |
-| **Output Formats** | Text only | JSON, YAML, Table |
+| **Windows VMs** | Not supported | Full support with RDP credentials |
+| **If rescue fails** | Manual cleanup needed | Automatic rollback to original state |
+| **XFS filesystems** | May fail with duplicate UUID | Handled automatically |
+| **CLI commands** | Same command toggles mode | Clear `rescue` and `restore` commands |
+| **Automation** | Text output only | JSON/YAML output for scripts |
 
 ## Prerequisites
 
