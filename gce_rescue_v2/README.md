@@ -4,6 +4,17 @@
 
 > **Beta**: Report issues at [GitHub Issues](https://github.com/GoogleCloudPlatform/gce-rescue/issues)
 
+## What's New in V2
+
+| Feature | V1 | V2 |
+|---------|----|----|
+| **Windows Support** | Linux only | Linux + Windows |
+| **Auto-Rollback** | Manual recovery needed | Automatic on failure |
+| **CLI Commands** | Single toggle command | Separate `rescue` / `restore` |
+| **Safety Snapshots** | Always created | Optional (`--no-snapshot`) |
+| **OS Detection** | N/A | Automatic Linux/Windows |
+| **Output Formats** | Text only | JSON, YAML, Table |
+
 ## Prerequisites
 
 ### 1. Install Python 3.9+
