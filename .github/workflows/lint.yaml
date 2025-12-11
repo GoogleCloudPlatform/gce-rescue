@@ -23,5 +23,5 @@ jobs:
     - name: Install dependencies
       run: pipenv install pylint
 
-    - name: Check code
-      run: pipenv run pylint --rcfile=.pylintrc **/*.py
+    - name: Check code (V1 only)
+      run: pipenv run pylint --rcfile=.pylintrc gce_rescue/**/*.py
