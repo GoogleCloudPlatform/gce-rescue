@@ -35,15 +35,17 @@ When a VM becomes unbootable due to misconfiguration, corrupted files, or boot i
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/gokulr94/gce-rescue.git
-cd gce-rescue
+# Option 1: Install directly from GitHub (recommended for beta)
+pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git@v2-beta
 
-# Install V2 dependencies
-pip install -r gce_rescue_v2/requirements.txt
+# Option 2: Clone and install locally
+git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
+cd gce-rescue
+git checkout v2-beta
+pip install -e .
 
 # Verify installation
-python -m gce_rescue_v2.cli --help
+gce-rescue-v2 --help
 ```
 
 ## Quick Start
@@ -52,13 +54,13 @@ python -m gce_rescue_v2.cli --help
 
 ```bash
 # Basic rescue
-python -m gce_rescue_v2.cli rescue my-vm --zone us-central1-a
+gce-rescue-v2 rescue my-vm --zone us-central1-a
 
 # With explicit project
-python -m gce_rescue_v2.cli rescue my-vm --zone us-central1-a --project my-project
+gce-rescue-v2 rescue my-vm --zone us-central1-a --project my-project
 
 # Skip snapshot (faster, but less safe)
-python -m gce_rescue_v2.cli rescue my-vm --zone us-central1-a --no-snapshot
+gce-rescue-v2 rescue my-vm --zone us-central1-a --no-snapshot
 ```
 
 ### Connect to Rescued VM
@@ -80,7 +82,7 @@ The original boot disk is mounted at `/mnt/affected-disk`. You can now:
 When repairs are complete, restore the VM to normal:
 
 ```bash
-python -m gce_rescue_v2.cli restore my-vm --zone us-central1-a
+gce-rescue-v2 restore my-vm --zone us-central1-a
 ```
 
 ## Command Reference
@@ -88,7 +90,7 @@ python -m gce_rescue_v2.cli restore my-vm --zone us-central1-a
 ### Rescue Command
 
 ```bash
-python -m gce_rescue_v2.cli rescue <VM_NAME> --zone <ZONE> [OPTIONS]
+gce-rescue-v2 rescue <VM_NAME> --zone <ZONE> [OPTIONS]
 ```
 
 | Option | Description | Default |
@@ -102,7 +104,7 @@ python -m gce_rescue_v2.cli rescue <VM_NAME> --zone <ZONE> [OPTIONS]
 ### Restore Command
 
 ```bash
-python -m gce_rescue_v2.cli restore <VM_NAME> --zone <ZONE> [OPTIONS]
+gce-rescue-v2 restore <VM_NAME> --zone <ZONE> [OPTIONS]
 ```
 
 | Option | Description | Default |
@@ -145,7 +147,7 @@ python -m gce_rescue_v2.cli restore <VM_NAME> --zone <ZONE> [OPTIONS]
 
 ```bash
 # VM is unbootable - let's rescue it
-$ python -m gce_rescue_v2.cli rescue web-server --zone us-central1-a
+$ gce-rescue-v2 rescue web-server --zone us-central1-a
 
 Pre-flight Validation:
   [OK] Credentials valid
@@ -171,7 +173,7 @@ Original disk mounted at:
   /mnt/affected-disk
 
 When done, restore with:
-  python -m gce_rescue_v2.cli restore web-server --zone us-central1-a
+  gce-rescue-v2 restore web-server --zone us-central1-a
 
 # SSH and fix the issue
 $ gcloud compute ssh web-server --zone us-central1-a
@@ -179,7 +181,7 @@ user@web-server:~$ sudo nano /mnt/affected-disk/etc/fstab
 user@web-server:~$ exit
 
 # Restore the VM
-$ python -m gce_rescue_v2.cli restore web-server --zone us-central1-a
+$ gce-rescue-v2 restore web-server --zone us-central1-a
 
 Pre-flight Validation:
   [OK] Credentials valid
@@ -212,7 +214,7 @@ GCE Rescue V2 includes full support for Windows VMs:
 
 ```bash
 # The tool automatically detects Windows VMs
-python -m gce_rescue_v2.cli rescue my-windows-vm --zone us-central1-a
+gce-rescue-v2 rescue my-windows-vm --zone us-central1-a
 ```
 
 ### Connect to Rescued Windows VM
@@ -322,11 +324,11 @@ Apache License 2.0 - See [LICENSE](../LICENSE) for details.
 
 ## Version
 
-Current version: **2.0.0-beta**
+Current version: **2.0.0-beta.1**
 
 ## Support
 
-- **Issues**: https://github.com/gokulr94/gce-rescue/issues
+- **Issues**: https://github.com/GoogleCloudPlatform/gce-rescue/issues
 - **Documentation**: This README
 
 ---
