@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import cli
+from gce_rescue_v2 import cli
 
 
 class TestCLIArguments:

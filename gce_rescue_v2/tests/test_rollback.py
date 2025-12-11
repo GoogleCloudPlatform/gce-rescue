@@ -10,12 +10,12 @@ Tests:
 
 from unittest.mock import Mock
 
-from orchestration.rollback import (
+from gce_rescue_v2.orchestration.rollback import (
     RollbackHandler,
     ROLLBACK_DEPENDENCIES,
     CRITICAL_ROLLBACK_OPS,
 )
-from orchestration.state import StateTracker, OperationState
+from gce_rescue_v2.orchestration.state import StateTracker, OperationState
 
 
 class _FakeOperation:

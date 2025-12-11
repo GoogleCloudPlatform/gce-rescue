@@ -11,8 +11,8 @@ Tests:
 from unittest.mock import Mock, patch
 import pytest
 
-from core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS, RescueConfig
-from utils.os_detection import detect_os_type, get_os_display_name
+from gce_rescue_v2.core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS, RescueConfig
+from gce_rescue_v2.utils.os_detection import detect_os_type, get_os_display_name
 
 
 class TestOSDetection:
@@ -81,7 +81,7 @@ class TestRescueOrchestratorWindows:
 
     def test_windows_uses_powershell_script_key(self):
         """Windows VMs should use windows-startup-script-ps1 metadata key."""
-        from orchestration.rescue import RescueOrchestrator
+        from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
 
         mock_compute = Mock()
         mock_compute.instances().get().execute.return_value = {
@@ -109,7 +109,7 @@ class TestRescueOrchestratorWindows:
 
     def test_linux_uses_startup_script_key(self):
         """Linux VMs should use startup-script metadata key."""
-        from orchestration.rescue import RescueOrchestrator
+        from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
 
         mock_compute = Mock()
         mock_compute.instances().get().execute.return_value = {
@@ -140,7 +140,7 @@ class TestRestoreOrchestratorWindows:
 
     def test_clean_metadata_removes_windows_keys(self):
         """Restore should clean both Linux and Windows startup script keys."""
-        from orchestration.restore import RestoreOrchestrator
+        from gce_rescue_v2.orchestration.restore import RestoreOrchestrator
 
         mock_compute = Mock()
         mock_compute.instances().get().execute.return_value = {

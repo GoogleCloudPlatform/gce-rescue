@@ -11,7 +11,7 @@ Tests:
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-from operations.stop_vm import StopVMOperation
+from gce_rescue_v2.operations.stop_vm import StopVMOperation
 
 class TestStopVMOperation:
 

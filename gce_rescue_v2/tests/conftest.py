@@ -7,19 +7,9 @@ Provides:
 - sample_rescue_config: RescueConfig with test values
 """
 
-import sys
-from pathlib import Path
-
-# Add parent directory to path so imports work both when:
-# 1. Running pytest from gce_rescue_v2/tests/ directory
-# 2. Running pytest from repo root after pip install -e .
-parent_dir = Path(__file__).parent.parent
-if str(parent_dir) not in sys.path:
-    sys.path.insert(0, str(parent_dir))
-
 import pytest
 from unittest.mock import Mock, MagicMock
-from core.config import RescueConfig
+from gce_rescue_v2.core.config import RescueConfig
 
 @pytest.fixture
 def mock_compute():
