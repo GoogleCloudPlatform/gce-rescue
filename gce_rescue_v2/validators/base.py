@@ -57,6 +57,13 @@ class ValidationResults:
         """Get only failed validations."""
         return [r for r in self.results if not r.passed]
 
+    def get_result(self, validator_name: str) -> Optional[ValidationResult]:
+        """Get result by validator name."""
+        for result in self.results:
+            if result.validator_name == validator_name:
+                return result
+        return None
+
     def print_all(self):
         """Print all validation results."""
         for result in self.results:

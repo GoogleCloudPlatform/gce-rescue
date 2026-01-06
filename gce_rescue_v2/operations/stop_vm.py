@@ -7,6 +7,7 @@ Rollback restarts the VM only if it was originally running prior to execution.
 
 import time
 from .base import BaseOperation, OperationResult, extract_error_message
+from ..core.error_messages import get_error_suggestion, VM_STOP_TIMEOUT, VM_NOT_FOUND
 
 
 class StopVMOperation(BaseOperation):
@@ -25,7 +26,7 @@ class StopVMOperation(BaseOperation):
         """
         return "Stop VM"
 
-    def execute(self, vm_name: str, timeout: int = 300) -> OperationResult:
+    def execute(self, vm_name: str, timeout: int = 300, discard_local_ssd: bool = False) -> OperationResult:
         """
         Stop the specified VM and wait until it is TERMINATED.
 
@@ -33,6 +34,8 @@ class StopVMOperation(BaseOperation):
             vm_name (str): Name of the VM to stop.
             timeout (int): Maximum seconds to wait for the VM to reach
                 TERMINATED. Default is 300.
+            discard_local_ssd (bool): If True, allows stopping VMs with Local SSDs
+                attached (data on Local SSDs will be lost). Default is False.
 
         Returns:
             OperationResult: Result including `rollback_data` with `vm_name`
@@ -60,11 +63,19 @@ class StopVMOperation(BaseOperation):
             if original_status == 'RUNNING':
                 self._log_debug(f"VM is RUNNING, stopping...")
 
-                self.compute.instances().stop(
-                    project=self.project,
-                    zone=self.zone,
-                    instance=vm_name
-                ).execute()
+                # Build stop request parameters
+                stop_params = {
+                    'project': self.project,
+                    'zone': self.zone,
+                    'instance': vm_name
+                }
+
+                # Add discardLocalSsd if needed (for VMs with Local SSDs)
+                if discard_local_ssd:
+                    stop_params['discardLocalSsd'] = True
+                    self._log_debug("Using discardLocalSsd=True for Local SSD VM")
+
+                self.compute.instances().stop(**stop_params).execute()
 
                 # Step 3: Wait for VM to stop
                 self._log_debug("Waiting for VM to stop...")
@@ -79,10 +90,18 @@ class StopVMOperation(BaseOperation):
                     return vm['status']
 
                 if not self._wait_for_status(get_status, 'TERMINATED', timeout):
+                    # Enhanced error message with suggestions
+                    error_detail = VM_STOP_TIMEOUT.format(
+                        vm_name=vm_name,
+                        zone=self.zone,
+                        project=self.project
+                    )
+                    self._log_error(error_detail)
                     return OperationResult(
                         operation_name=self.name,
                         success=False,
-                        message=f"Timeout waiting for VM to stop (>{timeout}s)"
+                        message=f"Timeout waiting for VM to stop (>{timeout}s)",
+                        error=error_detail
                     )
 
                 duration = time.time() - start_time
@@ -122,12 +141,24 @@ class StopVMOperation(BaseOperation):
 
         except Exception as e:
             error_msg = extract_error_message(e)
-            self._log_error(f"Failed to stop VM: {error_msg}")
+
+            # Get enhanced error suggestion based on error type
+            suggestion = get_error_suggestion(error_msg, operation='stop_vm')
+            if suggestion:
+                error_detail = suggestion.format(
+                    vm_name=vm_name,
+                    zone=self.zone,
+                    project=self.project
+                )
+            else:
+                error_detail = f"Failed to stop VM: {error_msg}"
+
+            self._log_error(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,
                 message=f"Failed to stop VM: {error_msg}",
-                error=error_msg
+                error=error_detail
             )
 
     def rollback(self, rollback_data: dict) -> bool:

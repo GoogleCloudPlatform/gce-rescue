@@ -49,12 +49,12 @@ class OutputFormatter:
 
     @staticmethod
     def _format_table(data: Dict[str, Any]) -> str:
-        """Format as table."""
+        """Format as table (ASCII-safe for Windows compatibility)."""
         lines = []
-        lines.append("┌─" + "─" * 50 + "─┐")
+        lines.append("+-" + "-" * 50 + "-+")
         for key, value in data.items():
-            lines.append(f"│ {key:20} │ {str(value):27} │")
-        lines.append("└─" + "─" * 50 + "─┘")
+            lines.append(f"| {key:20} | {str(value):27} |")
+        lines.append("+-" + "-" * 50 + "-+")
         return "\n".join(lines)
 
     @staticmethod
@@ -230,8 +230,8 @@ def _add_common_args(parser: argparse.ArgumentParser):
         '--format',
         metavar='FORMAT',
         choices=['json', 'yaml', 'table', 'disable'],
-        default='table',
-        help='Output format: json, yaml, table, disable. Default: table'
+        default='disable',
+        help='Output format: json, yaml, table, disable. Default: disable'
     )
     output.add_argument(
         '--verbosity',
@@ -247,6 +247,11 @@ def _add_common_args(parser: argparse.ArgumentParser):
         '--quiet',
         action='store_true',
         help='Disable interactive prompts (for automation)'
+    )
+    interactive.add_argument(
+        '--force',
+        action='store_true',
+        help='Required with --quiet if VM has Local SSDs (data on Local SSDs will be LOST)'
     )
 
 
@@ -303,6 +308,10 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     if hasattr(args, 'snapshot'):
         config.create_snapshot = args.snapshot
 
+    # Force setting (for Local SSD VMs)
+    if hasattr(args, 'force'):
+        config.force = args.force
+
     # Verbosity to log level
     verbosity_map = {
         'debug': 'DEBUG',
@@ -322,6 +331,10 @@ def args_to_restore_config(args: argparse.Namespace) -> RestoreConfig:
     # Keep rescue disk setting (only configurable restore option in beta)
     config.delete_rescue_disk = not args.keep_rescue_disk
 
+    # Force setting (for Local SSD VMs)
+    if hasattr(args, 'force'):
+        config.force = args.force
+
     # Verbosity to log level
     verbosity_map = {
         'debug': 'DEBUG',
@@ -334,8 +347,28 @@ def args_to_restore_config(args: argparse.Namespace) -> RestoreConfig:
     return config
 
 
+def _check_local_ssds(compute, project: str, zone: str, vm_name: str) -> list:
+    """Check if VM has Local SSDs attached using GCP API. Returns list of Local SSD names."""
+    try:
+        vm = compute.instances().get(
+            project=project,
+            zone=zone,
+            instance=vm_name
+        ).execute()
+
+        local_ssds = []
+        for disk in vm.get('disks', []):
+            if disk.get('type') == 'SCRATCH':
+                local_ssds.append(disk.get('deviceName', 'unknown'))
+        return local_ssds
+    except Exception:
+        pass
+    return []
+
+
 def handle_rescue(args: argparse.Namespace) -> int:
     """Handle rescue command."""
+    from .core.auth import AuthManager
 
     # Get project from args or gcloud config
     project = args.project or get_gcloud_config('core/project')
@@ -350,6 +383,30 @@ def handle_rescue(args: argparse.Namespace) -> int:
         print("  3. Set CLOUDSDK_CORE_PROJECT environment variable", file=sys.stderr)
         return 1
 
+    # Get compute client for API calls
+    try:
+        auth = AuthManager()
+        compute, project = auth.get_client(project)
+    except Exception as e:
+        print(f"ERROR: Authentication failed: {e}", file=sys.stderr)
+        return 1
+
+    # Check for Local SSDs using API
+    local_ssds = _check_local_ssds(compute, project, args.zone, args.instance_name)
+    has_local_ssd = len(local_ssds) > 0
+
+    # In quiet mode with Local SSDs, require --force
+    if args.quiet and has_local_ssd and not args.force:
+        print("ERROR: VM has Local SSDs attached.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print(f"Local SSDs found: {', '.join(local_ssds)}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("WARNING: Stopping this VM will PERMANENTLY DELETE all data on Local SSDs!", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
+        print(f"  gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --quiet --force", file=sys.stderr)
+        return 1
+
     # Interactive confirmation (unless --quiet)
     if not args.quiet:
         print(f"\nYou are about to rescue VM '{args.instance_name}' in zone '{args.zone}'.")
@@ -357,6 +414,18 @@ def handle_rescue(args: argparse.Namespace) -> int:
         print("  - Stop the VM")
         print("  - Create a rescue disk and boot from it")
         print("  - Attach the affected disk as secondary")
+
+        # Show Local SSD warning if applicable
+        if has_local_ssd:
+            print("")
+            print("  " + "=" * 54)
+            print("  WARNING: LOCAL SSD DETECTED!")
+            print("  " + "=" * 54)
+            print(f"  This VM has {len(local_ssds)} Local SSD(s): {', '.join(local_ssds)}")
+            print("  Stopping the VM will PERMANENTLY DELETE all Local SSD data!")
+            print("  This cannot be undone.")
+            print("  " + "=" * 54)
+
         print("")
         response = input("Do you want to continue? [y/N]: ").strip().lower()
         if response not in ('y', 'yes'):
@@ -365,6 +434,10 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
     # Convert to config
     config = args_to_rescue_config(args)
+
+    # If Local SSDs present, set force=True since user confirmed
+    if has_local_ssd:
+        config.force = True
 
     # Execute
     debug = args.verbosity == 'debug'
@@ -386,8 +459,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
             'operation': 'rescue',
             'success': True
         }
-        if args.format != 'table':  # table already printed by main
-            print(OutputFormatter.format_output(result, args.format))
+        print(OutputFormatter.format_output(result, args.format))
 
     return 0 if success else 1
 
@@ -445,8 +517,7 @@ def handle_restore(args: argparse.Namespace) -> int:
             'operation': 'restore',
             'success': True
         }
-        if args.format != 'table':  # table already printed by main
-            print(OutputFormatter.format_output(result, args.format))
+        print(OutputFormatter.format_output(result, args.format))
 
     return 0 if success else 1
 

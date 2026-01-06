@@ -106,12 +106,16 @@ class VMStateValidator(BaseValidator):
                     }
                 )
 
-            # Check boot disk
+            # Check boot disk and detect Local SSDs
             boot_disk = None
+            local_ssds = []
             for disk in vm.get('disks', []):
-                if disk.get('boot'):
+                if disk.get('boot') and boot_disk is None:
+                    # Take the first boot disk (if multiple exist)
                     boot_disk = disk['source'].split('/')[-1]
-                    break
+                # Local SSDs have type='SCRATCH'
+                if disk.get('type') == 'SCRATCH':
+                    local_ssds.append(disk.get('deviceName', 'unknown'))
 
             if not boot_disk:
                 return ValidationResult(
@@ -121,18 +125,31 @@ class VMStateValidator(BaseValidator):
                     details={"error": "No boot disk found"}
                 )
 
+            # Build result details
+            details = {
+                "vm_name": self.vm_name,
+                "current_state": current_state,
+                "boot_disk": boot_disk,
+                "zone": self.zone,
+                "project": self.project
+            }
+
+            # Add Local SSD warning if present
+            if local_ssds:
+                details["local_ssds"] = local_ssds
+                details["has_local_ssd"] = True
+                details["local_ssd_warning"] = (
+                    f"VM has {len(local_ssds)} Local SSD(s) attached. "
+                    "Local SSD data will be LOST when the VM is stopped. "
+                    "Use --force flag to proceed."
+                )
+
             # All good!
             return ValidationResult(
                 validator_name=self.name,
                 passed=True,
                 message=f"VM exists and is {current_state}",
-                details={
-                    "vm_name": self.vm_name,
-                    "current_state": current_state,
-                    "boot_disk": boot_disk,
-                    "zone": self.zone,
-                    "project": self.project
-                }
+                details=details
             )
 
         except HttpError as e:
@@ -236,7 +253,14 @@ class VMRestoreStateValidator(BaseValidator):
             original_disk = None
 
             for disk in disks:
-                disk_name = disk['source'].split('/')[-1]
+                # Skip Local SSDs (type='SCRATCH') - they don't have a 'source' field
+                if disk.get('type') == 'SCRATCH':
+                    continue
+                # Get disk name from source URL
+                source = disk.get('source', '')
+                if not source:
+                    continue
+                disk_name = source.split('/')[-1]
                 if 'rescue-disk' in disk_name:
                     rescue_disk = disk_name
                 elif not disk.get('boot'):

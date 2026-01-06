@@ -7,6 +7,7 @@ stops the VM only if it was previously stopped (TERMINATED) before execution.
 
 import time
 from .base import BaseOperation, OperationResult, extract_error_message
+from ..core.error_messages import get_error_suggestion, VM_START_TIMEOUT
 
 
 class StartVMOperation(BaseOperation):
@@ -76,10 +77,17 @@ class StartVMOperation(BaseOperation):
                     return vm['status']
 
                 if not self._wait_for_status(get_status, 'RUNNING', timeout):
+                    error_detail = VM_START_TIMEOUT.format(
+                        vm_name=vm_name,
+                        zone=self.zone,
+                        project=self.project
+                    )
+                    self._log_error(error_detail)
                     return OperationResult(
                         operation_name=self.name,
                         success=False,
-                        message=f"Timeout waiting for VM to start (>{timeout}s)"
+                        message=f"Timeout waiting for VM to start (>{timeout}s)",
+                        error=error_detail
                     )
 
                 duration = time.time() - start_time
@@ -118,12 +126,21 @@ class StartVMOperation(BaseOperation):
 
         except Exception as e:
             error_msg = extract_error_message(e)
-            self._log_error(f"Failed to start VM: {error_msg}")
+            suggestion = get_error_suggestion(error_msg, operation='start_vm')
+            if suggestion:
+                error_detail = suggestion.format(
+                    vm_name=vm_name,
+                    zone=self.zone,
+                    project=self.project
+                )
+            else:
+                error_detail = f"Failed to start VM: {error_msg}"
+            self._log_error(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,
                 message=f"Failed to start VM: {error_msg}",
-                error=error_msg
+                error=error_detail
             )
 
     def rollback(self, rollback_data: dict) -> bool:

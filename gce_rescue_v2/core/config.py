@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # Version for usage tracking (SemVer: MAJOR.MINOR.PATCH-PRERELEASE)
-VERSION = '2.0.0-beta.1'
+VERSION = 'test-1'
 
 # OS Types
 OS_TYPE_LINUX = 'linux'
@@ -68,6 +68,7 @@ class RescueConfig:
     # Advanced settings
     preserve_rescue_disk: bool = False  # Keep rescue disk after restore
     skip_health_check: bool = False  # Skip health checks
+    force: bool = False  # Force operation (e.g., stop VM with Local SSDs)
 
 
 @dataclass
@@ -99,6 +100,7 @@ class RestoreConfig:
     interactive: bool = False
     auto_rollback: bool = True
     skip_health_check: bool = False
+    force: bool = False  # Force operation (e.g., stop VM with Local SSDs)
 
 
 # Default configurations

@@ -7,6 +7,7 @@ operations. Rollback removes only snapshots created by this operation.
 
 import time
 from .base import BaseOperation, OperationResult, extract_error_message
+from ..core.error_messages import get_error_suggestion, SNAPSHOT_CREATE_FAILED, SNAPSHOT_TIMEOUT
 
 
 class CreateSnapshotOperation(BaseOperation):
@@ -107,12 +108,18 @@ class CreateSnapshotOperation(BaseOperation):
                 # Check timeout
                 elapsed = time.time() - start_time
                 if elapsed > timeout:
-                    self._log_error(f"Snapshot creation timeout after {timeout}s")
+                    error_detail = SNAPSHOT_TIMEOUT.format(
+                        vm_name=disk_name,
+                        zone=self.zone,
+                        project=self.project,
+                        disk_name=disk_name
+                    )
+                    self._log_error(error_detail)
                     return OperationResult(
                         operation_name=self.name,
                         success=False,
                         message=f"Snapshot creation timeout after {timeout}s",
-                        error="timeout"
+                        error=error_detail
                     )
 
                 # Get snapshot status
@@ -140,12 +147,18 @@ class CreateSnapshotOperation(BaseOperation):
                             }
                         )
                     elif status == 'FAILED':
-                        self._log_error("Snapshot creation failed")
+                        error_detail = SNAPSHOT_CREATE_FAILED.format(
+                            vm_name=disk_name,
+                            zone=self.zone,
+                            project=self.project,
+                            disk_name=disk_name
+                        )
+                        self._log_error(error_detail)
                         return OperationResult(
                             operation_name=self.name,
                             success=False,
                             message="Snapshot creation failed",
-                            error="snapshot_failed"
+                            error=error_detail
                         )
 
                 except Exception as e:
@@ -156,12 +169,22 @@ class CreateSnapshotOperation(BaseOperation):
 
         except Exception as e:
             error_msg = extract_error_message(e)
-            self._log_error(f"Failed to create snapshot: {error_msg}")
+            suggestion = get_error_suggestion(error_msg, operation='snapshot')
+            if suggestion:
+                error_detail = suggestion.format(
+                    vm_name=disk_name,
+                    zone=self.zone,
+                    project=self.project,
+                    disk_name=disk_name
+                )
+            else:
+                error_detail = f"Failed to create snapshot: {error_msg}"
+            self._log_error(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,
                 message=f"Failed to create snapshot: {error_msg}",
-                error=error_msg
+                error=error_detail
             )
 
     def rollback(self, rollback_data: dict) -> bool:

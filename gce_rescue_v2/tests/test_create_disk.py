@@ -66,7 +66,7 @@ class TestCreateDiskOperation:
 
         # Assert
         assert result.success is False
-        assert "Quota Exceeded" in result.error
+        assert "Quota Exceeded" in result.message
 
     def test_create_disk_rollback(self):
         """Test rollback deletes the disk."""
