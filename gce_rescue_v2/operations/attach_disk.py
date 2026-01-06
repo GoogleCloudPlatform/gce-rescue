@@ -7,6 +7,7 @@ the disk using the provided rollback metadata.
 
 import time
 from .base import BaseOperation, OperationResult, extract_error_message
+from ..core.error_messages import get_error_suggestion, DISK_ATTACH_FAILED
 
 
 class AttachDiskOperation(BaseOperation):
@@ -71,10 +72,18 @@ class AttachDiskOperation(BaseOperation):
 
             # Wait for operation to complete
             if not self._wait_for_operation(operation):
+                error_detail = DISK_ATTACH_FAILED.format(
+                    vm_name=vm_name,
+                    zone=self.zone,
+                    project=self.project,
+                    disk_name=disk_name
+                )
+                self._log_error(error_detail)
                 return OperationResult(
                     operation_name=self.name,
                     success=False,
-                    message="Timeout waiting for disk attach operation"
+                    message="Timeout waiting for disk attach operation",
+                    error=error_detail
                 )
 
             self._log_debug("Disk attached")
@@ -91,12 +100,22 @@ class AttachDiskOperation(BaseOperation):
 
         except Exception as e:
             error_msg = extract_error_message(e)
-            self._log_error(f"Failed to attach disk: {error_msg}")
+            suggestion = get_error_suggestion(error_msg, operation='attach_disk')
+            if suggestion:
+                error_detail = suggestion.format(
+                    vm_name=vm_name,
+                    zone=self.zone,
+                    project=self.project,
+                    disk_name=disk_name
+                )
+            else:
+                error_detail = f"Failed to attach disk: {error_msg}"
+            self._log_error(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,
                 message=f"Failed to attach disk: {error_msg}",
-                error=error_msg
+                error=error_detail
             )
 
     def rollback(self, rollback_data: dict) -> bool:

@@ -125,6 +125,7 @@ class RescueOrchestrator:
         - Credentials
         - IAM permissions
         - VM state
+        - Local SSD warning (requires --force)
 
         Returns:
             True if all validations passed
@@ -138,7 +139,8 @@ class RescueOrchestrator:
         # Add validators
         runner.add(CredentialsValidator(self.compute, self.project, self.zone))
         runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name))
-        runner.add(VMStateValidator(self.compute, self.project, self.zone, self.vm_name))
+        vm_validator = VMStateValidator(self.compute, self.project, self.zone, self.vm_name)
+        runner.add(vm_validator)
 
         # Run validations
         results = runner.run_all(self.logger)
@@ -148,6 +150,16 @@ class RescueOrchestrator:
             self._log_error("Pre-flight validation failed!")
             results.print_failures()
             return False
+
+        # Check for Local SSDs (after validation passes)
+        # Store in instance for CLI to access during confirmation
+        vm_result = results.get_result("VM State")
+        if vm_result and vm_result.details.get("has_local_ssd"):
+            self.has_local_ssd = True
+            self.local_ssds = vm_result.details.get("local_ssds", [])
+        else:
+            self.has_local_ssd = False
+            self.local_ssds = []
 
         self._log_debug("All validations passed")
         return True
@@ -196,7 +208,11 @@ class RescueOrchestrator:
 
             # Step 1: Stop VM
             self._log_info("  Stopping VM...")
-            result = stop_vm.execute(vm_name=self.vm_name, timeout=self.config.vm_stop_timeout)
+            result = stop_vm.execute(
+                vm_name=self.vm_name,
+                timeout=self.config.vm_stop_timeout,
+                discard_local_ssd=self.config.force  # Allow stopping VMs with Local SSDs if --force
+            )
             self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()

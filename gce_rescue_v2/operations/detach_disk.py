@@ -7,6 +7,7 @@ attaches the disk using the captured original configuration.
 
 import time
 from .base import BaseOperation, OperationResult, extract_error_message
+from ..core.error_messages import get_error_suggestion, DISK_DETACH_FAILED
 
 
 class DetachDiskOperation(BaseOperation):
@@ -84,10 +85,18 @@ class DetachDiskOperation(BaseOperation):
 
             # Wait for operation to complete
             if not self._wait_for_operation(operation):
+                error_detail = DISK_DETACH_FAILED.format(
+                    vm_name=vm_name,
+                    zone=self.zone,
+                    project=self.project,
+                    disk_name=device_name
+                )
+                self._log_error(error_detail)
                 return OperationResult(
                     operation_name=self.name,
                     success=False,
-                    message="Timeout waiting for disk detach operation"
+                    message="Timeout waiting for disk detach operation",
+                    error=error_detail
                 )
 
             self._log_debug("Disk detached")
@@ -104,12 +113,22 @@ class DetachDiskOperation(BaseOperation):
 
         except Exception as e:
             error_msg = extract_error_message(e)
-            self._log_error(f"Failed to detach disk: {error_msg}")
+            suggestion = get_error_suggestion(error_msg, operation='detach_disk')
+            if suggestion:
+                error_detail = suggestion.format(
+                    vm_name=vm_name,
+                    zone=self.zone,
+                    project=self.project,
+                    disk_name=device_name
+                )
+            else:
+                error_detail = f"Failed to detach disk: {error_msg}"
+            self._log_error(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,
                 message=f"Failed to detach disk: {error_msg}",
-                error=error_msg
+                error=error_detail
             )
 
     def rollback(self, rollback_data: dict) -> bool:

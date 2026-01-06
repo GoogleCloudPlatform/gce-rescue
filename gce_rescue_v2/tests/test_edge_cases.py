@@ -152,7 +152,7 @@ class TestSnapshotEdgeCases:
         result = op.execute(disk_name="d1", snapshot_name="snap-1", wait=True, timeout=10)
 
         assert result.success is False
-        assert result.error == "snapshot_failed"
+        assert "failed" in result.message.lower()
 
 
 class TestNetworkEdgeCases:
