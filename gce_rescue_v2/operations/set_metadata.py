@@ -1,12 +1,32 @@
 """
 Set Metadata operation.
 
-Replaces instance metadata with the provided items, preserving the original
-metadata for rollback. Rollback restores the prior metadata set.
+Manages instance metadata for rescue operations. Preserves existing metadata
+by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
 import time
 from .base import BaseOperation, OperationResult, extract_error_message
+from ..core.error_messages import get_error_suggestion, METADATA_SET_FAILED
+
+
+# Prefix used to backup original metadata keys that conflict with rescue keys
+RESCUE_BACKUP_PREFIX = 'rescue-backup-'
+
+# Keys that rescue mode needs to set (may conflict with existing metadata)
+RESCUE_CONFLICT_KEYS = [
+    'startup-script',
+    'windows-startup-script-ps1',
+]
+
+# All rescue-related keys (for cleanup during restore)
+RESCUE_METADATA_KEYS = [
+    'rescue-mode',
+    'rescue-original-disk',
+    'rescue-os-type',
+    'startup-script',
+    'windows-startup-script-ps1',
+]
 
 
 class SetMetadataOperation(BaseOperation):
@@ -25,25 +45,29 @@ class SetMetadataOperation(BaseOperation):
         """
         return "Set Metadata"
 
-    def execute(self, vm_name: str, metadata_items: list) -> OperationResult:
+    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True) -> OperationResult:
         """
-        Replace the metadata of the specified VM instance.
+        Set metadata on the specified VM instance, preserving existing metadata.
+
+        When preserve_existing=True (default):
+        - Existing metadata keys are preserved
+        - Conflicting keys (e.g., startup-script) are backed up with prefix
+        - Backed up keys can be restored later using restore_backup_keys()
 
         Args:
             vm_name (str): Name of the VM instance.
             metadata_items (list): List of metadata items as dictionaries of
                 form {'key': str, 'value': str}.
+            preserve_existing (bool): If True, merge with existing metadata
+                and backup conflicting keys. Default True.
 
         Returns:
             OperationResult: Result including `rollback_data` with `vm_name`
             and `original_metadata` for restoration.
-
-        Raises:
-            None
         """
 
         self._log_debug(f"Executing {self.name} for {vm_name}")
-        self._log_debug(f"  Setting {len(metadata_items)} metadata items")
+        self._log_debug(f"  Setting {len(metadata_items)} metadata items (preserve_existing={preserve_existing})")
 
         try:
             # Get current metadata for rollback
@@ -55,13 +79,20 @@ class SetMetadataOperation(BaseOperation):
 
             original_metadata = vm.get('metadata', {})
             fingerprint = original_metadata.get('fingerprint')
+            original_items = original_metadata.get('items', [])
 
-            self._log_debug(f"Original metadata has {len(original_metadata.get('items', []))} items")
+            self._log_debug(f"Original metadata has {len(original_items)} items")
+
+            if preserve_existing:
+                # Build final metadata: existing + backup conflicting + new items
+                final_items = self._merge_with_backup(original_items, metadata_items)
+            else:
+                final_items = metadata_items
 
             # Set new metadata
             new_metadata = {
                 'fingerprint': fingerprint,
-                'items': metadata_items
+                'items': final_items
             }
 
             operation = self.compute.instances().setMetadata(
@@ -73,10 +104,17 @@ class SetMetadataOperation(BaseOperation):
 
             # Wait for operation to complete
             if not self._wait_for_operation(operation):
+                error_detail = METADATA_SET_FAILED.format(
+                    vm_name=vm_name,
+                    zone=self.zone,
+                    project=self.project
+                )
+                self._log_error(error_detail)
                 return OperationResult(
                     operation_name=self.name,
                     success=False,
-                    message="Timeout waiting for metadata operation"
+                    message="Timeout waiting for metadata operation",
+                    error=error_detail
                 )
 
             self._log_debug("Metadata set")
@@ -84,7 +122,7 @@ class SetMetadataOperation(BaseOperation):
             return OperationResult(
                 operation_name=self.name,
                 success=True,
-                message=f"Metadata set ({len(metadata_items)} items)",
+                message=f"Metadata set ({len(final_items)} items)",
                 rollback_data={
                     'vm_name': vm_name,
                     'original_metadata': original_metadata
@@ -93,13 +131,69 @@ class SetMetadataOperation(BaseOperation):
 
         except Exception as e:
             error_msg = extract_error_message(e)
-            self._log_error(f"Failed to set metadata: {error_msg}")
+            suggestion = get_error_suggestion(error_msg, operation='set_metadata')
+            if suggestion:
+                error_detail = suggestion.format(
+                    vm_name=vm_name,
+                    zone=self.zone,
+                    project=self.project
+                )
+            else:
+                error_detail = f"Failed to set metadata: {error_msg}"
+            self._log_error(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,
                 message=f"Failed to set metadata: {error_msg}",
-                error=error_msg
+                error=error_detail
             )
+
+    def _merge_with_backup(self, original_items: list, new_items: list) -> list:
+        """
+        Merge new metadata items with existing ones, backing up conflicts.
+
+        For keys that exist in both original and new items:
+        - If it's a conflict key (like startup-script), backup original with prefix
+        - Then set the new value
+
+        Args:
+            original_items: Existing metadata items from VM
+            new_items: New items to set (rescue metadata)
+
+        Returns:
+            List of merged metadata items with backups
+        """
+        # Get keys we're about to set
+        new_keys = {item['key'] for item in new_items}
+
+        # Build result starting with original items
+        result = {}
+
+        for item in original_items:
+            key = item['key']
+            value = item['value']
+
+            # Skip if this is already a backup key (don't double-backup)
+            if key.startswith(RESCUE_BACKUP_PREFIX):
+                result[key] = value
+                continue
+
+            # Check if this key will be overwritten by new items
+            if key in new_keys and key in RESCUE_CONFLICT_KEYS:
+                # Backup this key with prefix
+                backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
+                result[backup_key] = value
+                self._log_debug(f"  Backing up '{key}' as '{backup_key}'")
+            elif key not in new_keys:
+                # Keep original key as-is (not being overwritten)
+                result[key] = value
+
+        # Add all new items
+        for item in new_items:
+            result[item['key']] = item['value']
+
+        # Convert back to list format
+        return [{'key': k, 'value': v} for k, v in result.items()]
 
     def rollback(self, rollback_data: dict) -> bool:
         """

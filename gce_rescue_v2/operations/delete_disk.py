@@ -7,6 +7,7 @@ irreversible and should only be used after completing the rescue workflow.
 
 import time
 from .base import BaseOperation, OperationResult, extract_error_message
+from ..core.error_messages import get_error_suggestion, DISK_DELETE_FAILED
 
 
 class DeleteDiskOperation(BaseOperation):
@@ -53,10 +54,18 @@ class DeleteDiskOperation(BaseOperation):
 
             # Wait for operation to complete
             if not self._wait_for_operation(operation):
+                error_detail = DISK_DELETE_FAILED.format(
+                    vm_name=None,
+                    zone=self.zone,
+                    project=self.project,
+                    disk_name=disk_name
+                )
+                self._log_error(error_detail)
                 return OperationResult(
                     operation_name=self.name,
                     success=False,
-                    message="Timeout waiting for disk delete operation"
+                    message="Timeout waiting for disk delete operation",
+                    error=error_detail
                 )
 
             self._log_debug(f"Disk {disk_name} deleted")
@@ -70,12 +79,22 @@ class DeleteDiskOperation(BaseOperation):
 
         except Exception as e:
             error_msg = extract_error_message(e)
-            self._log_error(f"Failed to delete disk: {error_msg}")
+            suggestion = get_error_suggestion(error_msg, operation='delete_disk')
+            if suggestion:
+                error_detail = suggestion.format(
+                    vm_name=None,
+                    zone=self.zone,
+                    project=self.project,
+                    disk_name=disk_name
+                )
+            else:
+                error_detail = f"Failed to delete disk: {error_msg}"
+            self._log_error(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,
                 message=f"Failed to delete disk: {error_msg}",
-                error=error_msg
+                error=error_detail
             )
 
     def rollback(self, rollback_data: dict) -> bool:

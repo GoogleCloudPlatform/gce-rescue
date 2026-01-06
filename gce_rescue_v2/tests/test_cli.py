@@ -47,6 +47,13 @@ class TestCLIExecution:
         monkeypatch.setattr(cli, "get_gcloud_config", lambda key: "cfg-project")
         monkeypatch.setattr(cli, "rescue_vm", lambda **kwargs: True)
 
+        # Mock AuthManager for Local SSD check
+        mock_auth = Mock()
+        mock_compute = Mock()
+        mock_compute.instances.return_value.get.return_value.execute.return_value = {"disks": []}
+        mock_auth.get_client.return_value = (mock_compute, "cfg-project")
+        monkeypatch.setattr("gce_rescue_v2.core.auth.AuthManager", lambda: mock_auth)
+
         exit_code = cli.handle_rescue(args)
 
         assert exit_code == 0

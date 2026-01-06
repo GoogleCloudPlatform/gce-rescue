@@ -180,7 +180,11 @@ class RestoreOrchestrator:
 
             # Step 1: Stop VM
             self._log_info("  Stopping VM...")
-            result = stop_vm.execute(vm_name=self.vm_name, timeout=self.config.vm_stop_timeout)
+            result = stop_vm.execute(
+                vm_name=self.vm_name,
+                timeout=self.config.vm_stop_timeout,
+                discard_local_ssd=self.config.force  # Allow stopping VMs with Local SSDs if --force
+            )
             self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -214,10 +218,12 @@ class RestoreOrchestrator:
                 return False
             self._log_info(f"  [OK] {result.message}")
 
-            # Step 5: Remove rescue metadata
-            self._log_info("  Removing rescue metadata...")
+            # Step 5: Remove rescue metadata and restore backed up keys
+            self._log_info("  Restoring original metadata...")
             clean_metadata = self._get_clean_metadata()
-            result = set_metadata.execute(vm_name=self.vm_name, metadata_items=clean_metadata)
+            # Use preserve_existing=False to REPLACE metadata (not merge)
+            # because clean_metadata already contains the correct final state
+            result = set_metadata.execute(vm_name=self.vm_name, metadata_items=clean_metadata, preserve_existing=False)
             self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -287,7 +293,13 @@ class RestoreOrchestrator:
 
         # Find rescue and original disks
         for disk in vm.get('disks', []):
-            disk_name = disk['source'].split('/')[-1]
+            # Skip Local SSDs (type='SCRATCH') - they don't have a 'source' field
+            if disk.get('type') == 'SCRATCH':
+                continue
+            source = disk.get('source', '')
+            if not source:
+                continue
+            disk_name = source.split('/')[-1]
             device_name = disk['deviceName']
 
             if 'rescue-disk' in disk_name:
@@ -313,7 +325,16 @@ class RestoreOrchestrator:
             raise ValueError(f"Original disk '{self.original_disk_name}' not found on VM")
 
     def _get_clean_metadata(self) -> list:
-        """Get metadata with rescue items removed."""
+        """Get metadata with rescue items removed and backed up items restored.
+
+        This method:
+        1. Removes all rescue-related keys (rescue-mode, rescue-*, startup-script)
+        2. Restores backed up keys (rescue-backup-* -> original key name)
+
+        Example:
+            Before: [rescue-backup-startup-script="user script", startup-script="rescue script", rescue-mode="123"]
+            After:  [startup-script="user script"]
+        """
         vm = self.compute.instances().get(
             project=self.project,
             zone=self.zone,
@@ -323,20 +344,39 @@ class RestoreOrchestrator:
         metadata = vm.get('metadata', {})
         items = metadata.get('items', [])
 
-        # Remove rescue-related metadata (including both Linux and Windows startup scripts)
+        # Keys to remove (rescue-related)
         rescue_keys = [
             'rescue-mode',
-            'startup-script',                  # Linux startup script
-            'windows-startup-script-ps1',      # Windows startup script
+            'startup-script',
+            'windows-startup-script-ps1',
             'rescue-original-disk',
             'rescue-os-type'
         ]
-        clean_items = [
-            item for item in items
-            if item['key'] not in rescue_keys
-        ]
 
-        return clean_items
+        # Prefix for backed up keys
+        backup_prefix = 'rescue-backup-'
+
+        # Build clean metadata
+        result = {}
+
+        for item in items:
+            key = item['key']
+            value = item['value']
+
+            if key in rescue_keys:
+                # Skip rescue-related keys
+                continue
+            elif key.startswith(backup_prefix):
+                # Restore backed up key to original name
+                original_key = key[len(backup_prefix):]
+                result[original_key] = value
+                self._log_debug(f"  Restoring '{key}' as '{original_key}'")
+            else:
+                # Keep other keys as-is
+                result[key] = value
+
+        # Convert back to list format
+        return [{'key': k, 'value': v} for k, v in result.items()]
 
     def _check_snapshot_status(self):
         """Check if safety snapshot was created successfully during rescue."""

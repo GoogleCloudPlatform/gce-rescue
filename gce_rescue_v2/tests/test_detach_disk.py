@@ -110,7 +110,7 @@ class TestDetachDiskOperation:
         result = op.execute(vm_name="vm-1", device_name="test-disk")
 
         assert result.success is False
-        assert result.error == "api failure"
+        assert "api failure" in result.message
 
     def test_detach_disk_rollback(self, mock_compute):
         """Test rollback re-attaches the disk."""

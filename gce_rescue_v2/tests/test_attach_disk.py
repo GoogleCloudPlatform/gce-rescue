@@ -58,7 +58,7 @@ class TestAttachDiskOperation:
 
         # Assert
         assert result.success is False
-        assert "Disk not found" in result.error
+        assert "Disk not found" in result.message
 
     def test_attach_disk_rollback(self):
         """Test rollback detaches the disk."""
