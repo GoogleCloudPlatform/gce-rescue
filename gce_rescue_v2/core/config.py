@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # Version for usage tracking (SemVer: MAJOR.MINOR.PATCH-PRERELEASE)
-VERSION = 'test-1'
+VERSION = '2.0.0-beta.2'
 
 # OS Types
 OS_TYPE_LINUX = 'linux'
