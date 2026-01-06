@@ -179,11 +179,19 @@ class RestoreOrchestrator:
             }
 
             # Step 1: Stop VM
+            # Auto-detect Local SSDs and handle automatically
+            # (user already acknowledged data loss during rescue)
+            has_local_ssd = any(
+                disk.get('type') == 'SCRATCH'
+                for disk in self.compute.instances().get(
+                    project=self.project, zone=self.zone, instance=self.vm_name
+                ).execute().get('disks', [])
+            )
             self._log_info("  Stopping VM...")
             result = stop_vm.execute(
                 vm_name=self.vm_name,
                 timeout=self.config.vm_stop_timeout,
-                discard_local_ssd=self.config.force  # Allow stopping VMs with Local SSDs if --force
+                discard_local_ssd=has_local_ssd  # Auto-handle Local SSDs during restore
             )
             self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
             if not result.success:
