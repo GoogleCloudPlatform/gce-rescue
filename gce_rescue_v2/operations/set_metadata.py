@@ -6,8 +6,13 @@ by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
 import time
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, METADATA_SET_FAILED
+from ..core.config import VERSION
 
 
 # Prefix used to backup original metadata keys that conflict with rescue keys
@@ -45,7 +50,7 @@ class SetMetadataOperation(BaseOperation):
         """
         return "Set Metadata"
 
-    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True) -> OperationResult:
+    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True, operation_type: str = None) -> OperationResult:
         """
         Set metadata on the specified VM instance, preserving existing metadata.
 
@@ -60,6 +65,8 @@ class SetMetadataOperation(BaseOperation):
                 form {'key': str, 'value': str}.
             preserve_existing (bool): If True, merge with existing metadata
                 and backup conflicting keys. Default True.
+            operation_type (str): Operation type for tracking ('rescue' or 'restore').
+                Sets unique User-Agent for analytics.
 
         Returns:
             OperationResult: Result including `rollback_data` with `vm_name`
@@ -68,6 +75,8 @@ class SetMetadataOperation(BaseOperation):
 
         self._log_debug(f"Executing {self.name} for {vm_name}")
         self._log_debug(f"  Setting {len(metadata_items)} metadata items (preserve_existing={preserve_existing})")
+        if operation_type:
+            self._log_debug(f"  Operation tracking: {operation_type}")
 
         try:
             # Get current metadata for rollback
@@ -95,7 +104,13 @@ class SetMetadataOperation(BaseOperation):
                 'items': final_items
             }
 
-            operation = self.compute.instances().setMetadata(
+            # Use custom compute client with unique User-Agent if operation_type provided (for tracking)
+            if operation_type:
+                compute = self._create_tracked_client(operation_type)
+            else:
+                compute = self.compute
+
+            operation = compute.instances().setMetadata(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
@@ -147,6 +162,41 @@ class SetMetadataOperation(BaseOperation):
                 message=f"Failed to set metadata: {error_msg}",
                 error=error_detail
             )
+
+    def _create_tracked_client(self, operation_type: str):
+        """
+        Create a compute client with unique User-Agent for usage tracking.
+
+        Args:
+            operation_type: Operation type ('rescue' or 'restore')
+
+        Returns:
+            Compute API client with custom User-Agent header
+        """
+        # Get credentials from the base compute client
+        credentials = self.compute._http.credentials
+
+        # Build unique User-Agent for tracking
+        user_agent = f'gce-rescue/{VERSION} ({operation_type})'
+
+        def _request_builder(http, *args, **kwargs):
+            """Inject custom User-Agent header."""
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials,
+                http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        # Create compute client with custom request builder
+        return discovery.build(
+            'compute',
+            'v1',
+            credentials=credentials,
+            cache_discovery=False,
+            requestBuilder=_request_builder
+        )
 
     def _merge_with_backup(self, original_items: list, new_items: list) -> list:
         """

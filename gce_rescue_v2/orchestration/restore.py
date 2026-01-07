@@ -231,7 +231,12 @@ class RestoreOrchestrator:
             clean_metadata = self._get_clean_metadata()
             # Use preserve_existing=False to REPLACE metadata (not merge)
             # because clean_metadata already contains the correct final state
-            result = set_metadata.execute(vm_name=self.vm_name, metadata_items=clean_metadata, preserve_existing=False)
+            result = set_metadata.execute(
+                vm_name=self.vm_name,
+                metadata_items=clean_metadata,
+                preserve_existing=False,
+                operation_type='restore'  # For usage tracking
+            )
             self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()

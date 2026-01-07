@@ -312,7 +312,11 @@ class RescueOrchestrator:
                 {'key': 'rescue-original-disk', 'value': self.original_disk_name},
                 {'key': 'rescue-os-type', 'value': self.os_type}
             ]
-            result = set_metadata.execute(vm_name=self.vm_name, metadata_items=metadata_items)
+            result = set_metadata.execute(
+                vm_name=self.vm_name,
+                metadata_items=metadata_items,
+                operation_type='rescue'  # For usage tracking
+            )
             self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
