@@ -177,7 +177,7 @@ class SetMetadataOperation(BaseOperation):
         credentials = self.compute._http.credentials
 
         # Build unique User-Agent for tracking
-        user_agent = f'gce-rescue/{VERSION} ({operation_type})'
+        user_agent = f'gce-rescue-{VERSION}-{operation_type}'
 
         def _request_builder(http, *args, **kwargs):
             """Inject custom User-Agent header."""
