@@ -50,7 +50,7 @@ class SetMetadataOperation(BaseOperation):
         """
         return "Set Metadata"
 
-    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True, operation_type: str = None) -> OperationResult:
+    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True, tracking_label: str = None) -> OperationResult:
         """
         Set metadata on the specified VM instance, preserving existing metadata.
 
@@ -65,8 +65,9 @@ class SetMetadataOperation(BaseOperation):
                 form {'key': str, 'value': str}.
             preserve_existing (bool): If True, merge with existing metadata
                 and backup conflicting keys. Default True.
-            operation_type (str): Operation type for tracking ('rescue' or 'restore').
-                Sets unique User-Agent for analytics.
+            tracking_label (str): Tracking label for usage analytics.
+                Format: '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-meta-set-rescue-keys'
 
         Returns:
             OperationResult: Result including `rollback_data` with `vm_name`
@@ -75,8 +76,8 @@ class SetMetadataOperation(BaseOperation):
 
         self._log_debug(f"Executing {self.name} for {vm_name}")
         self._log_debug(f"  Setting {len(metadata_items)} metadata items (preserve_existing={preserve_existing})")
-        if operation_type:
-            self._log_debug(f"  Operation tracking: {operation_type}")
+        if tracking_label:
+            self._log_debug(f"  Operation tracking: {tracking_label}")
 
         try:
             # Get current metadata for rollback
@@ -104,9 +105,9 @@ class SetMetadataOperation(BaseOperation):
                 'items': final_items
             }
 
-            # Use custom compute client with unique User-Agent if operation_type provided (for tracking)
-            if operation_type:
-                compute = self._create_tracked_client(operation_type)
+            # Use custom compute client with unique User-Agent if tracking_label provided (for tracking)
+            if tracking_label:
+                compute = self._create_tracked_client(tracking_label)
             else:
                 compute = self.compute
 
@@ -163,12 +164,13 @@ class SetMetadataOperation(BaseOperation):
                 error=error_detail
             )
 
-    def _create_tracked_client(self, operation_type: str):
+    def _create_tracked_client(self, tracking_label: str):
         """
         Create a compute client with unique User-Agent for usage tracking.
 
         Args:
-            operation_type: Operation type ('rescue' or 'restore')
+            tracking_label: Tracking label in format '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-meta-set-rescue-keys'
 
         Returns:
             Compute API client with custom User-Agent header
@@ -177,7 +179,8 @@ class SetMetadataOperation(BaseOperation):
         credentials = self.compute._http.credentials
 
         # Build unique User-Agent for tracking
-        user_agent = f'gce-rescue-{VERSION}-{operation_type}'
+        # Format: gce-rescue-{VERSION}-{tracking_label}
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
 
         def _request_builder(http, *args, **kwargs):
             """Inject custom User-Agent header."""

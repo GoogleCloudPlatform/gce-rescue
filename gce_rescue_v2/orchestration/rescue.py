@@ -211,7 +211,8 @@ class RescueOrchestrator:
             result = stop_vm.execute(
                 vm_name=self.vm_name,
                 timeout=self.config.vm_stop_timeout,
-                discard_local_ssd=self.config.force  # Allow stopping VMs with Local SSDs if --force
+                discard_local_ssd=self.config.force,  # Allow stopping VMs with Local SSDs if --force
+                tracking_label='rescue-vm-stop'
             )
             self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
             if not result.success:
@@ -221,7 +222,11 @@ class RescueOrchestrator:
 
             # Step 2: Detach boot disk (EARLY - enables snapshot immediately)
             self._log_info("  Detaching boot disk...")
-            result = detach_boot.execute(vm_name=self.vm_name, device_name=self.original_device_name)
+            result = detach_boot.execute(
+                vm_name=self.vm_name,
+                device_name=self.original_device_name,
+                tracking_label='rescue-disk-detach-orig'
+            )
             self.state_tracker.add_operation("Detach Boot Disk", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -243,7 +248,8 @@ class RescueOrchestrator:
                     snapshot_name=None,  # Auto-generate
                     description=f"Pre-rescue safety snapshot of {self.vm_name}",
                     timeout=self.config.snapshot_timeout,
-                    wait=not self.config.async_snapshot  # Don't wait if async mode
+                    wait=not self.config.async_snapshot,  # Don't wait if async mode
+                    tracking_label='rescue-disk-snapshot'
                 )
                 self.state_tracker.add_operation("Create Snapshot", result.success, result.message, result.rollback_data)
 
@@ -279,7 +285,8 @@ class RescueOrchestrator:
                 size_gb=rescue_disk_size,
                 disk_type=self.config.rescue_disk_type,
                 source_image=f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}',
-                timeout=self.config.disk_create_timeout
+                timeout=self.config.disk_create_timeout,
+                tracking_label='rescue-disk-create-rescue'
             )
             self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data)
             if not result.success:
@@ -289,7 +296,12 @@ class RescueOrchestrator:
 
             # Step 5: Attach rescue disk as boot
             self._log_info("  Attaching rescue disk as boot...")
-            result = attach_rescue.execute(vm_name=self.vm_name, disk_name=rescue_disk_name, boot=True)
+            result = attach_rescue.execute(
+                vm_name=self.vm_name,
+                disk_name=rescue_disk_name,
+                boot=True,
+                tracking_label='rescue-disk-attach-rescue'
+            )
             self.state_tracker.add_operation("Attach Rescue Disk", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -315,7 +327,7 @@ class RescueOrchestrator:
             result = set_metadata.execute(
                 vm_name=self.vm_name,
                 metadata_items=metadata_items,
-                operation_type='rescue'  # For usage tracking
+                tracking_label='rescue-meta-set-rescue-keys'
             )
             self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
             if not result.success:
@@ -325,7 +337,11 @@ class RescueOrchestrator:
 
             # Step 7: Start VM in rescue mode
             self._log_info("  Starting VM in rescue mode...")
-            result = start_vm.execute(vm_name=self.vm_name, timeout=self.config.vm_start_timeout)
+            result = start_vm.execute(
+                vm_name=self.vm_name,
+                timeout=self.config.vm_start_timeout,
+                tracking_label='rescue-vm-start'
+            )
             self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -378,7 +394,12 @@ class RescueOrchestrator:
             # Step 9: Re-attach original disk as secondary
             self._log_info("  Attaching affected disk as secondary...")
             time.sleep(5)  # Brief wait for VM stability
-            result = attach_original.execute(vm_name=self.vm_name, disk_name=self.original_disk_name, boot=False)
+            result = attach_original.execute(
+                vm_name=self.vm_name,
+                disk_name=self.original_disk_name,
+                boot=False,
+                tracking_label='rescue-disk-attach-orig'
+            )
             self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()

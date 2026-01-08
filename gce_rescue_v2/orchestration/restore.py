@@ -191,7 +191,8 @@ class RestoreOrchestrator:
             result = stop_vm.execute(
                 vm_name=self.vm_name,
                 timeout=self.config.vm_stop_timeout,
-                discard_local_ssd=has_local_ssd  # Auto-handle Local SSDs during restore
+                discard_local_ssd=has_local_ssd,  # Auto-handle Local SSDs during restore
+                tracking_label='restore-vm-stop'
             )
             self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
             if not result.success:
@@ -201,7 +202,11 @@ class RestoreOrchestrator:
 
             # Step 2: Detach rescue disk
             self._log_info("  Detaching rescue disk...")
-            result = detach_rescue.execute(vm_name=self.vm_name, device_name=self.rescue_device_name)
+            result = detach_rescue.execute(
+                vm_name=self.vm_name,
+                device_name=self.rescue_device_name,
+                tracking_label='restore-disk-detach-rescue'
+            )
             self.state_tracker.add_operation("Detach Rescue Disk", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -210,7 +215,11 @@ class RestoreOrchestrator:
 
             # Step 3: Detach original disk
             self._log_info("  Detaching affected disk...")
-            result = detach_original.execute(vm_name=self.vm_name, device_name=self.original_device_name)
+            result = detach_original.execute(
+                vm_name=self.vm_name,
+                device_name=self.original_device_name,
+                tracking_label='restore-disk-detach-orig'
+            )
             self.state_tracker.add_operation("Detach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -219,7 +228,12 @@ class RestoreOrchestrator:
 
             # Step 4: Re-attach original disk as boot
             self._log_info("  Re-attaching affected disk as boot...")
-            result = attach_original.execute(vm_name=self.vm_name, disk_name=self.original_disk_name, boot=True)
+            result = attach_original.execute(
+                vm_name=self.vm_name,
+                disk_name=self.original_disk_name,
+                boot=True,
+                tracking_label='restore-disk-attach-orig'
+            )
             self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -235,7 +249,7 @@ class RestoreOrchestrator:
                 vm_name=self.vm_name,
                 metadata_items=clean_metadata,
                 preserve_existing=False,
-                operation_type='restore'  # For usage tracking
+                tracking_label='restore-meta-restore-orig'
             )
             self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
             if not result.success:
@@ -245,7 +259,11 @@ class RestoreOrchestrator:
 
             # Step 6: Start VM
             self._log_info("  Starting VM...")
-            result = start_vm.execute(vm_name=self.vm_name, timeout=self.config.vm_start_timeout)
+            result = start_vm.execute(
+                vm_name=self.vm_name,
+                timeout=self.config.vm_start_timeout,
+                tracking_label='restore-vm-start'
+            )
             self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data)
             if not result.success:
                 self._rollback()
@@ -255,7 +273,10 @@ class RestoreOrchestrator:
             # Step 7: Delete rescue disk (only if config allows)
             if self.config.delete_rescue_disk:
                 self._log_info(f"  Deleting rescue disk...")
-                result = delete_rescue.execute(disk_name=self.rescue_disk_name)
+                result = delete_rescue.execute(
+                    disk_name=self.rescue_disk_name,
+                    tracking_label='restore-disk-delete-rescue'
+                )
                 # Note: Don't add to state tracker (can't rollback deletion)
                 if result.success:
                     self._log_info(f"  [OK] {result.message}")

@@ -6,8 +6,13 @@ Rollback restarts the VM only if it was originally running prior to execution.
 """
 
 import time
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, VM_STOP_TIMEOUT, VM_NOT_FOUND
+from ..core.config import VERSION
 
 
 class StopVMOperation(BaseOperation):
@@ -26,7 +31,7 @@ class StopVMOperation(BaseOperation):
         """
         return "Stop VM"
 
-    def execute(self, vm_name: str, timeout: int = 300, discard_local_ssd: bool = False) -> OperationResult:
+    def execute(self, vm_name: str, timeout: int = 300, discard_local_ssd: bool = False, tracking_label: str = None) -> OperationResult:
         """
         Stop the specified VM and wait until it is TERMINATED.
 
@@ -36,6 +41,9 @@ class StopVMOperation(BaseOperation):
                 TERMINATED. Default is 300.
             discard_local_ssd (bool): If True, allows stopping VMs with Local SSDs
                 attached (data on Local SSDs will be lost). Default is False.
+            tracking_label (str): Tracking label for usage analytics.
+                Format: '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-vm-stop'
 
         Returns:
             OperationResult: Result including `rollback_data` with `vm_name`
@@ -46,6 +54,8 @@ class StopVMOperation(BaseOperation):
         """
 
         self._log_debug(f"Executing {self.name} for {vm_name}")
+        if tracking_label:
+            self._log_debug(f"  Operation tracking: {tracking_label}")
 
         try:
             # Step 1: Get current VM state (for rollback)
@@ -75,7 +85,9 @@ class StopVMOperation(BaseOperation):
                     stop_params['discardLocalSsd'] = True
                     self._log_debug("Using discardLocalSsd=True for Local SSD VM")
 
-                self.compute.instances().stop(**stop_params).execute()
+                # Use tracked client if tracking_label provided
+                compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
+                compute.instances().stop(**stop_params).execute()
 
                 # Step 3: Wait for VM to stop
                 self._log_debug("Waiting for VM to stop...")
@@ -160,6 +172,43 @@ class StopVMOperation(BaseOperation):
                 message=f"Failed to stop VM: {error_msg}",
                 error=error_detail
             )
+
+    def _create_tracked_client(self, tracking_label: str):
+        """
+        Create a compute client with unique User-Agent for usage tracking.
+
+        Args:
+            tracking_label: Tracking label in format '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-vm-stop'
+
+        Returns:
+            Compute API client with custom User-Agent header
+        """
+        # Get credentials from the base compute client
+        credentials = self.compute._http.credentials
+
+        # Build unique User-Agent for tracking
+        # Format: gce-rescue-{VERSION}-{tracking_label}
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
+
+        def _request_builder(http, *args, **kwargs):
+            """Inject custom User-Agent header."""
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials,
+                http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        # Create compute client with custom request builder
+        return discovery.build(
+            'compute',
+            'v1',
+            credentials=credentials,
+            cache_discovery=False,
+            requestBuilder=_request_builder
+        )
 
     def rollback(self, rollback_data: dict) -> bool:
         """
