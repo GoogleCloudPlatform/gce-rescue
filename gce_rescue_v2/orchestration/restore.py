@@ -124,10 +124,10 @@ class RestoreOrchestrator:
 
         runner = ValidationRunner()
 
-        # Add validators
+        # Add validators with tracking labels
         runner.add(CredentialsValidator(self.compute, self.project, self.zone))
-        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name))
-        runner.add(VMRestoreStateValidator(self.compute, self.project, self.zone, self.vm_name))
+        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='restore-val-iam'))
+        runner.add(VMRestoreStateValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='restore-val-vm-state'))
 
         # Run validations
         results = runner.run_all(self.logger)

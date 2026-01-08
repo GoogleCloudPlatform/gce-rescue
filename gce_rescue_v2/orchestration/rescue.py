@@ -136,10 +136,10 @@ class RescueOrchestrator:
 
         runner = ValidationRunner()
 
-        # Add validators
+        # Add validators with tracking labels
         runner.add(CredentialsValidator(self.compute, self.project, self.zone))
-        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name))
-        vm_validator = VMStateValidator(self.compute, self.project, self.zone, self.vm_name)
+        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='rescue-val-iam'))
+        vm_validator = VMStateValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='rescue-val-vm-state')
         runner.add(vm_validator)
 
         # Run validations
