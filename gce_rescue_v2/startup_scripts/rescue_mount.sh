@@ -131,6 +131,10 @@ if [ -n "$disk_p" ]; then
     log "=== GCE Rescue Auto-Mount Complete ==="
     echo "SUCCESS" > "$STATUS_FILE"
 
+    # Output completion marker to serial console (for orchestrator verification)
+    echo "GCE-RESCUE-COMPLETE" >&2
+    log "=== Startup script completed successfully ==="
+
 else
     log "ERROR: No supported filesystem found!"
     log "Supported: ext3, ext4, xfs, ntfs"

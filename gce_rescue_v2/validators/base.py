@@ -248,7 +248,7 @@ class ValidationRunner:
         for validator in self.validators:
             # Log what we're checking (DEBUG level)
             if logger:
-                logger.debug(f"Running validator: {validator.name}")
+                logger.debug(f"[Validator] Running: {validator.name}")
 
             # Run the validator
             result = validator.validate()
@@ -256,16 +256,16 @@ class ValidationRunner:
             # Log result (DEBUG level)
             if logger:
                 status = "PASS" if result.passed else "FAIL"
-                logger.debug(f"  {status}: {result.message}")
+                logger.debug(f"[Validator]   {status}: {result.message}")
 
             # Add to results
             results.add(result)
 
-            # Print result for user (INFO level)
+            # Print result for user (DEBUG level for individual validators)
             if logger:
                 if result.passed:
-                    logger.info(f"  [OK] {result.validator_name}")
+                    logger.debug(f"[Validator]   {result.validator_name}...done.")
                 else:
-                    logger.info(f"  [FAIL] {result.validator_name}")
+                    logger.info(f"  {result.validator_name}...FAILED.")
 
         return results

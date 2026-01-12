@@ -100,11 +100,13 @@ def setup_logging(level='INFO', log_file=None, debug=False):
 
     # Create formatter based on debug mode
     if debug:
-        # Debug mode: Include timestamp with milliseconds, level, function, line number
-        # Format: [2025-11-02 10:30:45.123] DEBUG [stop_vm:45]: API call: instances.stop(...)
+        # Debug mode: gcloud-style format (no timestamps) with function:line for developers
+        # Format: DEBUG: [funcName:line] [Component] message
+        # - No timestamps (gcloud style - timing goes to Cloud Logging)
+        # - funcName:line shows WHERE in code (for debugging)
+        # - Component context in message shows WHAT component (e.g., [Rescue], [Stop VM])
         console_format = logging.Formatter(
-            '[%(asctime)s] %(levelname)s [%(funcName)s:%(lineno)d]: %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            '%(levelname)s: [%(funcName)s:%(lineno)d] %(message)s'
         )
     else:
         # Normal mode: Clean format, just timestamp and message

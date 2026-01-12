@@ -57,14 +57,8 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
         debug=debug
     )
     
-    logger.info("=" * 60)
-    logger.info("GCE Rescue V2 - Rescue Mode")
-    logger.info("=" * 60)
-    logger.info(f"VM: {vm_name}")
-    logger.info(f"Zone: {zone}")
-    if project:
-        logger.info(f"Project: {project}")
-    logger.info("")
+    logger.debug(f"GCE Rescue V2 - Rescue")
+    logger.debug(f"VM: {vm_name}, Zone: {zone}" + (f", Project: {project}" if project else ""))
     
     try:
         # Initialize auth
@@ -87,26 +81,27 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
         )
         
         # Step 1: Validate
-        logger.info("")
         if not orchestrator.validate():
-            logger.error("")
             logger.error("Validation failed. Cannot proceed with rescue.")
             return False
-        
+
         # Step 2: Execute
-        logger.info("")
         if not orchestrator.execute():
-            logger.error("")
             logger.error("Rescue failed.")
             return False
-        
-        # Success! Show OS-appropriate instructions
+
+        # Success! Show output
         logger.info("")
-        logger.info("=" * 60)
-        logger.info("[OK] Rescue completed successfully!")
-        logger.info("=" * 60)
+        logger.info(f"Rescue mode enabled for instance [{vm_name}].")
         logger.info("")
-        logger.info("Your VM is now in rescue mode.")
+
+        # Show verification timeout warning if applicable
+        if not orchestrator.verification_succeeded:
+            logger.info("Note: Startup verification timed out. Check rescue logs:")
+            logger.info(f"  $ gcloud compute instances get-serial-port-output {vm_name} --zone={zone}")
+            logger.info("")
+
+        logger.info("Next Steps:")
 
         # Show OS-specific connection and mount instructions
         if orchestrator.os_type == OS_TYPE_WINDOWS:
@@ -119,43 +114,28 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
                         external_ip = access.get('natIP')
                         break
 
+            ip_str = external_ip if external_ip else "N/A"
+            logger.info("1. Connect via RDP:")
+            logger.info(f"   IP: {ip_str}")
+            logger.info(f"   User: rescue_admin")
+            logger.info(f"   Pass: {orchestrator.windows_rescue_password}")
             logger.info("")
-            logger.info("=" * 50)
-            logger.info("  Windows RDP Login Credentials")
-            logger.info("=" * 50)
-            if external_ip:
-                logger.info(f"  IP Address: {external_ip}")
-            logger.info(f"  Username:   rescue_admin")
-            logger.info(f"  Password:   {orchestrator.windows_rescue_password}")
-            logger.info("=" * 50)
+            logger.info("2. Fix the issue (affected disk is mounted at D:\\).")
             logger.info("")
-            logger.info("Note: Wait 2-3 minutes for Windows to fully boot before connecting.")
-            logger.info("")
-            logger.info("Affected disk mounted at: D:\\ (or next available drive letter)")
-            logger.info("")
-            logger.info("Check rescue logs inside VM:")
-            logger.info("  type C:\\gce-rescue.log")
-            logger.info("")
-            logger.info("Common Windows repair tasks:")
-            logger.info("  - Edit files: notepad D:\\path\\to\\file")
-            logger.info("  - Registry: Load hive from D:\\Windows\\System32\\config\\ in regedit")
-            logger.info("  - Boot repair: bcdboot D:\\Windows /s C:")
+            logger.info("3. Restore original configuration:")
+            logger.info(f"   $ gce-rescue-v2 restore {vm_name} --zone={zone}")
         else:
-            logger.info(f"Connect via SSH: gcloud compute ssh {vm_name} --zone={zone}")
-            logger.info("Affected disk mounted at: /mnt/sysroot")
+            logger.info("1. Connect to the instance:")
+            logger.info(f"   $ gcloud compute ssh {vm_name} --zone={zone}")
             logger.info("")
-            logger.info("Check rescue logs inside VM:")
-            logger.info("  cat /var/log/gce-rescue.log")
-
-        logger.info("")
-        logger.info("When done, restore your VM:")
-        logger.info(f"  gce-rescue-v2 restore {vm_name} --zone={zone}")
-        logger.info("")
+            logger.info("2. Fix the issue (affected disk is mounted at /mnt/sysroot).")
+            logger.info("")
+            logger.info("3. Restore original configuration:")
+            logger.info(f"   $ gce-rescue-v2 restore {vm_name} --zone={zone}")
 
         return True
         
     except Exception as e:
-        logger.error("")
         logger.error(f"Unexpected error: {str(e)}")
         if debug:
             logger.exception("Full traceback:")
@@ -200,14 +180,8 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
         debug=debug
     )
     
-    logger.info("=" * 60)
-    logger.info("GCE Rescue V2 - Restore Mode")
-    logger.info("=" * 60)
-    logger.info(f"VM: {vm_name}")
-    logger.info(f"Zone: {zone}")
-    if project:
-        logger.info(f"Project: {project}")
-    logger.info("")
+    logger.debug(f"GCE Rescue V2 - Restore")
+    logger.debug(f"VM: {vm_name}, Zone: {zone}" + (f", Project: {project}" if project else ""))
     
     try:
         # Initialize auth
@@ -230,20 +204,16 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
         )
         
         # Step 1: Validate
-        logger.info("")
         if not orchestrator.validate():
-            logger.error("")
             logger.error("Validation failed. Cannot proceed with restore.")
             logger.error("Is the VM in rescue mode?")
             return False
-        
+
         # Step 2: Execute
-        logger.info("")
         if not orchestrator.execute():
-            logger.error("")
             logger.error("Restore failed.")
             return False
-        
+
         # Success! Show OS-appropriate instructions
         # Check metadata for OS type (stored during rescue)
         os_type = None
@@ -260,22 +230,17 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
             pass  # Default to Linux instructions if detection fails
 
         logger.info("")
-        logger.info("=" * 60)
-        logger.info("[OK] Restore completed successfully!")
-        logger.info("=" * 60)
+        logger.info(f"Instance [{vm_name}] restored to normal operation.")
         logger.info("")
-        logger.info("Your VM has been restored to normal operation.")
-
+        logger.info("Connect to the instance:")
         if os_type == OS_TYPE_WINDOWS:
-            logger.info(f"Connect via RDP: gcloud compute reset-windows-password {vm_name} --zone={zone}")
+            logger.info(f"  $ gcloud compute reset-windows-password {vm_name} --zone={zone}")
         else:
-            logger.info(f"Connect via SSH: gcloud compute ssh {vm_name} --zone={zone}")
-        logger.info("")
+            logger.info(f"  $ gcloud compute ssh {vm_name} --zone={zone}")
 
         return True
         
     except Exception as e:
-        logger.error("")
         logger.error(f"Unexpected error: {str(e)}")
         if debug:
             logger.exception("Full traceback:")

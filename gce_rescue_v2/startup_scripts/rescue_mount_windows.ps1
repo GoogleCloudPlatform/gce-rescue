@@ -175,6 +175,12 @@ foreach ($drive in $mountedDrives) {
     Write-Log "  $($drive.DriveLetter): - $($drive.FileSystemLabel) - $($drive.SizeGB) GB ($($drive.FileSystem))"
 }
 
+# Output completion marker to serial console FIRST (for orchestrator verification)
+# This must happen before any operations that might fail (like desktop file creation)
+Write-Log ""
+Write-Log "GCE-RESCUE-COMPLETE"
+Write-Log "=== Startup script completed successfully ==="
+
 Write-Log ""
 Write-Log "=== GCE Rescue Ready ==="
 Write-Log "Connect via RDP and access your affected disk at the mounted drive letter(s)"
@@ -185,9 +191,13 @@ Write-Log "  - Registry: Load hive from D:\Windows\System32\config\ in regedit"
 Write-Log "  - Boot repair: bcdboot D:\Windows /s C:"
 Write-Log ""
 
-# Create desktop shortcut with instructions
-$desktopPath = [Environment]::GetFolderPath("Desktop")
-$shortcutContent = @"
+# Create desktop shortcut with instructions (optional - may fail if running as SYSTEM)
+try {
+    $desktopPath = [Environment]::GetFolderPath("CommonDesktopDirectory")
+    if (-not $desktopPath) {
+        $desktopPath = "C:\Users\Public\Desktop"
+    }
+    $shortcutContent = @"
 GCE Rescue Mode - Instructions
 ==============================
 
@@ -212,5 +222,9 @@ When done, run restore command from your local machine:
   python -m gce_rescue_v2.cli restore VM_NAME --zone ZONE
 "@
 
-$shortcutContent | Out-File -FilePath "$desktopPath\GCE-Rescue-Instructions.txt" -Encoding UTF8
-Write-Log "Instructions saved to Desktop"
+    $shortcutContent | Out-File -FilePath "$desktopPath\GCE-Rescue-Instructions.txt" -Encoding UTF8
+    Write-Log "Instructions saved to Desktop: $desktopPath\GCE-Rescue-Instructions.txt"
+} catch {
+    Write-Log "WARNING: Could not create desktop instructions file: $_"
+    Write-Log "This is non-critical - rescue mode is still operational"
+}

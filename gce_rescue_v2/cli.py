@@ -409,27 +409,22 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
     # Interactive confirmation (unless --quiet)
     if not args.quiet:
-        print(f"\nYou are about to rescue VM '{args.instance_name}' in zone '{args.zone}'.")
-        print("This will:")
-        print("  - Stop the VM")
-        print("  - Create a rescue disk and boot from it")
-        print("  - Attach the affected disk as secondary")
+        print(f"\nYou are about to rescue instance [{args.instance_name}] in zone [{args.zone}].")
+        print("")
+        print("The following actions will be performed:")
+        print(f" - Stop instance [{args.instance_name}].")
+        print(" - Create a temporary rescue disk and boot the instance from it.")
+        print(" - Attach the original boot disk as a secondary disk.")
 
         # Show Local SSD warning if applicable
         if has_local_ssd:
-            print("")
-            print("  " + "=" * 54)
-            print("  WARNING: LOCAL SSD DETECTED!")
-            print("  " + "=" * 54)
-            print(f"  This VM has {len(local_ssds)} Local SSD(s): {', '.join(local_ssds)}")
-            print("  Stopping the VM will PERMANENTLY DELETE all Local SSD data!")
-            print("  This cannot be undone.")
-            print("  " + "=" * 54)
+            print(f" - WARNING: Local SSDs ({', '.join(local_ssds)}) will be permanently deleted.")
 
         print("")
-        response = input("Do you want to continue? [y/N]: ").strip().lower()
-        if response not in ('y', 'yes'):
-            print("\nOperation cancelled.")
+        response = input("Do you want to continue (Y/n)? ").strip().lower()
+        print("")
+        if response not in ('y', 'yes', ''):
+            print("Aborted by user.")
             return 0
 
     # Convert to config
@@ -482,16 +477,18 @@ def handle_restore(args: argparse.Namespace) -> int:
 
     # Interactive confirmation (unless --quiet)
     if not args.quiet:
-        print(f"\nYou are about to restore VM '{args.instance_name}' in zone '{args.zone}'.")
-        print("This will:")
-        print("  - Stop the VM")
-        print("  - Remove the rescue disk")
-        print("  - Re-attach the affected disk as boot")
-        print("  - Start the VM normally")
+        print(f"\nYou are about to restore instance [{args.instance_name}] in zone [{args.zone}].")
         print("")
-        response = input("Do you want to continue? [y/N]: ").strip().lower()
-        if response not in ('y', 'yes'):
-            print("\nOperation cancelled.")
+        print("The following actions will be performed:")
+        print(f" - Stop instance [{args.instance_name}].")
+        print(" - Remove the temporary rescue disk.")
+        print(" - Re-attach the original boot disk.")
+        print(f" - Start instance [{args.instance_name}].")
+        print("")
+        response = input("Do you want to continue (Y/n)? ").strip().lower()
+        print("")
+        if response not in ('y', 'yes', ''):
+            print("Aborted by user.")
             return 0
 
     # Convert to config

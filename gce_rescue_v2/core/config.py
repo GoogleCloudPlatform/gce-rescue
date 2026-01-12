@@ -55,6 +55,7 @@ class RescueConfig:
     vm_start_timeout: int = 300  # 5 minutes
     disk_create_timeout: int = 300  # 5 minutes
     operation_timeout: int = 600  # 10 minutes
+    startup_verification_timeout: int = 120  # 2 minutes for startup script completion
 
     # Logging settings
     log_level: str = 'INFO'

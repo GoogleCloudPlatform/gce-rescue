@@ -27,6 +27,7 @@ def test_full_rescue_restore_cycle(monkeypatch):
             # Required attributes for main.py success message
             self.os_type = 'linux'
             self.windows_rescue_password = None
+            self.verification_succeeded = True
 
         def validate(self):
             state["calls"].append("rescue-validate")

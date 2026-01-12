@@ -331,6 +331,31 @@ METADATA_SET_FAILED = ErrorSuggestion(
 )
 
 # =============================================================================
+# Startup Verification Errors
+# =============================================================================
+
+STARTUP_VERIFICATION_TIMEOUT = ErrorSuggestion(
+    message="Startup script did not complete within timeout period",
+    causes=[
+        "VM boot is very slow (Windows can take 5-10 minutes)",
+        "Startup script crashed or encountered errors",
+        "Disk failed to attach or mount",
+        "Serial console output is not being captured",
+    ],
+    suggestions=[
+        "Check serial console output for errors",
+        "Increase timeout with longer --startup-verification-timeout if needed",
+        "Try rescue operation again (VM may be slow on first boot)",
+        "Use --skip-startup-verification to bypass (not recommended)",
+    ],
+    commands=[
+        "gcloud compute instances get-serial-port-output {vm_name} --zone={zone}",
+        "gcloud compute instances describe {vm_name} --zone={zone}",
+        "Check /var/log/gce-rescue.log (Linux) or C:\\gce-rescue.log (Windows) via SSH/RDP",
+    ]
+)
+
+# =============================================================================
 # Helper function to get error suggestion based on error message
 # =============================================================================
 
