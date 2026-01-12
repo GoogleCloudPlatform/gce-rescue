@@ -25,7 +25,8 @@ from ..operations import (
     AttachDiskOperation,
     SetMetadataOperation,
     StartVMOperation,
-    CreateSnapshotOperation
+    CreateSnapshotOperation,
+    VerifyStartupOperation
 )
 from .state import StateTracker
 from .rollback import RollbackHandler
@@ -102,15 +103,100 @@ class RescueOrchestrator:
         # Windows rescue credentials (generated for RDP access)
         self.windows_rescue_password = None
 
+        # Verification status (set after startup verification)
+        self.verification_succeeded = None
+
+        # Progress tracking for spinner with phases
+        self._spinner_thread = None
+        self._spinner_stop = False
+        self._is_debug_mode = False
+        self._progress_started = False
+        self._progress_phases = []
+        self._progress_lock = None
+
+    def _init_progress(self):
+        """Initialize spinner with phases display."""
+        import sys
+        import logging
+        import threading
+
+        # Check if we're in debug mode
+        self._is_debug_mode = self.logger and self.logger.level <= logging.DEBUG
+        self._progress_phases = []
+        self._progress_lock = threading.Lock()
+
+        if not self._is_debug_mode:
+            # Start spinner thread
+            self._spinner_stop = False
+            self._spinner_thread = threading.Thread(target=self._run_spinner, daemon=True)
+            self._spinner_thread.start()
+
+        self._progress_started = True
+
+    def _run_spinner(self):
+        """Run spinner animation with phases in background thread."""
+        import sys
+        import time
+
+        spinner_chars = ['|', '/', '-', '\\']
+        idx = 0
+
+        while not self._spinner_stop:
+            with self._progress_lock:
+                if self._progress_phases:
+                    # Show completed phases, then current phase with dots and spinner
+                    completed = self._progress_phases[:-1]
+                    current = self._progress_phases[-1]
+                    if completed:
+                        phases_str = " -> ".join(completed) + " -> " + current + ".." + spinner_chars[idx]
+                    else:
+                        phases_str = current + ".." + spinner_chars[idx]
+                else:
+                    phases_str = spinner_chars[idx]
+
+            line = f"\rRescuing {self.vm_name} [{phases_str}"
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            idx = (idx + 1) % len(spinner_chars)
+            time.sleep(0.1)
+
+    def _update_progress(self, phase: str):
+        """Add a new phase to the progress display."""
+        with self._progress_lock:
+            self._progress_phases.append(phase)
+        self._log_debug(f"Phase: {phase}")
+
+    def _finish_progress(self, success: bool = True):
+        """Finish spinner display with final status."""
+        import sys
+
+        if not self._progress_started:
+            return
+
+        # Stop spinner thread
+        self._spinner_stop = True
+        if self._spinner_thread:
+            self._spinner_thread.join(timeout=0.5)
+
+        if not self._is_debug_mode:
+            with self._progress_lock:
+                phases_str = " -> ".join(self._progress_phases)
+
+            if success:
+                sys.stdout.write(f"\rRescuing {self.vm_name} [{phases_str}] done.\n")
+            else:
+                sys.stdout.write(f"\rRescuing {self.vm_name} [{phases_str}] FAILED.\n")
+            sys.stdout.flush()
+
     def _log_info(self, message: str):
         """Log info message."""
         if self.logger:
             self.logger.info(message)
 
     def _log_debug(self, message: str):
-        """Log debug message."""
+        """Log debug message with component prefix."""
         if self.logger:
-            self.logger.debug(message)
+            self.logger.debug(f"[Rescue] {message}", stacklevel=2)
 
     def _log_error(self, message: str):
         """Log error message."""
@@ -131,7 +217,9 @@ class RescueOrchestrator:
             True if all validations passed
         """
 
-        self._log_info("Pre-flight Validation:")
+        # Initialize progress and start with validation phase
+        self._init_progress()
+        self._update_progress("validating")
         self._log_debug("Creating validation runner")
 
         runner = ValidationRunner()
@@ -146,8 +234,7 @@ class RescueOrchestrator:
         results = runner.run_all(self.logger)
 
         if not results.all_passed():
-            self._log_error("")
-            self._log_error("Pre-flight validation failed!")
+            self._finish_progress(False)
             results.print_failures()
             return False
 
@@ -172,8 +259,7 @@ class RescueOrchestrator:
             True if rescue succeeded, False if failed
         """
 
-        self._log_info("")
-        self._log_info("Executing Rescue:")
+        self._log_debug(f"Rescuing instance '{self.vm_name}'...")
         self._log_debug(f"Config: {self.config}")
 
         try:
@@ -196,32 +282,34 @@ class RescueOrchestrator:
 
             # Build operations map for rollback (in execution order)
             self.operations_map = {
-                "Stop VM": stop_vm,                       # Step 1
-                "Detach Boot Disk": detach_boot,          # Step 2
-                "Create Snapshot": create_snapshot,       # Step 3
-                "Create Rescue Disk": create_disk,        # Step 4
-                "Attach Rescue Disk": attach_rescue,      # Step 5
-                "Set Metadata": set_metadata,             # Step 6
-                "Start VM": start_vm,                     # Step 7
-                "Attach Original Disk": attach_original   # Step 9
+                "Stop VM": stop_vm,
+                "Detach Boot Disk": detach_boot,
+                "Create Snapshot": create_snapshot,
+                "Create Rescue Disk": create_disk,
+                "Attach Rescue Disk": attach_rescue,
+                "Set Metadata": set_metadata,
+                "Start VM": start_vm,
+                "Attach Original Disk": attach_original
             }
 
             # Step 1: Stop VM
-            self._log_info("  Stopping VM...")
+            self._update_progress("stopping")
+            self._log_debug(f"Stopping instance {self.vm_name}...")
             result = stop_vm.execute(
                 vm_name=self.vm_name,
                 timeout=self.config.vm_stop_timeout,
-                discard_local_ssd=self.config.force,  # Allow stopping VMs with Local SSDs if --force
+                discard_local_ssd=self.config.force,
                 tracking_label='rescue-vm-stop'
             )
             self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
-            # Step 2: Detach boot disk (EARLY - enables snapshot immediately)
-            self._log_info("  Detaching boot disk...")
+            # Step 2: Detach boot disk
+            self._update_progress("creating rescue disk")
+            self._log_debug("Detaching boot disk...")
             result = detach_boot.execute(
                 vm_name=self.vm_name,
                 device_name=self.original_device_name,
@@ -229,57 +317,43 @@ class RescueOrchestrator:
             )
             self.state_tracker.add_operation("Detach Boot Disk", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
-            # Step 3: Create safety snapshot (immediately after detach)
-            # Track snapshot name for later wait
+            # Step 3: Create safety snapshot
             pending_snapshot_name = None
             if self.config.create_snapshot:
-                if self.config.async_snapshot:
-                    self._log_info("  Creating safety snapshot (async - will wait before attaching disk)...")
-                else:
-                    self._log_info("  Creating safety snapshot...")
-                    self._log_info("    (This takes 2-5 minutes but ensures data safety)")
-
+                self._log_debug("Creating snapshot...")
                 result = create_snapshot.execute(
                     disk_name=self.original_disk_name,
-                    snapshot_name=None,  # Auto-generate
+                    snapshot_name=None,
                     description=f"Pre-rescue safety snapshot of {self.vm_name}",
                     timeout=self.config.snapshot_timeout,
-                    wait=not self.config.async_snapshot,  # Don't wait if async mode
+                    wait=not self.config.async_snapshot,
                     tracking_label='rescue-disk-snapshot'
                 )
                 self.state_tracker.add_operation("Create Snapshot", result.success, result.message, result.rollback_data)
 
                 if not result.success:
-                    self._log_error("  Failed to create safety snapshot")
                     if self.config.require_snapshot:
-                        self._log_error("  Snapshot required but failed. Aborting.")
+                        self._finish_progress(False)
                         self._rollback()
                         return False
-                    else:
-                        self._log_error("  Continuing without snapshot (risky!)")
                 else:
                     pending_snapshot_name = result.rollback_data.get('snapshot_name')
-                    self._log_info(f"  [OK] {result.message}")
-                    if not self.config.async_snapshot:
-                        self._log_info(f"    Snapshot: {pending_snapshot_name}")
 
-            # Step 4: Create rescue disk (runs while snapshot progresses in background)
-            # Select rescue image based on OS type
+            # Step 4: Create rescue disk
             if self.os_type == OS_TYPE_WINDOWS:
                 rescue_image_project = self.config.windows_rescue_image_project
                 rescue_image_family = self.config.windows_rescue_image_family
                 rescue_disk_size = self.config.windows_rescue_disk_size_gb
-                self._log_info(f"  Creating Windows rescue disk ({rescue_disk_size}GB)...")
             else:
                 rescue_image_project = self.config.rescue_image_project
                 rescue_image_family = self.config.rescue_image_family
                 rescue_disk_size = self.config.rescue_disk_size_gb
-                self._log_info(f"  Creating Linux rescue disk ({rescue_disk_size}GB)...")
 
+            self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB)...")
             result = create_disk.execute(
                 disk_name=rescue_disk_name,
                 size_gb=rescue_disk_size,
@@ -290,12 +364,12 @@ class RescueOrchestrator:
             )
             self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 5: Attach rescue disk as boot
-            self._log_info("  Attaching rescue disk as boot...")
+            self._log_debug("Attaching rescue disk as boot...")
             result = attach_rescue.execute(
                 vm_name=self.vm_name,
                 disk_name=rescue_disk_name,
@@ -304,15 +378,14 @@ class RescueOrchestrator:
             )
             self.state_tracker.add_operation("Attach Rescue Disk", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 6: Set rescue metadata
-            self._log_info("  Setting rescue metadata...")
+            self._log_debug("Setting rescue metadata...")
             startup_script = self._generate_startup_script()
 
-            # Use appropriate startup script key based on OS type
             if self.os_type == OS_TYPE_WINDOWS:
                 script_key = 'windows-startup-script-ps1'
             else:
@@ -331,12 +404,13 @@ class RescueOrchestrator:
             )
             self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 7: Start VM in rescue mode
-            self._log_info("  Starting VM in rescue mode...")
+            self._update_progress("starting")
+            self._log_debug(f"Starting instance {self.vm_name}...")
             result = start_vm.execute(
                 vm_name=self.vm_name,
                 timeout=self.config.vm_start_timeout,
@@ -344,26 +418,38 @@ class RescueOrchestrator:
             )
             self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
-            # Step 8: Wait for snapshot completion (if async mode)
+            # Step 8: Verify startup script completion
+            self._update_progress("verifying")
+            self._log_debug("Verifying startup script...")
+            verify_startup = VerifyStartupOperation(self.compute, self.project, self.zone, self.logger)
+            result = verify_startup.execute(
+                vm_name=self.vm_name,
+                timeout=self.config.startup_verification_timeout,
+                tracking_label='rescue-vm-verify-startup'
+            )
+            self.verification_succeeded = result.success
+            # Don't fail on verification timeout - continue
+
+            # Wait for snapshot completion (if async mode) - not a numbered step
             if pending_snapshot_name and self.config.async_snapshot:
-                self._log_info("  Waiting for snapshot to complete...")
+                self._log_debug("Waiting for async snapshot to complete...")
                 snapshot_start_time = time.time()
                 snapshot_timeout = self.config.snapshot_timeout
 
                 while True:
                     elapsed = time.time() - snapshot_start_time
                     if elapsed > snapshot_timeout:
-                        self._log_error(f"  Snapshot timeout after {snapshot_timeout}s")
+                        self._log_debug(f"Snapshot timeout after {snapshot_timeout}s")
                         if self.config.require_snapshot:
-                            self._log_error("  Snapshot required but timed out. Aborting.")
+                            self._log_error("Snapshot required but timed out. Aborting.")
                             self._rollback()
                             return False
                         else:
-                            self._log_error("  Continuing without verified snapshot (risky!)")
+                            self._log_debug("Continuing without verified snapshot.")
                             break
 
                     try:
@@ -375,24 +461,24 @@ class RescueOrchestrator:
                         status = snapshot.get('status', 'UNKNOWN')
 
                         if status == 'READY':
-                            self._log_info(f"  [OK] Snapshot ready: {pending_snapshot_name}")
+                            self._log_debug(f"Snapshot ready: {pending_snapshot_name}")
                             break
                         elif status == 'FAILED':
-                            self._log_error(f"  Snapshot failed: {pending_snapshot_name}")
+                            self._log_debug(f"Snapshot failed: {pending_snapshot_name}")
                             if self.config.require_snapshot:
                                 self._rollback()
                                 return False
                             break
                         else:
                             # Still creating, show progress
-                            self._log_debug(f"    Snapshot status: {status} ({elapsed:.0f}s)")
+                            self._log_debug(f"Snapshot status: {status} ({elapsed:.0f}s)")
                     except Exception as e:
-                        self._log_debug(f"    Checking snapshot... ({elapsed:.0f}s)")
+                        self._log_debug(f"Checking snapshot... ({elapsed:.0f}s)")
 
                     time.sleep(5)
 
             # Step 9: Re-attach original disk as secondary
-            self._log_info("  Attaching affected disk as secondary...")
+            self._log_debug("Attaching affected disk as secondary...")
             time.sleep(5)  # Brief wait for VM stability
             result = attach_original.execute(
                 vm_name=self.vm_name,
@@ -402,14 +488,16 @@ class RescueOrchestrator:
             )
             self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Success!
+            self._finish_progress(True)
             return True
 
         except Exception as e:
+            self._finish_progress(False)
             self._log_error(f"Unexpected error during rescue: {str(e)}")
             self._rollback()
             return False
@@ -424,7 +512,7 @@ class RescueOrchestrator:
 
         # Detect OS type
         self.os_type = detect_os_type(self.vm_info)
-        self._log_info(f"  Detected OS: {get_os_display_name(self.os_type)}")
+        self._log_debug(f"Detected OS: {get_os_display_name(self.os_type)}")
 
         for disk in self.vm_info.get('disks', []):
             if disk.get('boot'):
