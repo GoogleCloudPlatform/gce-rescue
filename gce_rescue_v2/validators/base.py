@@ -84,11 +84,38 @@ class ValidationResults:
         print()
         for result in failures:
             print(f"  [X] {result.validator_name}")
-            print(f"    {result.message}")
+            print(f"      {result.message}")
 
-            # Print fix suggestions if available
-            if result.details and 'fix' in result.details:
-                print(f"    Fix: {result.details['fix']}")
+            # Special handling for IAM permission failures
+            if result.details and 'missing' in result.details:
+                missing = result.details['missing']
+                if missing:
+                    print()
+                    print("      Missing permissions:")
+                    for perm in missing:
+                        print(f"        - {perm}")
+
+                # Show required roles
+                if 'required_roles' in result.details:
+                    print()
+                    print("      Required roles (grant one of these):")
+                    for role in result.details['required_roles']:
+                        print(f"        - {role}")
+
+                # Show how to grant
+                print()
+                print("      To grant access, run:")
+                print("        $ gcloud projects add-iam-policy-binding PROJECT_ID \\")
+                print("            --member=\"user:YOUR_EMAIL\" \\")
+                print("            --role=\"roles/compute.instanceAdmin.v1\"")
+                print()
+                print("      To check your current account:")
+                print("        $ gcloud auth list")
+
+            # Print general fix suggestions for other errors
+            elif result.details and 'fix' in result.details:
+                print(f"      Fix: {result.details['fix']}")
+
             print()
 
 

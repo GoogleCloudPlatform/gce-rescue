@@ -112,7 +112,7 @@ Executing rescue...
 
 Your VM is now in rescue mode.
 Connect via SSH: gcloud compute ssh web-server --zone=us-central1-a
-Affected disk mounted at: /mnt/sysroot
+Affected disk mounted at: /mnt/disk
 
 When done, restore your VM:
   gce-rescue-v2 restore web-server --zone=us-central1-a
@@ -123,7 +123,7 @@ When done, restore your VM:
 ```bash
 $ gcloud compute ssh web-server --zone us-central1-a
 
-user@web-server:~$ sudo nano /mnt/sysroot/etc/fstab
+user@web-server:~$ sudo nano /mnt/disk/etc/fstab
 # Fix the issue, save and exit
 
 user@web-server:~$ exit

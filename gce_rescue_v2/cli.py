@@ -100,6 +100,10 @@ def get_gcloud_config(key: str) -> Optional[str]:
 class CustomArgumentParser(argparse.ArgumentParser):
     """Custom ArgumentParser with cleaner error messages."""
 
+    # Flags specific to each command (for helpful error messages)
+    RESCUE_ONLY_FLAGS = ['--snapshot', '--no-snapshot']
+    RESTORE_ONLY_FLAGS = ['--keep-rescue-disk']
+
     def error(self, message: str):
         """Override to provide cleaner error format."""
         import re
@@ -107,18 +111,64 @@ class CustomArgumentParser(argparse.ArgumentParser):
         lines = []
 
         if "invalid choice:" in message:
-            # Format: "argument command: invalid choice: 'restor' (choose from rescue, restore)"
-            match = re.search(r"invalid choice: '(\w+)' \(choose from (.+)\)", message)
-            if match:
-                invalid = match.group(1)
-                valid_options = match.group(2)
-                lines.append(f"Invalid command '{invalid}'.")
-                lines.append("")
-                lines.append("Available commands:")
-                for opt in valid_options.split(", "):
-                    lines.append(f"  {opt}")
+            # Check if it's an invalid subcommand or invalid flag value
+            # Subcommand: "argument command: invalid choice: 'restor' (choose from rescue, restore)"
+            # Flag value: "argument --format: invalid choice: 'invalid' (choose from 'json', ...)"
+            if "argument command:" in message:
+                # Invalid subcommand
+                match = re.search(r"invalid choice: '(\w+)' \(choose from (.+)\)", message)
+                if match:
+                    invalid = match.group(1)
+                    valid_options = match.group(2)
+                    lines.append(f"Invalid command '{invalid}'.")
+                    lines.append("")
+                    lines.append("Available commands:")
+                    for opt in valid_options.split(", "):
+                        lines.append(f"  {opt}")
+                else:
+                    lines.append(f"{message}")
             else:
-                lines.append(f"{message}")
+                # Invalid value for a flag (e.g., --format=invalid)
+                flag_match = re.search(r"argument (--[\w-]+):", message)
+                value_match = re.search(r"invalid choice: '(\w+)' \(choose from (.+)\)", message)
+                if flag_match and value_match:
+                    flag_name = flag_match.group(1)
+                    invalid_value = value_match.group(1)
+                    # Clean up valid options (remove quotes)
+                    valid_options = value_match.group(2).replace("'", "")
+                    lines.append(f"Invalid value '{invalid_value}' for {flag_name}.")
+                    lines.append("")
+                    lines.append("Valid options:")
+                    for opt in valid_options.split(", "):
+                        lines.append(f"  {opt.strip()}")
+                else:
+                    lines.append(f"{message}")
+        elif "unrecognized arguments:" in message.lower():
+            # Extract the unrecognized argument
+            match = re.search(r"unrecognized arguments: (.+)", message, re.IGNORECASE)
+            if match:
+                unrecognized = match.group(1).strip()
+                lines.append(f"Unrecognized argument: {unrecognized}")
+
+                # Check if it's a flag from another command
+                for flag in self.RESCUE_ONLY_FLAGS:
+                    if flag in unrecognized:
+                        lines.append("")
+                        lines.append(f"Note: '{flag}' is only available for the 'rescue' command.")
+                        lines.append("")
+                        lines.append("Example:")
+                        lines.append(f"  $ gce-rescue-v2 rescue VM_NAME --zone=ZONE {flag}")
+                        break
+                for flag in self.RESTORE_ONLY_FLAGS:
+                    if flag in unrecognized:
+                        lines.append("")
+                        lines.append(f"Note: '{flag}' is only available for the 'restore' command.")
+                        lines.append("")
+                        lines.append("Example:")
+                        lines.append(f"  $ gce-rescue-v2 restore VM_NAME --zone=ZONE {flag}")
+                        break
+            else:
+                lines.append(f"{message.capitalize()}")
         elif "required: command" in message.lower():
             lines.append("No command specified.")
             lines.append("")
