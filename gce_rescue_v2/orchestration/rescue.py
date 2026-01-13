@@ -126,8 +126,9 @@ class RescueOrchestrator:
         import logging
         import threading
 
-        # Check if we're in debug mode
-        self._is_debug_mode = self.logger and self.logger.level <= logging.DEBUG
+        # Check if we're in debug mode (use console_level if available, fallback to logger.level)
+        console_level = getattr(self.logger, 'console_level', self.logger.level) if self.logger else logging.INFO
+        self._is_debug_mode = console_level <= logging.DEBUG
         self._progress_phases = []
         self._progress_lock = threading.Lock()
 

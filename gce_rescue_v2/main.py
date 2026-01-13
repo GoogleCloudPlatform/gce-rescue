@@ -5,13 +5,15 @@ Simple, clean entry points for rescue and restore operations.
 
 Usage:
     from gce_rescue_v2.main import rescue_vm, restore_vm
-    
+
     # Rescue a VM
     success = rescue_vm('my-vm', 'us-central1-a', project='my-project')
-    
+
     # Restore a VM
     success = restore_vm('my-vm', 'us-central1-a', project='my-project')
 """
+
+from datetime import datetime
 
 from .core.auth import AuthManager
 from .core.config import RescueConfig, RestoreConfig, OS_TYPE_WINDOWS
@@ -52,14 +54,18 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
         >>> rescue_vm('my-vm', 'us-central1-a', debug=True)
         True
     """
-    
-    # Setup logging
+
+    # Setup logging with auto-generated log file
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_file = f"{vm_name}-rescue-{timestamp}.log"
     logger = setup_logging(
         level='DEBUG' if debug else 'INFO',
+        log_file=log_file,
         debug=debug
     )
-    
+
     logger.debug(f"GCE Rescue V2 - Rescue")
+    logger.debug(f"Log file: {log_file}")
     logger.debug(f"VM: {vm_name}, Zone: {zone}" + (f", Project: {project}" if project else ""))
     
     try:
@@ -196,14 +202,18 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
         >>> restore_vm('my-vm', 'us-central1-a')
         True
     """
-    
-    # Setup logging
+
+    # Setup logging with auto-generated log file
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_file = f"{vm_name}-restore-{timestamp}.log"
     logger = setup_logging(
         level='DEBUG' if debug else 'INFO',
+        log_file=log_file,
         debug=debug
     )
-    
+
     logger.debug(f"GCE Rescue V2 - Restore")
+    logger.debug(f"Log file: {log_file}")
     logger.debug(f"VM: {vm_name}, Zone: {zone}" + (f", Project: {project}" if project else ""))
     
     try:

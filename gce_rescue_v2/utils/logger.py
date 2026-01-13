@@ -91,7 +91,12 @@ def setup_logging(level='INFO', log_file=None, debug=False):
 
     # Create logger
     logger = logging.getLogger('gce_rescue')
-    logger.setLevel(numeric_level)
+    # Logger level must be DEBUG to allow debug messages to file handler
+    # But we track the console level separately for UI decisions
+    logger.setLevel(logging.DEBUG)
+
+    # Store console level as attribute for UI components to check
+    logger.console_level = numeric_level
 
     # Remove existing handlers (in case setup_logging called multiple times)
     logger.handlers.clear()
@@ -128,11 +133,12 @@ def setup_logging(level='INFO', log_file=None, debug=False):
     if log_file:
         # Create log directory if it doesn't exist
         log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.parent != Path('.'):
+            log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create file handler
+        # Create file handler - always DEBUG level for full troubleshooting
         file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(numeric_level)
+        file_handler.setLevel(logging.DEBUG)
 
         # File format includes more details
         file_format = logging.Formatter(

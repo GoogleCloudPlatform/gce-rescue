@@ -119,12 +119,13 @@ class CustomArgumentParser(argparse.ArgumentParser):
                 match = re.search(r"invalid choice: '(\w+)' \(choose from (.+)\)", message)
                 if match:
                     invalid = match.group(1)
-                    valid_options = match.group(2)
                     lines.append(f"Invalid command '{invalid}'.")
                     lines.append("")
+                    lines.append("Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]")
+                    lines.append("")
                     lines.append("Available commands:")
-                    for opt in valid_options.split(", "):
-                        lines.append(f"  {opt}")
+                    lines.append("  rescue   Boot a VM into rescue mode")
+                    lines.append("  restore  Restore a VM from rescue mode")
                 else:
                     lines.append(f"{message}")
             else:
@@ -170,17 +171,34 @@ class CustomArgumentParser(argparse.ArgumentParser):
             else:
                 lines.append(f"{message.capitalize()}")
         elif "required: command" in message.lower():
-            lines.append("No command specified.")
-            lines.append("")
-            lines.append("Available commands:")
-            lines.append("  rescue   - Boot a VM into rescue mode")
-            lines.append("  restore  - Restore a VM from rescue mode")
+            # Not an error - user just wants to know how to use the tool
+            usage_lines = [
+                "Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]",
+                "",
+                "Commands:",
+                "  rescue   Boot a VM into rescue mode",
+                "  restore  Restore a VM from rescue mode",
+                "",
+                "Examples:",
+                "  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a",
+                "  $ gce-rescue-v2 restore my-vm --zone=us-central1-a",
+                "",
+                "For detailed help:",
+                "  $ gce-rescue-v2 --help",
+                ""
+            ]
+            self.exit(0, "\n".join(usage_lines) + "\n")
         elif "required:" in message.lower():
             # Extract what's required
             match = re.search(r"required: (.+)", message.lower())
             if match:
                 required = match.group(1)
                 lines.append(f"Missing required argument: {required}")
+                lines.append("")
+                lines.append("Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]")
+                lines.append("")
+                lines.append("Example:")
+                lines.append("  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a")
             else:
                 lines.append(f"{message.capitalize()}")
         else:
