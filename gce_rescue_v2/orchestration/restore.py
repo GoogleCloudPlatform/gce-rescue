@@ -112,6 +112,9 @@ class RestoreOrchestrator:
         self._progress_lock = threading.Lock()
 
         if not self._is_debug_mode:
+            # Print header line
+            sys.stdout.write(f"Restoring instance [{self.vm_name}]:\n")
+            sys.stdout.flush()
             # Start spinner thread
             self._spinner_stop = False
             self._spinner_thread = threading.Thread(target=self._run_spinner, daemon=True)
@@ -140,7 +143,7 @@ class RestoreOrchestrator:
                 else:
                     phases_str = spinner_chars[idx]
 
-            line = f"\rRestoring {self.vm_name} [{phases_str}"
+            line = f"\r [{phases_str}"
             sys.stdout.write(line)
             sys.stdout.flush()
             idx = (idx + 1) % len(spinner_chars)
@@ -169,9 +172,9 @@ class RestoreOrchestrator:
                 phases_str = " -> ".join(self._progress_phases)
 
             if success:
-                sys.stdout.write(f"\rRestoring {self.vm_name} [{phases_str}] done.\n")
+                sys.stdout.write(f"\r [{phases_str}] done.\n")
             else:
-                sys.stdout.write(f"\rRestoring {self.vm_name} [{phases_str}] FAILED.\n")
+                sys.stdout.write(f"\r [{phases_str}] FAILED.\n")
             sys.stdout.flush()
 
     def _log_info(self, message: str):
@@ -202,10 +205,6 @@ class RestoreOrchestrator:
             True if all validations passed
         """
 
-        # Initialize progress and start with validation phase
-        self._init_progress()
-        self._update_progress("validating")
-
         runner = ValidationRunner()
 
         # Add validators with tracking labels
@@ -217,7 +216,6 @@ class RestoreOrchestrator:
         results = runner.run_all(self.logger)
 
         if not results.all_passed():
-            self._finish_progress(False)
             results.print_failures()
             return False
 
@@ -233,6 +231,9 @@ class RestoreOrchestrator:
         """
 
         self._log_debug(f"Restoring instance '{self.vm_name}'...")
+
+        # Initialize progress display
+        self._init_progress()
 
         try:
             # Get disk info (before progress display)
@@ -262,7 +263,7 @@ class RestoreOrchestrator:
             }
 
             # Step 1: Stop VM
-            self._update_progress("stopping")
+            self._update_progress("Stopping")
             self._log_debug(f"Stopping instance {self.vm_name}...")
             # Auto-detect Local SSDs and handle automatically
             # (user already acknowledged data loss during rescue)
@@ -285,7 +286,7 @@ class RestoreOrchestrator:
                 return False
 
             # Step 2: Detach rescue disk
-            self._update_progress("restoring boot disk")
+            self._update_progress("Restoring affected disk")
             self._log_debug("Detaching rescue disk...")
             result = detach_rescue.execute(
                 vm_name=self.vm_name,
@@ -299,7 +300,7 @@ class RestoreOrchestrator:
                 return False
 
             # Step 3: Detach original disk
-            self._log_debug("Detaching affected disk...")
+            self._log_debug("Detaching original boot disk...")
             result = detach_original.execute(
                 vm_name=self.vm_name,
                 device_name=self.original_device_name,
@@ -343,7 +344,7 @@ class RestoreOrchestrator:
                 return False
 
             # Step 6: Start VM
-            self._update_progress("starting")
+            self._update_progress("Starting")
             self._log_debug(f"Starting instance {self.vm_name}...")
             result = start_vm.execute(
                 vm_name=self.vm_name,

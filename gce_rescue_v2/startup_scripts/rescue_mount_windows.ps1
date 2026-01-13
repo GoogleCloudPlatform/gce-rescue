@@ -80,9 +80,9 @@ while ($attempt -lt $maxAttempts) {
     $attempt++
 
     # Get all disks except the boot disk (Disk 0)
-    $disks = Get-Disk | Where-Object { $_.Number -ne 0 }
+    $disks = @(Get-Disk | Where-Object { $_.Number -ne 0 })
 
-    if ($disks) {
+    if ($disks.Count -gt 0) {
         Write-Log "Found $($disks.Count) additional disk(s)"
         $diskFound = $true
         break
@@ -118,9 +118,9 @@ foreach ($disk in $disks) {
         }
 
         # Get partitions
-        $partitions = Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -ne 'Reserved' -and $_.Size -gt 1GB }
+        $partitions = @(Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -ne 'Reserved' -and $_.Size -gt 1GB })
 
-        if ($partitions) {
+        if ($partitions.Count -gt 0) {
             Write-Log "  Found $($partitions.Count) partition(s)"
 
             foreach ($partition in $partitions) {
@@ -184,6 +184,13 @@ Write-Log "=== Startup script completed successfully ==="
 Write-Log ""
 Write-Log "=== GCE Rescue Ready ==="
 Write-Log "Connect via RDP and access your affected disk at the mounted drive letter(s)"
+Write-Log ""
+Write-Log "=========================================="
+Write-Log "RDP CONNECTION CREDENTIALS"
+Write-Log "=========================================="
+Write-Log "Username: $rescueUser"
+Write-Log "Password: $rescuePassword"
+Write-Log "=========================================="
 Write-Log ""
 Write-Log "Common repair tasks:"
 Write-Log "  - Edit files: notepad D:\Windows\System32\config\SOFTWARE"

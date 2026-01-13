@@ -15,7 +15,9 @@ Usage:
 
 from .core.auth import AuthManager
 from .core.config import RescueConfig, RestoreConfig, OS_TYPE_WINDOWS
+from .core.error_messages import get_error_suggestion
 from .utils.logger import setup_logging
+from .utils.colors import note_prefix
 from .orchestration import RescueOrchestrator, RestoreOrchestrator
 
 
@@ -95,10 +97,22 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
         logger.info(f"Rescue mode enabled for instance [{vm_name}].")
         logger.info("")
 
-        # Show verification timeout warning if applicable
+        # Show disk info
+        mount_path = "D:\\" if orchestrator.os_type == OS_TYPE_WINDOWS else "/mnt/sysroot"
+        logger.info(f"Affected disk mounted at: {mount_path}")
+        if orchestrator.snapshot_name:
+            logger.info(f"Backup snapshot: {orchestrator.snapshot_name}")
+        logger.info("")
+
+        # Show startup verification note if it didn't complete in time
         if not orchestrator.verification_succeeded:
-            logger.info("Note: Startup verification timed out. Check rescue logs:")
-            logger.info(f"  $ gcloud compute instances get-serial-port-output {vm_name} --zone={zone}")
+            wait_time = "1-2 minutes" if orchestrator.os_type == OS_TYPE_WINDOWS else "30 seconds"
+            log_file = "C:\\gce-rescue.log" if orchestrator.os_type == OS_TYPE_WINDOWS else "/var/log/gce-rescue.log"
+            logger.info(f"{note_prefix()} Disk mount is still in progress.")
+            logger.info(f"      Wait ~{wait_time} before connecting. If disk is not available, check:")
+            logger.info(f"      - Rescue log: {log_file}")
+            logger.info(f"      - Serial console (mount status{', credentials' if orchestrator.os_type == OS_TYPE_WINDOWS else ''}):")
+            logger.info(f"        $ gcloud compute instances get-serial-port-output {vm_name} --zone={zone} --project={project}")
             logger.info("")
 
         logger.info("Next Steps:")
@@ -118,27 +132,36 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
             logger.info("1. Connect via RDP:")
             logger.info(f"   IP: {ip_str}")
             logger.info(f"   User: rescue_admin")
-            logger.info(f"   Pass: {orchestrator.windows_rescue_password}")
+            logger.info(f"   Password: {orchestrator.windows_rescue_password}")
             logger.info("")
-            logger.info("2. Fix the issue (affected disk is mounted at D:\\).")
+            logger.info("2. Fix the issue (affected boot disk is mounted at D:\\).")
             logger.info("")
             logger.info("3. Restore original configuration:")
-            logger.info(f"   $ gce-rescue-v2 restore {vm_name} --zone={zone}")
+            logger.info(f"   $ gce-rescue-v2 restore {vm_name} --zone={zone} --project={project}")
         else:
             logger.info("1. Connect to the instance:")
-            logger.info(f"   $ gcloud compute ssh {vm_name} --zone={zone}")
+            logger.info(f"   $ gcloud compute ssh {vm_name} --zone={zone} --project={project}")
             logger.info("")
-            logger.info("2. Fix the issue (affected disk is mounted at /mnt/sysroot).")
+            logger.info("2. Fix the issue (affected boot disk is mounted at /mnt/sysroot).")
             logger.info("")
             logger.info("3. Restore original configuration:")
-            logger.info(f"   $ gce-rescue-v2 restore {vm_name} --zone={zone}")
+            logger.info(f"   $ gce-rescue-v2 restore {vm_name} --zone={zone} --project={project}")
 
+        logger.info("")
         return True
         
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
+        error_msg = str(e)
+        suggestion = get_error_suggestion(error_msg)
+
+        if suggestion:
+            logger.error(suggestion.format(vm_name=vm_name, zone=zone, project=project))
+        else:
+            logger.error(f"Unexpected error: {error_msg}")
+
         if debug:
             logger.exception("Full traceback:")
+        logger.info("")
         return False
 
 
@@ -232,18 +255,45 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
         logger.info("")
         logger.info(f"Instance [{vm_name}] restored to normal operation.")
         logger.info("")
-        logger.info("Connect to the instance:")
         if os_type == OS_TYPE_WINDOWS:
-            logger.info(f"  $ gcloud compute reset-windows-password {vm_name} --zone={zone}")
-        else:
-            logger.info(f"  $ gcloud compute ssh {vm_name} --zone={zone}")
+            # Get external IP for RDP connection
+            external_ip = None
+            try:
+                for iface in vm.get('networkInterfaces', []):
+                    for access in iface.get('accessConfigs', []):
+                        if access.get('natIP'):
+                            external_ip = access.get('natIP')
+                            break
+            except Exception:
+                pass
 
+            logger.info("Connect via RDP using your original credentials:")
+            if external_ip:
+                logger.info(f"  IP: {external_ip}")
+            else:
+                logger.info(f"  $ gcloud compute instances describe {vm_name} --zone={zone} --project={project} --format=\"get(networkInterfaces[0].accessConfigs[0].natIP)\"")
+            logger.info("")
+            logger.info("Forgot password? Reset it:")
+            logger.info(f"  $ gcloud compute reset-windows-password {vm_name} --zone={zone} --project={project}")
+        else:
+            logger.info("Connect to the instance:")
+            logger.info(f"  $ gcloud compute ssh {vm_name} --zone={zone} --project={project}")
+
+        logger.info("")
         return True
-        
+
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
+        error_msg = str(e)
+        suggestion = get_error_suggestion(error_msg)
+
+        if suggestion:
+            logger.error(suggestion.format(vm_name=vm_name, zone=zone, project=project))
+        else:
+            logger.error(f"Unexpected error: {error_msg}")
+
         if debug:
             logger.exception("Full traceback:")
+        logger.info("")
         return False
 
 

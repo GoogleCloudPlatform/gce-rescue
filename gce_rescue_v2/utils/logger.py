@@ -19,6 +19,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict
 
+from .colors import error_prefix
+
 
 class CleanFormatter(logging.Formatter):
     """
@@ -39,9 +41,9 @@ class CleanFormatter(logging.Formatter):
         elif record.levelno == logging.WARNING:
             return f"[!]  WARNING: {record.getMessage()}"
 
-        # ERROR: Show with prefix
+        # ERROR: Show with prefix (red)
         elif record.levelno == logging.ERROR:
-            return f"[X] ERROR: {record.getMessage()}"
+            return f"{error_prefix()} {record.getMessage()}"
 
         # CRITICAL: Show with prefix and emphasis
         elif record.levelno == logging.CRITICAL:

@@ -23,6 +23,8 @@ Provides user-friendly error messages with:
 
 from typing import Optional
 
+from ..utils.colors import error_prefix
+
 
 class ErrorSuggestion:
     """Container for error message with suggestions."""
@@ -37,7 +39,7 @@ class ErrorSuggestion:
     def format(self, vm_name: str = None, zone: str = None, project: str = None,
                disk_name: str = None) -> str:
         """Format the error with context-specific details."""
-        lines = [f"ERROR: {self.message}"]
+        lines = [f"{error_prefix()} {self.message}"]
 
         if self.causes:
             lines.append("")
