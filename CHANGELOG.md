@@ -5,6 +5,61 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.3] - 2025-01-14
+
+### Added
+
+- **Serial Console Verification**: Polls serial console for `GCE-RESCUE-COMPLETE` marker
+  - 120 second timeout with warning (doesn't fail)
+  - Confirms startup script actually ran successfully
+
+- **Progress Spinner**: Visual progress indicator during operations
+  - Shows current phase (Validating, Stopping VM, etc.)
+  - Clean single-line updates
+
+- **Usage Tracking**: User-Agent headers for internal metrics
+  - Tracks rescue/restore lifecycle phases
+  - Hierarchical labels (rescue/validate, rescue/execute, etc.)
+
+- **Auto Debug Log**: Automatic log file creation on errors
+  - Saved to temp directory with timestamp
+  - Includes full debug output for troubleshooting
+
+- **Improved CLI Output**: gcloud-style formatting
+  - Color-coded status (green OK, red FAIL, yellow WARN)
+  - Better error messages with permission guidance
+  - Clear next steps after rescue/restore
+
+### Fixed
+
+- SCRATCH disk handling in restore orchestration
+- User-Agent format consistency (hyphen not underscore)
+
+## [2.0.0-beta.2] - 2025-01-07
+
+### Added
+
+- **Local SSD Handling**: Proper handling of VMs with scratch disks
+  - SCRATCH disks excluded from detach/restore operations
+  - Clear warning when Local SSD data will be lost
+  - Prevents restore failures on VMs with ephemeral storage
+
+- **Enhanced Error Messages**: More actionable error guidance
+  - Specific suggestions for common failure scenarios
+
+### Fixed
+
+- Early validation for missing project ID
+- CLI updated to industry standard format
+- Suppressed noisy httplib2 timeout warnings
+- Resolved pylint warnings in V1 code
+
+### Documentation
+
+- Comprehensive V2 README rewrite with customer focus
+- Added Linux and Windows example workflows
+- Updated What's New comparison table
+
 ## [2.0.0-beta.1] - 2025-12-11
 
 ### Added
