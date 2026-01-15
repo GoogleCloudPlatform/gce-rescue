@@ -19,6 +19,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict
 
+from .colors import error_prefix
+
 
 class CleanFormatter(logging.Formatter):
     """
@@ -39,9 +41,9 @@ class CleanFormatter(logging.Formatter):
         elif record.levelno == logging.WARNING:
             return f"[!]  WARNING: {record.getMessage()}"
 
-        # ERROR: Show with prefix
+        # ERROR: Show with prefix (red)
         elif record.levelno == logging.ERROR:
-            return f"[X] ERROR: {record.getMessage()}"
+            return f"{error_prefix()} {record.getMessage()}"
 
         # CRITICAL: Show with prefix and emphasis
         elif record.levelno == logging.CRITICAL:
@@ -89,7 +91,12 @@ def setup_logging(level='INFO', log_file=None, debug=False):
 
     # Create logger
     logger = logging.getLogger('gce_rescue')
-    logger.setLevel(numeric_level)
+    # Logger level must be DEBUG to allow debug messages to file handler
+    # But we track the console level separately for UI decisions
+    logger.setLevel(logging.DEBUG)
+
+    # Store console level as attribute for UI components to check
+    logger.console_level = numeric_level
 
     # Remove existing handlers (in case setup_logging called multiple times)
     logger.handlers.clear()
@@ -100,11 +107,13 @@ def setup_logging(level='INFO', log_file=None, debug=False):
 
     # Create formatter based on debug mode
     if debug:
-        # Debug mode: Include timestamp with milliseconds, level, function, line number
-        # Format: [2025-11-02 10:30:45.123] DEBUG [stop_vm:45]: API call: instances.stop(...)
+        # Debug mode: gcloud-style format (no timestamps) with function:line for developers
+        # Format: DEBUG: [funcName:line] [Component] message
+        # - No timestamps (gcloud style - timing goes to Cloud Logging)
+        # - funcName:line shows WHERE in code (for debugging)
+        # - Component context in message shows WHAT component (e.g., [Rescue], [Stop VM])
         console_format = logging.Formatter(
-            '[%(asctime)s] %(levelname)s [%(funcName)s:%(lineno)d]: %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
+            '%(levelname)s: [%(funcName)s:%(lineno)d] %(message)s'
         )
     else:
         # Normal mode: Clean format, just timestamp and message
@@ -124,11 +133,12 @@ def setup_logging(level='INFO', log_file=None, debug=False):
     if log_file:
         # Create log directory if it doesn't exist
         log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.parent != Path('.'):
+            log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create file handler
+        # Create file handler - always DEBUG level for full troubleshooting
         file_handler = logging.FileHandler(log_file)
-        file_handler.setLevel(numeric_level)
+        file_handler.setLevel(logging.DEBUG)
 
         # File format includes more details
         file_format = logging.Formatter(

@@ -80,9 +80,9 @@ while ($attempt -lt $maxAttempts) {
     $attempt++
 
     # Get all disks except the boot disk (Disk 0)
-    $disks = Get-Disk | Where-Object { $_.Number -ne 0 }
+    $disks = @(Get-Disk | Where-Object { $_.Number -ne 0 })
 
-    if ($disks) {
+    if ($disks.Count -gt 0) {
         Write-Log "Found $($disks.Count) additional disk(s)"
         $diskFound = $true
         break
@@ -118,9 +118,9 @@ foreach ($disk in $disks) {
         }
 
         # Get partitions
-        $partitions = Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -ne 'Reserved' -and $_.Size -gt 1GB }
+        $partitions = @(Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -ne 'Reserved' -and $_.Size -gt 1GB })
 
-        if ($partitions) {
+        if ($partitions.Count -gt 0) {
             Write-Log "  Found $($partitions.Count) partition(s)"
 
             foreach ($partition in $partitions) {
@@ -175,9 +175,22 @@ foreach ($drive in $mountedDrives) {
     Write-Log "  $($drive.DriveLetter): - $($drive.FileSystemLabel) - $($drive.SizeGB) GB ($($drive.FileSystem))"
 }
 
+# Output completion marker to serial console FIRST (for orchestrator verification)
+# This must happen before any operations that might fail (like desktop file creation)
+Write-Log ""
+Write-Log "GCE-RESCUE-COMPLETE"
+Write-Log "=== Startup script completed successfully ==="
+
 Write-Log ""
 Write-Log "=== GCE Rescue Ready ==="
 Write-Log "Connect via RDP and access your affected disk at the mounted drive letter(s)"
+Write-Log ""
+Write-Log "=========================================="
+Write-Log "RDP CONNECTION CREDENTIALS"
+Write-Log "=========================================="
+Write-Log "Username: $rescueUser"
+Write-Log "Password: $rescuePassword"
+Write-Log "=========================================="
 Write-Log ""
 Write-Log "Common repair tasks:"
 Write-Log "  - Edit files: notepad D:\Windows\System32\config\SOFTWARE"
@@ -185,9 +198,13 @@ Write-Log "  - Registry: Load hive from D:\Windows\System32\config\ in regedit"
 Write-Log "  - Boot repair: bcdboot D:\Windows /s C:"
 Write-Log ""
 
-# Create desktop shortcut with instructions
-$desktopPath = [Environment]::GetFolderPath("Desktop")
-$shortcutContent = @"
+# Create desktop shortcut with instructions (optional - may fail if running as SYSTEM)
+try {
+    $desktopPath = [Environment]::GetFolderPath("CommonDesktopDirectory")
+    if (-not $desktopPath) {
+        $desktopPath = "C:\Users\Public\Desktop"
+    }
+    $shortcutContent = @"
 GCE Rescue Mode - Instructions
 ==============================
 
@@ -212,5 +229,9 @@ When done, run restore command from your local machine:
   python -m gce_rescue_v2.cli restore VM_NAME --zone ZONE
 "@
 
-$shortcutContent | Out-File -FilePath "$desktopPath\GCE-Rescue-Instructions.txt" -Encoding UTF8
-Write-Log "Instructions saved to Desktop"
+    $shortcutContent | Out-File -FilePath "$desktopPath\GCE-Rescue-Instructions.txt" -Encoding UTF8
+    Write-Log "Instructions saved to Desktop: $desktopPath\GCE-Rescue-Instructions.txt"
+} catch {
+    Write-Log "WARNING: Could not create desktop instructions file: $_"
+    Write-Log "This is non-critical - rescue mode is still operational"
+}

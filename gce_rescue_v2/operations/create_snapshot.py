@@ -6,8 +6,13 @@ operations. Rollback removes only snapshots created by this operation.
 """
 
 import time
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, SNAPSHOT_CREATE_FAILED, SNAPSHOT_TIMEOUT
+from ..core.config import VERSION
 
 
 class CreateSnapshotOperation(BaseOperation):
@@ -28,7 +33,8 @@ class CreateSnapshotOperation(BaseOperation):
         return "Create Snapshot"
 
     def execute(self, disk_name: str, snapshot_name: str = None,
-                description: str = None, timeout: int = 600, wait: bool = True) -> OperationResult:
+                description: str = None, timeout: int = 600, wait: bool = True,
+                tracking_label: str = None) -> OperationResult:
         """
         Create a snapshot of the specified disk.
 
@@ -46,6 +52,9 @@ class CreateSnapshotOperation(BaseOperation):
                 Default is 600.
             wait (bool): Whether to wait for completion (synchronous). If
                 False, runs in async mode and returns immediately. Default True.
+            tracking_label (str): Tracking label for usage analytics.
+                Format: '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-disk-snapshot'
 
         Returns:
             OperationResult: Result object containing success flag, message,
@@ -68,6 +77,8 @@ class CreateSnapshotOperation(BaseOperation):
         self._log_debug(f"Executing {self.name}: {snapshot_name}")
         self._log_debug(f"  Disk: {disk_name}")
         self._log_debug(f"  Description: {description}")
+        if tracking_label:
+            self._log_debug(f"  Operation tracking: {tracking_label}")
 
         try:
             # Create snapshot
@@ -78,7 +89,9 @@ class CreateSnapshotOperation(BaseOperation):
 
             self._log_debug(f"Creating snapshot with config: {body}")
 
-            self.compute.disks().createSnapshot(
+            # Use tracked client if tracking_label provided
+            compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
+            compute.disks().createSnapshot(
                 project=self.project,
                 zone=self.zone,
                 disk=disk_name,
@@ -186,6 +199,43 @@ class CreateSnapshotOperation(BaseOperation):
                 message=f"Failed to create snapshot: {error_msg}",
                 error=error_detail
             )
+
+    def _create_tracked_client(self, tracking_label: str):
+        """
+        Create a compute client with unique User-Agent for usage tracking.
+
+        Args:
+            tracking_label: Tracking label in format '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-disk-snapshot'
+
+        Returns:
+            Compute API client with custom User-Agent header
+        """
+        # Get credentials from the base compute client
+        credentials = self.compute._http.credentials
+
+        # Build unique User-Agent for tracking
+        # Format: gce-rescue-{VERSION}-{tracking_label}
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
+
+        def _request_builder(http, *args, **kwargs):
+            """Inject custom User-Agent header."""
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials,
+                http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        # Create compute client with custom request builder
+        return discovery.build(
+            'compute',
+            'v1',
+            credentials=credentials,
+            cache_discovery=False,
+            requestBuilder=_request_builder
+        )
 
     def rollback(self, rollback_data: dict) -> bool:
         """

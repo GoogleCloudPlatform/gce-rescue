@@ -6,8 +6,13 @@ irreversible and should only be used after completing the rescue workflow.
 """
 
 import time
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, DISK_DELETE_FAILED
+from ..core.config import VERSION
 
 
 class DeleteDiskOperation(BaseOperation):
@@ -26,12 +31,15 @@ class DeleteDiskOperation(BaseOperation):
         """
         return "Delete Disk"
 
-    def execute(self, disk_name: str) -> OperationResult:
+    def execute(self, disk_name: str, tracking_label: str = None) -> OperationResult:
         """
         Permanently delete a persistent disk.
 
         Args:
             disk_name (str): Name of the disk to delete.
+            tracking_label (str): Tracking label for usage analytics.
+                Format: '{operation_type}-{action_group}-{action_detail}'
+                Example: 'restore-disk-delete-rescue'
 
         Returns:
             OperationResult: Result with success status. `rollback_data` is
@@ -43,10 +51,14 @@ class DeleteDiskOperation(BaseOperation):
 
         self._log_debug(f"Executing {self.name}: {disk_name}")
         self._log_debug("WARNING: This operation cannot be rolled back!")
+        if tracking_label:
+            self._log_debug(f"  Operation tracking: {tracking_label}")
 
         try:
+            # Use tracked client if tracking_label provided
+            compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
             # Delete the disk
-            operation = self.compute.disks().delete(
+            operation = compute.disks().delete(
                 project=self.project,
                 zone=self.zone,
                 disk=disk_name
@@ -96,6 +108,43 @@ class DeleteDiskOperation(BaseOperation):
                 message=f"Failed to delete disk: {error_msg}",
                 error=error_detail
             )
+
+    def _create_tracked_client(self, tracking_label: str):
+        """
+        Create a compute client with unique User-Agent for usage tracking.
+
+        Args:
+            tracking_label: Tracking label in format '{operation_type}-{action_group}-{action_detail}'
+                Example: 'restore-disk-delete-rescue'
+
+        Returns:
+            Compute API client with custom User-Agent header
+        """
+        # Get credentials from the base compute client
+        credentials = self.compute._http.credentials
+
+        # Build unique User-Agent for tracking
+        # Format: gce-rescue-{VERSION}-{tracking_label}
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
+
+        def _request_builder(http, *args, **kwargs):
+            """Inject custom User-Agent header."""
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials,
+                http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        # Create compute client with custom request builder
+        return discovery.build(
+            'compute',
+            'v1',
+            credentials=credentials,
+            cache_discovery=False,
+            requestBuilder=_request_builder
+        )
 
     def rollback(self, rollback_data: dict) -> bool:
         """

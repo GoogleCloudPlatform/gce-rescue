@@ -100,7 +100,9 @@ class IAMPermissionsValidator(BaseValidator):
                 'permissions': self.INSTANCE_PERMISSIONS
             }
 
-            result = self.compute.instances().testIamPermissions(
+            # Use tracked client if tracking_label provided
+            compute = self._create_tracked_client(self.tracking_label) if self.tracking_label else self.compute
+            result = compute.instances().testIamPermissions(
                 project=self.project,
                 zone=self.zone,
                 resource=self.vm_name,

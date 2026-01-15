@@ -92,15 +92,104 @@ class RestoreOrchestrator:
         self.original_disk_name = None
         self.original_device_name = None
 
+        # Progress tracking for spinner with phases
+        self._spinner_thread = None
+        self._spinner_stop = False
+        self._is_debug_mode = False
+        self._progress_started = False
+        self._progress_phases = []
+        self._progress_lock = None
+        self._total_steps = 3  # Stopping, Restoring affected disk, Starting
+
+    def _init_progress(self):
+        """Initialize spinner with phases display."""
+        import sys
+        import logging
+        import threading
+
+        # Check if we're in debug mode (use console_level if available, fallback to logger.level)
+        console_level = getattr(self.logger, 'console_level', self.logger.level) if self.logger else logging.INFO
+        self._is_debug_mode = console_level <= logging.DEBUG
+        self._progress_phases = []
+        self._progress_lock = threading.Lock()
+
+        if not self._is_debug_mode:
+            # Print header line
+            sys.stdout.write(f"Restoring instance [{self.vm_name}]:\n")
+            sys.stdout.flush()
+            # Start spinner thread
+            self._spinner_stop = False
+            self._spinner_thread = threading.Thread(target=self._run_spinner, daemon=True)
+            self._spinner_thread.start()
+
+        self._progress_started = True
+
+    def _run_spinner(self):
+        """Run spinner animation with phases in background thread."""
+        import sys
+        import time
+
+        spinner_chars = ['|', '/', '-', '\\']
+        idx = 0
+
+        while not self._spinner_stop:
+            with self._progress_lock:
+                current_step = len(self._progress_phases)
+                if self._progress_phases:
+                    # Show completed phases, then current phase with dots and spinner
+                    completed = self._progress_phases[:-1]
+                    current = self._progress_phases[-1]
+                    if completed:
+                        phases_str = " -> ".join(completed) + " -> " + current + ".." + spinner_chars[idx]
+                    else:
+                        phases_str = current + ".." + spinner_chars[idx]
+                else:
+                    phases_str = spinner_chars[idx]
+
+            line = f"\r ({current_step}/{self._total_steps}) [{phases_str}"
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            idx = (idx + 1) % len(spinner_chars)
+            time.sleep(0.1)
+
+    def _update_progress(self, phase: str):
+        """Add a new phase to the progress display."""
+        with self._progress_lock:
+            self._progress_phases.append(phase)
+        self._log_debug(f"Phase: {phase}")
+
+    def _finish_progress(self, success: bool = True):
+        """Finish spinner display with final status."""
+        import sys
+
+        if not self._progress_started:
+            return
+
+        # Stop spinner thread
+        self._spinner_stop = True
+        if self._spinner_thread:
+            self._spinner_thread.join(timeout=0.5)
+
+        if not self._is_debug_mode:
+            with self._progress_lock:
+                phases_str = " -> ".join(self._progress_phases)
+                current_step = len(self._progress_phases)
+
+            if success:
+                sys.stdout.write(f"\r ({self._total_steps}/{self._total_steps}) [{phases_str}] done.\n")
+            else:
+                sys.stdout.write(f"\r ({current_step}/{self._total_steps}) [{phases_str}] FAILED.\n")
+            sys.stdout.flush()
+
     def _log_info(self, message: str):
         """Log info message."""
         if self.logger:
             self.logger.info(message)
 
     def _log_debug(self, message: str):
-        """Log debug message."""
+        """Log debug message with component prefix."""
         if self.logger:
-            self.logger.debug(message)
+            self.logger.debug(f"[Restore] {message}", stacklevel=2)
 
     def _log_error(self, message: str):
         """Log error message."""
@@ -120,24 +209,21 @@ class RestoreOrchestrator:
             True if all validations passed
         """
 
-        self._log_info("Pre-flight Validation:")
-
         runner = ValidationRunner()
 
-        # Add validators
+        # Add validators with tracking labels
         runner.add(CredentialsValidator(self.compute, self.project, self.zone))
-        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name))
-        runner.add(VMRestoreStateValidator(self.compute, self.project, self.zone, self.vm_name))
+        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='restore-val-iam'))
+        runner.add(VMRestoreStateValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='restore-val-vm-state'))
 
         # Run validations
         results = runner.run_all(self.logger)
 
         if not results.all_passed():
-            self._log_error("")
-            self._log_error("Pre-flight validation failed!")
             results.print_failures()
             return False
 
+        self._log_debug("All validations passed")
         return True
 
     def execute(self) -> bool:
@@ -148,11 +234,13 @@ class RestoreOrchestrator:
             True if restore succeeded
         """
 
-        self._log_info("")
-        self._log_info("Executing Restore:")
+        self._log_debug(f"Restoring instance '{self.vm_name}'...")
+
+        # Initialize progress display
+        self._init_progress()
 
         try:
-            # Get disk info
+            # Get disk info (before progress display)
             self._get_disk_info()
 
             # Check snapshot status (warn if failed or missing)
@@ -179,80 +267,117 @@ class RestoreOrchestrator:
             }
 
             # Step 1: Stop VM
-            self._log_info("  Stopping VM...")
+            self._update_progress("Stopping")
+            self._log_debug(f"Stopping instance {self.vm_name}...")
+            # Auto-detect Local SSDs and handle automatically
+            # (user already acknowledged data loss during rescue)
+            has_local_ssd = any(
+                disk.get('type') == 'SCRATCH'
+                for disk in self.compute.instances().get(
+                    project=self.project, zone=self.zone, instance=self.vm_name
+                ).execute().get('disks', [])
+            )
             result = stop_vm.execute(
                 vm_name=self.vm_name,
                 timeout=self.config.vm_stop_timeout,
-                discard_local_ssd=self.config.force  # Allow stopping VMs with Local SSDs if --force
+                discard_local_ssd=has_local_ssd,  # Auto-handle Local SSDs during restore
+                tracking_label='restore-vm-stop'
             )
             self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 2: Detach rescue disk
-            self._log_info("  Detaching rescue disk...")
-            result = detach_rescue.execute(vm_name=self.vm_name, device_name=self.rescue_device_name)
+            self._update_progress("Restoring affected disk")
+            self._log_debug("Detaching rescue disk...")
+            result = detach_rescue.execute(
+                vm_name=self.vm_name,
+                device_name=self.rescue_device_name,
+                tracking_label='restore-disk-detach-rescue'
+            )
             self.state_tracker.add_operation("Detach Rescue Disk", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 3: Detach original disk
-            self._log_info("  Detaching affected disk...")
-            result = detach_original.execute(vm_name=self.vm_name, device_name=self.original_device_name)
+            self._log_debug("Detaching original boot disk...")
+            result = detach_original.execute(
+                vm_name=self.vm_name,
+                device_name=self.original_device_name,
+                tracking_label='restore-disk-detach-orig'
+            )
             self.state_tracker.add_operation("Detach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 4: Re-attach original disk as boot
-            self._log_info("  Re-attaching affected disk as boot...")
-            result = attach_original.execute(vm_name=self.vm_name, disk_name=self.original_disk_name, boot=True)
+            self._log_debug("Attaching boot disk...")
+            result = attach_original.execute(
+                vm_name=self.vm_name,
+                disk_name=self.original_disk_name,
+                boot=True,
+                tracking_label='restore-disk-attach-orig'
+            )
             self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 5: Remove rescue metadata and restore backed up keys
-            self._log_info("  Restoring original metadata...")
+            self._log_debug("Removing rescue metadata...")
             clean_metadata = self._get_clean_metadata()
             # Use preserve_existing=False to REPLACE metadata (not merge)
             # because clean_metadata already contains the correct final state
-            result = set_metadata.execute(vm_name=self.vm_name, metadata_items=clean_metadata, preserve_existing=False)
+            result = set_metadata.execute(
+                vm_name=self.vm_name,
+                metadata_items=clean_metadata,
+                preserve_existing=False,
+                tracking_label='restore-meta-restore-orig'
+            )
             self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 6: Start VM
-            self._log_info("  Starting VM...")
-            result = start_vm.execute(vm_name=self.vm_name, timeout=self.config.vm_start_timeout)
+            self._update_progress("Starting")
+            self._log_debug(f"Starting instance {self.vm_name}...")
+            result = start_vm.execute(
+                vm_name=self.vm_name,
+                timeout=self.config.vm_start_timeout,
+                tracking_label='restore-vm-start'
+            )
             self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data)
             if not result.success:
+                self._finish_progress(False)
                 self._rollback()
                 return False
-            self._log_info(f"  [OK] {result.message}")
 
             # Step 7: Delete rescue disk (only if config allows)
             if self.config.delete_rescue_disk:
-                self._log_info(f"  Deleting rescue disk...")
-                result = delete_rescue.execute(disk_name=self.rescue_disk_name)
+                self._log_debug("Deleting rescue disk...")
+                result = delete_rescue.execute(
+                    disk_name=self.rescue_disk_name,
+                    tracking_label='restore-disk-delete-rescue'
+                )
                 # Note: Don't add to state tracker (can't rollback deletion)
-                if result.success:
-                    self._log_info(f"  [OK] {result.message}")
-                else:
-                    self._log_error(f"  [X] Failed to delete rescue disk: {result.error}")
-                    self._log_error("  You can delete it manually later")
+                if not result.success:
+                    self._log_debug("Rescue disk deletion failed (can delete manually)")
 
+            # Success!
+            self._finish_progress(True)
             return True
 
         except Exception as e:
+            self._finish_progress(False)
             self._log_error(f"Unexpected error during restore: {str(e)}")
             self._rollback()
             return False
@@ -410,7 +535,7 @@ class RestoreOrchestrator:
             status = most_recent.get('status', 'UNKNOWN')
 
             if status == 'READY':
-                self._log_info(f"  Safety snapshot verified: {snapshot_name}")
+                self._log_debug(f"Safety snapshot verified: {snapshot_name}")
             elif status == 'CREATING':
                 self._log_info("")
                 self._log_info("  " + "=" * 56)

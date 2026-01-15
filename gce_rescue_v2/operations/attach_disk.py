@@ -6,8 +6,13 @@ the disk using the provided rollback metadata.
 """
 
 import time
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, DISK_ATTACH_FAILED
+from ..core.config import VERSION
 
 
 class AttachDiskOperation(BaseOperation):
@@ -28,7 +33,7 @@ class AttachDiskOperation(BaseOperation):
         return "Attach Disk"
 
     def execute(self, vm_name: str, disk_name: str, boot: bool = False,
-                auto_delete: bool = False, read_only: bool = False) -> OperationResult:
+                auto_delete: bool = False, read_only: bool = False, tracking_label: str = None) -> OperationResult:
         """
         Attach a persistent disk to a VM instance.
 
@@ -38,6 +43,9 @@ class AttachDiskOperation(BaseOperation):
             boot (bool): Whether to mark the disk as a boot device.
             auto_delete (bool): Whether to auto-delete the disk with the VM.
             read_only (bool): Attach in read-only mode when True; read-write otherwise.
+            tracking_label (str): Tracking label for usage analytics.
+                Format: '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-disk-attach-rescue'
 
         Returns:
             OperationResult: Result containing success status, message, and
@@ -49,6 +57,8 @@ class AttachDiskOperation(BaseOperation):
 
         self._log_debug(f"Executing {self.name}: {disk_name} to {vm_name}")
         self._log_debug(f"  Boot: {boot}, AutoDelete: {auto_delete}, ReadOnly: {read_only}")
+        if tracking_label:
+            self._log_debug(f"  Operation tracking: {tracking_label}")
 
         try:
             # Prepare attachment configuration
@@ -62,8 +72,10 @@ class AttachDiskOperation(BaseOperation):
 
             self._log_debug(f"Attaching with config: {attach_body}")
 
+            # Use tracked client if tracking_label provided
+            compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
             # Attach the disk
-            operation = self.compute.instances().attachDisk(
+            operation = compute.instances().attachDisk(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
@@ -117,6 +129,43 @@ class AttachDiskOperation(BaseOperation):
                 message=f"Failed to attach disk: {error_msg}",
                 error=error_detail
             )
+
+    def _create_tracked_client(self, tracking_label: str):
+        """
+        Create a compute client with unique User-Agent for usage tracking.
+
+        Args:
+            tracking_label: Tracking label in format '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-disk-attach-rescue'
+
+        Returns:
+            Compute API client with custom User-Agent header
+        """
+        # Get credentials from the base compute client
+        credentials = self.compute._http.credentials
+
+        # Build unique User-Agent for tracking
+        # Format: gce-rescue-{VERSION}-{tracking_label}
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
+
+        def _request_builder(http, *args, **kwargs):
+            """Inject custom User-Agent header."""
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials,
+                http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        # Create compute client with custom request builder
+        return discovery.build(
+            'compute',
+            'v1',
+            credentials=credentials,
+            cache_discovery=False,
+            requestBuilder=_request_builder
+        )
 
     def rollback(self, rollback_data: dict) -> bool:
         """
