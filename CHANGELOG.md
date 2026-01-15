@@ -14,8 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Confirms startup script actually ran successfully
 
 - **Progress Spinner**: Visual progress indicator during operations
-  - Shows current phase (Validating, Stopping VM, etc.)
+  - Shows current phase with step count (e.g., `(3/5) [Stopping -> ...]`)
   - Clean single-line updates
+
+- **Browser SSH Option**: Added browser-based SSH connection option
+  - Shows both gcloud CLI and Cloud Console SSH URL
+  - Includes IAP tunnel hint for private VMs
+
+- **Safer Confirmation Default**: Changed default from Yes to No (`y/N`)
+  - Prevents accidental confirmations
+  - Explicit 'y' required to proceed
 
 - **Usage Tracking**: User-Agent headers for internal metrics
   - Tracks rescue/restore lifecycle phases
@@ -34,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - SCRATCH disk handling in restore orchestration
 - User-Agent format consistency (hyphen not underscore)
+- Local SSD warning clarified: "data lost" instead of "disk deleted"
 
 ## [2.0.0-beta.2] - 2025-01-07
 
