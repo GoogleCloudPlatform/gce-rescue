@@ -663,7 +663,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
         print("", file=sys.stderr)
         print(f"Local SSDs found: {', '.join(local_ssds)}", file=sys.stderr)
         print("", file=sys.stderr)
-        print("WARNING: Stopping this VM will PERMANENTLY DELETE all data on Local SSDs!", file=sys.stderr)
+        print("WARNING: Stopping this VM will PERMANENTLY LOSE all data on Local SSDs!", file=sys.stderr)
         print("", file=sys.stderr)
         print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
         print(f"  gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --quiet --force", file=sys.stderr)
@@ -691,15 +691,15 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
         # Show Local SSD warning if applicable
         if has_local_ssd:
-            print(f" - {warning_prefix()} Local SSDs ({', '.join(local_ssds)}) will be permanently deleted.")
+            print(f" - {warning_prefix()} Data on Local SSDs ({', '.join(local_ssds)}) will be permanently lost.")
             lines_printed += 1
 
         print("")
         lines_printed += 1
-        response = input("Do you want to continue (Y/n)? ").strip().lower()
+        response = input("Do you want to continue (y/N)? ").strip().lower()
         lines_printed += 1  # The input line
 
-        if response not in ('y', 'yes', ''):
+        if response not in ('y', 'yes'):
             print("\nAborted by user.")
             return 0
 
@@ -790,10 +790,10 @@ def handle_restore(args: argparse.Namespace) -> int:
         lines_printed += 1
         print("")
         lines_printed += 1
-        response = input("Do you want to continue (Y/n)? ").strip().lower()
+        response = input("Do you want to continue (y/N)? ").strip().lower()
         lines_printed += 1  # The input line
 
-        if response not in ('y', 'yes', ''):
+        if response not in ('y', 'yes'):
             print("\nAborted by user.")
             return 0
 

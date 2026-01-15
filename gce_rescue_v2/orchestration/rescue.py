@@ -119,6 +119,7 @@ class RescueOrchestrator:
         self._progress_started = False
         self._progress_phases = []
         self._progress_lock = None
+        self._total_steps = 5  # Stopping, Snapshotting, Creating rescue disk, Starting, Attaching
 
     def _init_progress(self):
         """Initialize spinner with phases display."""
@@ -153,6 +154,7 @@ class RescueOrchestrator:
 
         while not self._spinner_stop:
             with self._progress_lock:
+                current_step = len(self._progress_phases)
                 if self._progress_phases:
                     # Show completed phases, then current phase with dots and spinner
                     completed = self._progress_phases[:-1]
@@ -164,7 +166,7 @@ class RescueOrchestrator:
                 else:
                     phases_str = spinner_chars[idx]
 
-            line = f"\r [{phases_str}"
+            line = f"\r ({current_step}/{self._total_steps}) [{phases_str}"
             sys.stdout.write(line)
             sys.stdout.flush()
             idx = (idx + 1) % len(spinner_chars)
@@ -191,11 +193,12 @@ class RescueOrchestrator:
         if not self._is_debug_mode:
             with self._progress_lock:
                 phases_str = " -> ".join(self._progress_phases)
+                current_step = len(self._progress_phases)
 
             if success:
-                sys.stdout.write(f"\r [{phases_str}] done.\n")
+                sys.stdout.write(f"\r ({self._total_steps}/{self._total_steps}) [{phases_str}] done.\n")
             else:
-                sys.stdout.write(f"\r [{phases_str}] FAILED.\n")
+                sys.stdout.write(f"\r ({current_step}/{self._total_steps}) [{phases_str}] FAILED.\n")
             sys.stdout.flush()
 
     def _log_info(self, message: str):

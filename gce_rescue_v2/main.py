@@ -146,7 +146,11 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
             logger.info(f"   $ gce-rescue-v2 restore {vm_name} --zone={zone} --project={project}")
         else:
             logger.info("1. Connect to the instance:")
-            logger.info(f"   $ gcloud compute ssh {vm_name} --zone={zone} --project={project}")
+            logger.info("   a. Using gcloud CLI (add --tunnel-through-iap if needed):")
+            logger.info(f"      $ gcloud compute ssh {vm_name} --zone={zone} --project={project}")
+            logger.info("   OR")
+            logger.info("   b. Using Google Cloud Console:")
+            logger.info(f"      https://ssh.cloud.google.com/v2/ssh/projects/{project}/zones/{zone}/instances/{vm_name}?authuser=0&hl=en_US&useAdminProxy=true")
             logger.info("")
             logger.info("2. Fix the issue (affected boot disk is mounted at /mnt/sysroot).")
             logger.info("")
@@ -287,7 +291,11 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
             logger.info(f"  $ gcloud compute reset-windows-password {vm_name} --zone={zone} --project={project}")
         else:
             logger.info("Connect to the instance:")
-            logger.info(f"  $ gcloud compute ssh {vm_name} --zone={zone} --project={project}")
+            logger.info("  a. Using gcloud CLI (add --tunnel-through-iap if needed):")
+            logger.info(f"     $ gcloud compute ssh {vm_name} --zone={zone} --project={project}")
+            logger.info("  OR")
+            logger.info("  b. Using Google Cloud Console:")
+            logger.info(f"     https://ssh.cloud.google.com/v2/ssh/projects/{project}/zones/{zone}/instances/{vm_name}?authuser=0&hl=en_US&useAdminProxy=true")
 
         logger.info("")
         return True
