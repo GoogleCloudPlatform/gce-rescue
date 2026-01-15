@@ -6,13 +6,12 @@
 
 ## What's New in V2
 
-| Feature | V1 | V2 |
-|---------|----|----|
-| **Windows VMs** | Not supported | Full support with RDP credentials |
-| **If rescue fails** | Manual cleanup needed | Automatic rollback to original state |
-| **XFS filesystems** | May fail with duplicate UUID | Handled automatically |
-| **CLI commands** | Same command toggles mode | Clear `rescue` and `restore` commands |
-| **Automation** | Text output only | JSON/YAML output for scripts |
+| Area | V1 | V2 |
+|------|----|----|
+| **OS Support** | Linux only | Linux + Windows |
+| **CLI Style** | Short flags (`-n`, `-z`) | gcloud-style (`--zone=`) |
+| **Commands** | Single command (toggles) | Separate `rescue` / `restore` |
+| **Architecture** | Task-based | Operation-based with rollback |
 
 ## Prerequisites
 
@@ -84,44 +83,43 @@ gce-rescue-v2 restore VM_NAME --zone ZONE [--project PROJECT] [--quiet]
 
 ## Example: Linux VM
 
+**Rescue:**
+
 ```bash
-$ gce-rescue-v2 rescue web-server --zone us-central1-a
+$ gce-rescue-v2 rescue web-server --zone=us-central1-a
 
-============================================================
-GCE Rescue V2 - Rescue Mode
-============================================================
-VM: web-server
-Zone: us-central1-a
+You are about to rescue instance [web-server] in zone [us-central1-a].
 
-Validating...
-  [OK] Credentials valid
-  [OK] VM exists
-  [OK] VM state: RUNNING
-  [OK] OS detected: Linux
+The following actions will be performed:
+ - Stop instance [web-server].
+ - Create a snapshot of your affected boot disk.
+ - Create a rescue disk and boot from it.
+ - Attach your affected boot disk for repair.
 
-Executing rescue...
-  [OK] Snapshot created: rescue-snapshot-web-server-1702060800
-  [OK] VM stopped
-  [OK] Rescue disk created
-  [OK] Boot configuration updated
-  [OK] VM started in rescue mode
+Do you want to continue (y/N)? y
 
-============================================================
-[OK] Rescue completed successfully!
-============================================================
+Rescuing instance [web-server]:
+ (5/5) [Stopping -> Snapshotting -> Creating rescue disk -> Starting -> Attaching affected disk] done.
 
-Your VM is now in rescue mode.
-Connect via SSH: gcloud compute ssh web-server --zone=us-central1-a
+Rescue mode enabled for instance [web-server].
+
 Affected disk mounted at: /mnt/sysroot
+Backup snapshot: rescue-snapshot-web-server-1736871234
 
-When done, restore your VM:
-  gce-rescue-v2 restore web-server --zone=us-central1-a
+Next Steps:
+1. Connect to the instance:
+   $ gcloud compute ssh web-server --zone=us-central1-a --project=my-project
+
+2. Fix the issue (affected boot disk is mounted at /mnt/sysroot).
+
+3. Restore original configuration:
+   $ gce-rescue-v2 restore web-server --zone=us-central1-a --project=my-project
 ```
 
 **Connect and fix:**
 
 ```bash
-$ gcloud compute ssh web-server --zone us-central1-a
+$ gcloud compute ssh web-server --zone=us-central1-a
 
 user@web-server:~$ sudo nano /mnt/sysroot/etc/fstab
 # Fix the issue, save and exit
@@ -132,110 +130,99 @@ user@web-server:~$ exit
 **Restore:**
 
 ```bash
-$ gce-rescue-v2 restore web-server --zone us-central1-a
+$ gce-rescue-v2 restore web-server --zone=us-central1-a
 
-============================================================
-GCE Rescue V2 - Restore Mode
-============================================================
-VM: web-server
-Zone: us-central1-a
+You are about to restore instance [web-server] in zone [us-central1-a] project [my-project].
 
-Validating...
-  [OK] VM is in rescue mode
+The following actions will be performed:
+ - Stop instance [web-server].
+ - Delete the rescue disk.
+ - Restore your affected boot disk as the primary boot device.
+ - Start instance [web-server].
 
-Executing restore...
-  [OK] VM stopped
-  [OK] Rescue disk detached
-  [OK] Boot disk restored
-  [OK] VM started
+Do you want to continue (y/N)? y
 
-============================================================
-[OK] Restore completed successfully!
-============================================================
+Restoring instance [web-server]:
+ (3/3) [Stopping -> Restoring affected disk -> Starting] done.
 
-Your VM has been restored to normal operation.
-Connect via SSH: gcloud compute ssh web-server --zone=us-central1-a
+Instance [web-server] restored to normal operation.
+
+Connect to the instance:
+  a. Using gcloud CLI (add --tunnel-through-iap if needed):
+     $ gcloud compute ssh web-server --zone=us-central1-a --project=my-project
+  OR
+  b. Using Google Cloud Console:
+     https://ssh.cloud.google.com/v2/ssh/projects/my-project/zones/us-central1-a/instances/web-server?authuser=0&hl=en_US&useAdminProxy=true
 ```
 
 ## Example: Windows VM
 
+**Rescue:**
+
 ```bash
-$ gce-rescue-v2 rescue win-server --zone us-central1-a
+$ gce-rescue-v2 rescue win-server --zone=us-central1-a
 
-============================================================
-GCE Rescue V2 - Rescue Mode
-============================================================
-VM: win-server
-Zone: us-central1-a
+You are about to rescue instance [win-server] in zone [us-central1-a].
 
-Validating...
-  [OK] Credentials valid
-  [OK] VM exists
-  [OK] VM state: RUNNING
-  [OK] OS detected: Windows
+The following actions will be performed:
+ - Stop instance [win-server].
+ - Create a snapshot of your affected boot disk.
+ - Create a rescue disk and boot from it.
+ - Attach your affected boot disk for repair.
 
-Executing rescue...
-  [OK] Snapshot created: rescue-snapshot-win-server-1702060800
-  [OK] VM stopped
-  [OK] Rescue disk created
-  [OK] Boot configuration updated
-  [OK] VM started in rescue mode
+Do you want to continue (y/N)? y
 
-============================================================
-[OK] Rescue completed successfully!
-============================================================
+Rescuing instance [win-server]:
+ (5/5) [Stopping -> Snapshotting -> Creating rescue disk -> Starting -> Attaching affected disk] done.
 
-Your VM is now in rescue mode.
+Rescue mode enabled for instance [win-server].
 
-==================================================
-  Windows RDP Login Credentials
-==================================================
-  IP Address: 35.192.0.100
-  Username:   rescue_admin
-  Password:   xK9mP2nQ5rT8wY3z
-==================================================
+Affected disk mounted at: D:\
+Backup snapshot: rescue-snapshot-win-server-1736871234
 
-Note: Wait 2-3 minutes for Windows to fully boot before connecting.
+Next Steps:
+1. Connect via RDP:
+   IP: <EXTERNAL_IP>
+   User: rescue_admin
+   Password: <GENERATED_PASSWORD>
 
-Affected disk mounted at: D:\ (or next available drive letter)
+2. Fix the issue (affected boot disk is mounted at D:\).
 
-When done, restore your VM:
-  gce-rescue-v2 restore win-server --zone=us-central1-a
+3. Restore original configuration:
+   $ gce-rescue-v2 restore win-server --zone=us-central1-a --project=my-project
 ```
 
 **Connect and fix:**
 
 1. Open Remote Desktop Connection
-2. Enter the IP address, username, and password shown above
+2. Enter the IP address, username, and password shown in output
 3. Your broken disk is at `D:\` - browse and fix files
 4. Example: `D:\Windows\System32\config\` for registry hives
 
 **Restore:**
 
 ```bash
-$ gce-rescue-v2 restore win-server --zone us-central1-a
+$ gce-rescue-v2 restore win-server --zone=us-central1-a
 
-============================================================
-GCE Rescue V2 - Restore Mode
-============================================================
-VM: win-server
-Zone: us-central1-a
+You are about to restore instance [win-server] in zone [us-central1-a] project [my-project].
 
-Validating...
-  [OK] VM is in rescue mode
+The following actions will be performed:
+ - Stop instance [win-server].
+ - Delete the rescue disk.
+ - Restore your affected boot disk as the primary boot device.
+ - Start instance [win-server].
 
-Executing restore...
-  [OK] VM stopped
-  [OK] Rescue disk detached
-  [OK] Boot disk restored
-  [OK] VM started
+Do you want to continue (y/N)? y
 
-============================================================
-[OK] Restore completed successfully!
-============================================================
+Restoring instance [win-server]:
+ (3/3) [Stopping -> Restoring affected disk -> Starting] done.
 
-Your VM has been restored to normal operation.
-Connect via RDP: gcloud compute reset-windows-password win-server --zone=us-central1-a
+Instance [win-server] restored to normal operation.
+
+Connect via RDP using your original credentials.
+
+Forgot password? Reset it:
+  $ gcloud compute reset-windows-password win-server --zone=us-central1-a --project=my-project
 ```
 
 ## Upgrading from V1

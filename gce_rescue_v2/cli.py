@@ -20,6 +20,7 @@ import yaml
 from typing import Optional, Dict, Any
 from .core.config import RescueConfig, RestoreConfig, VERSION
 from .main import rescue_vm, restore_vm
+from .utils.colors import error_prefix, warning_prefix, clear_lines
 
 
 class OutputFormatter:
@@ -78,20 +79,139 @@ def get_gcloud_config(key: str) -> Optional[str]:
     try:
         # Try to read from gcloud config
         import subprocess
+        import platform
+
+        # On Windows, gcloud is a batch file, need shell=True
+        use_shell = platform.system() == 'Windows'
         result = subprocess.run(
             ['gcloud', 'config', 'get-value', key],
             capture_output=True,
             text=True,
-            timeout=5
+            timeout=5,
+            shell=use_shell
         )
         value = result.stdout.strip()
         return value if value and value != '(unset)' else None
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
         # gcloud not available or error
         return None
 
 
-def create_parser() -> argparse.ArgumentParser:
+class CustomArgumentParser(argparse.ArgumentParser):
+    """Custom ArgumentParser with cleaner error messages."""
+
+    # Flags specific to each command (for helpful error messages)
+    RESCUE_ONLY_FLAGS = ['--snapshot', '--no-snapshot']
+    RESTORE_ONLY_FLAGS = ['--keep-rescue-disk']
+
+    def error(self, message: str):
+        """Override to provide cleaner error format."""
+        import re
+
+        lines = []
+
+        if "invalid choice:" in message:
+            # Check if it's an invalid subcommand or invalid flag value
+            # Subcommand: "argument command: invalid choice: 'restor' (choose from rescue, restore)"
+            # Flag value: "argument --format: invalid choice: 'invalid' (choose from 'json', ...)"
+            if "argument command:" in message:
+                # Invalid subcommand
+                match = re.search(r"invalid choice: '(\w+)' \(choose from (.+)\)", message)
+                if match:
+                    invalid = match.group(1)
+                    lines.append(f"Invalid command '{invalid}'.")
+                    lines.append("")
+                    lines.append("Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]")
+                    lines.append("")
+                    lines.append("Available commands:")
+                    lines.append("  rescue   Boot a VM into rescue mode")
+                    lines.append("  restore  Restore a VM from rescue mode")
+                else:
+                    lines.append(f"{message}")
+            else:
+                # Invalid value for a flag (e.g., --format=invalid)
+                flag_match = re.search(r"argument (--[\w-]+):", message)
+                value_match = re.search(r"invalid choice: '(\w+)' \(choose from (.+)\)", message)
+                if flag_match and value_match:
+                    flag_name = flag_match.group(1)
+                    invalid_value = value_match.group(1)
+                    # Clean up valid options (remove quotes)
+                    valid_options = value_match.group(2).replace("'", "")
+                    lines.append(f"Invalid value '{invalid_value}' for {flag_name}.")
+                    lines.append("")
+                    lines.append("Valid options:")
+                    for opt in valid_options.split(", "):
+                        lines.append(f"  {opt.strip()}")
+                else:
+                    lines.append(f"{message}")
+        elif "unrecognized arguments:" in message.lower():
+            # Extract the unrecognized argument
+            match = re.search(r"unrecognized arguments: (.+)", message, re.IGNORECASE)
+            if match:
+                unrecognized = match.group(1).strip()
+                lines.append(f"Unrecognized argument: {unrecognized}")
+
+                # Check if it's a flag from another command
+                for flag in self.RESCUE_ONLY_FLAGS:
+                    if flag in unrecognized:
+                        lines.append("")
+                        lines.append(f"Note: '{flag}' is only available for the 'rescue' command.")
+                        lines.append("")
+                        lines.append("Example:")
+                        lines.append(f"  $ gce-rescue-v2 rescue VM_NAME --zone=ZONE {flag}")
+                        break
+                for flag in self.RESTORE_ONLY_FLAGS:
+                    if flag in unrecognized:
+                        lines.append("")
+                        lines.append(f"Note: '{flag}' is only available for the 'restore' command.")
+                        lines.append("")
+                        lines.append("Example:")
+                        lines.append(f"  $ gce-rescue-v2 restore VM_NAME --zone=ZONE {flag}")
+                        break
+            else:
+                lines.append(f"{message.capitalize()}")
+        elif "required: command" in message.lower():
+            # Not an error - user just wants to know how to use the tool
+            usage_lines = [
+                "Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]",
+                "",
+                "Commands:",
+                "  rescue   Boot a VM into rescue mode",
+                "  restore  Restore a VM from rescue mode",
+                "",
+                "Examples:",
+                "  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a",
+                "  $ gce-rescue-v2 restore my-vm --zone=us-central1-a",
+                "",
+                "For detailed help:",
+                "  $ gce-rescue-v2 --help",
+                ""
+            ]
+            self.exit(0, "\n".join(usage_lines) + "\n")
+        elif "required:" in message.lower():
+            # Extract what's required
+            match = re.search(r"required: (.+)", message.lower())
+            if match:
+                required = match.group(1)
+                lines.append(f"Missing required argument: {required}")
+                lines.append("")
+                lines.append("Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]")
+                lines.append("")
+                lines.append("Example:")
+                lines.append("  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a")
+            else:
+                lines.append(f"{message.capitalize()}")
+        else:
+            lines.append(f"{message.capitalize()}")
+
+        lines.append("")
+        lines.append("For help, run:")
+        lines.append("  $ gce-rescue-v2 --help")
+
+        self.exit(2, f"{error_prefix()} " + "\n".join(lines) + "\n\n")
+
+
+def create_parser() -> CustomArgumentParser:
     """
     Create argument parser with gcloud-compatible structure.
 
@@ -100,7 +220,7 @@ def create_parser() -> argparse.ArgumentParser:
     """
 
     # Main parser
-    parser = argparse.ArgumentParser(
+    parser = CustomArgumentParser(
         prog='gce-rescue-v2',
         description='Google Compute Engine VM Rescue Tool (Beta)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -175,7 +295,7 @@ TO EXIT RESCUE MODE
     restore_parser = subparsers.add_parser(
         'restore',
         help='Restore a VM from rescue mode',
-        description='Restore a VM to normal operation by re-attaching the original boot disk.',
+        description='Restore a VM to normal operation by re-attaching your affected boot disk.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES
@@ -347,8 +467,70 @@ def args_to_restore_config(args: argparse.Namespace) -> RestoreConfig:
     return config
 
 
-def _check_local_ssds(compute, project: str, zone: str, vm_name: str) -> list:
-    """Check if VM has Local SSDs attached using GCP API. Returns list of Local SSD names."""
+def _parse_api_error(e: Exception, vm_name: str, zone: str, project: str = None) -> str:
+    """Parse GCP API error and return user-friendly message."""
+    error_str = str(e)
+
+    if 'was not found' in error_str or 'notFound' in error_str:
+        list_cmd = f"gcloud compute instances list --project={project}" if project else "gcloud compute instances list"
+        lines = [
+            f"Instance [{vm_name}] not found.",
+            f"  Zone: {zone}",
+        ]
+        if project:
+            lines.append(f"  Project: {project}")
+        lines.append("")
+        lines.append("To see available instances, run:")
+        lines.append(f"  $ {list_cmd}")
+        lines.append("")
+        return "\n".join(lines)
+
+    if 'Unknown zone' in error_str or ("Invalid value for field" in error_str and "'zone'" in error_str):
+        lines = [
+            f"Invalid zone '{zone}'.",
+            "",
+            "To see available zones, run:",
+            "  $ gcloud compute zones list",
+            ""
+        ]
+        return "\n".join(lines)
+
+    if 'forbidden' in error_str.lower() or 'permission' in error_str.lower() or '403' in error_str:
+        lines = [
+            "Permission denied.",
+        ]
+        if project:
+            lines.append(f"  Project: {project}")
+        lines.append("")
+        lines.append("To verify project access, run:")
+        lines.append("  $ gcloud projects list")
+        lines.append("")
+        return "\n".join(lines)
+
+    if 'Invalid value for field' in error_str:
+        lines = [
+            "Invalid request parameters.",
+            "",
+            "Verify the following are correct:",
+            f"  Instance: {vm_name}",
+            f"  Zone: {zone}",
+        ]
+        if project:
+            lines.append(f"  Project: {project}")
+        lines.append("")
+        return "\n".join(lines)
+
+    # Fallback: return simplified error
+    return f"API error: {error_str[:200]}\n"
+
+
+def _validate_vm_exists(compute, project: str, zone: str, vm_name: str) -> tuple:
+    """
+    Validate VM exists and is in a valid state for rescue.
+
+    Returns:
+        (success: bool, vm_info: dict or None, error_message: str or None)
+    """
     try:
         vm = compute.instances().get(
             project=project,
@@ -356,14 +538,88 @@ def _check_local_ssds(compute, project: str, zone: str, vm_name: str) -> list:
             instance=vm_name
         ).execute()
 
-        local_ssds = []
-        for disk in vm.get('disks', []):
-            if disk.get('type') == 'SCRATCH':
-                local_ssds.append(disk.get('deviceName', 'unknown'))
-        return local_ssds
-    except Exception:
-        pass
-    return []
+        # Check if already in rescue mode
+        metadata = vm.get('metadata', {}).get('items', [])
+        for item in metadata:
+            if item.get('key') == 'rescue-mode':
+                lines = [
+                    f"Instance [{vm_name}] is already in rescue mode.",
+                    "",
+                    "To exit rescue mode and restore the VM, run:",
+                    f"  $ gce-rescue-v2 restore {vm_name} --zone={zone} --project={project}",
+                    ""
+                ]
+                return (False, None, "\n".join(lines))
+
+        # Check VM state
+        status = vm.get('status', 'UNKNOWN')
+        invalid_states = ['STAGING', 'PROVISIONING', 'SUSPENDING', 'SUSPENDED', 'REPAIRING']
+        if status in invalid_states:
+            lines = [
+                f"Instance [{vm_name}] is in state '{status}'.",
+                "",
+                "The VM must be in RUNNING or TERMINATED state to rescue.",
+                "",
+                "To check the current VM status, run:",
+                f"  $ gcloud compute instances describe {vm_name} --zone={zone} --project={project} --format='value(status)'",
+                ""
+            ]
+            return (False, None, "\n".join(lines))
+
+        return (True, vm, None)
+
+    except Exception as e:
+        return (False, None, _parse_api_error(e, vm_name, zone, project))
+
+
+def _check_local_ssds(vm_info: dict) -> list:
+    """Check if VM has Local SSDs attached. Returns list of Local SSD names."""
+    if not vm_info:
+        return []
+
+    local_ssds = []
+    for disk in vm_info.get('disks', []):
+        if disk.get('type') == 'SCRATCH':
+            local_ssds.append(disk.get('deviceName', 'unknown'))
+    return local_ssds
+
+
+def _validate_vm_for_restore(compute, project: str, zone: str, vm_name: str) -> tuple:
+    """
+    Validate VM exists and is in rescue mode for restore.
+
+    Returns:
+        (success: bool, vm_info: dict or None, error_message: str or None)
+    """
+    try:
+        vm = compute.instances().get(
+            project=project,
+            zone=zone,
+            instance=vm_name
+        ).execute()
+
+        # Check if in rescue mode
+        metadata = vm.get('metadata', {}).get('items', [])
+        in_rescue_mode = False
+        for item in metadata:
+            if item.get('key') == 'rescue-mode':
+                in_rescue_mode = True
+                break
+
+        if not in_rescue_mode:
+            lines = [
+                f"Instance [{vm_name}] is not in rescue mode.",
+                "",
+                "To put the VM into rescue mode first, run:",
+                f"  $ gce-rescue-v2 rescue {vm_name} --zone={zone} --project={project}",
+                ""
+            ]
+            return (False, None, "\n".join(lines))
+
+        return (True, vm, None)
+
+    except Exception as e:
+        return (False, None, _parse_api_error(e, vm_name, zone, project))
 
 
 def handle_rescue(args: argparse.Namespace) -> int:
@@ -375,7 +631,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
     # Validate project is set
     if not project:
-        print("ERROR: No project specified.", file=sys.stderr)
+        print(f"{error_prefix()} No project specified.", file=sys.stderr)
         print("", file=sys.stderr)
         print("Please specify a project using one of these methods:", file=sys.stderr)
         print("  1. --project=PROJECT_ID flag", file=sys.stderr)
@@ -388,20 +644,26 @@ def handle_rescue(args: argparse.Namespace) -> int:
         auth = AuthManager()
         compute, project = auth.get_client(project)
     except Exception as e:
-        print(f"ERROR: Authentication failed: {e}", file=sys.stderr)
+        print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
         return 1
 
-    # Check for Local SSDs using API
-    local_ssds = _check_local_ssds(compute, project, args.zone, args.instance_name)
+    # Validate VM exists and state BEFORE confirmation
+    valid, vm_info, error_msg = _validate_vm_exists(compute, project, args.zone, args.instance_name)
+    if not valid:
+        print(f"{error_prefix()} {error_msg}", file=sys.stderr)
+        return 1
+
+    # Check for Local SSDs using validated VM info
+    local_ssds = _check_local_ssds(vm_info)
     has_local_ssd = len(local_ssds) > 0
 
     # In quiet mode with Local SSDs, require --force
     if args.quiet and has_local_ssd and not args.force:
-        print("ERROR: VM has Local SSDs attached.", file=sys.stderr)
+        print(f"{error_prefix()} VM has Local SSDs attached.", file=sys.stderr)
         print("", file=sys.stderr)
         print(f"Local SSDs found: {', '.join(local_ssds)}", file=sys.stderr)
         print("", file=sys.stderr)
-        print("WARNING: Stopping this VM will PERMANENTLY DELETE all data on Local SSDs!", file=sys.stderr)
+        print("WARNING: Stopping this VM will PERMANENTLY LOSE all data on Local SSDs!", file=sys.stderr)
         print("", file=sys.stderr)
         print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
         print(f"  gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --quiet --force", file=sys.stderr)
@@ -409,28 +671,40 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
     # Interactive confirmation (unless --quiet)
     if not args.quiet:
-        print(f"\nYou are about to rescue VM '{args.instance_name}' in zone '{args.zone}'.")
-        print("This will:")
-        print("  - Stop the VM")
-        print("  - Create a rescue disk and boot from it")
-        print("  - Attach the affected disk as secondary")
+        # Count lines for clearing after confirmation
+        lines_printed = 0
+
+        print(f"\nYou are about to rescue instance [{args.instance_name}] in zone [{args.zone}].")
+        lines_printed += 2  # includes leading newline
+        print("")
+        lines_printed += 1
+        print("The following actions will be performed:")
+        lines_printed += 1
+        print(f" - Stop instance [{args.instance_name}].")
+        lines_printed += 1
+        print(" - Create a snapshot of your affected boot disk.")
+        lines_printed += 1
+        print(" - Create a rescue disk and boot from it.")
+        lines_printed += 1
+        print(" - Attach your affected boot disk for repair.")
+        lines_printed += 1
 
         # Show Local SSD warning if applicable
         if has_local_ssd:
-            print("")
-            print("  " + "=" * 54)
-            print("  WARNING: LOCAL SSD DETECTED!")
-            print("  " + "=" * 54)
-            print(f"  This VM has {len(local_ssds)} Local SSD(s): {', '.join(local_ssds)}")
-            print("  Stopping the VM will PERMANENTLY DELETE all Local SSD data!")
-            print("  This cannot be undone.")
-            print("  " + "=" * 54)
+            print(f" - {warning_prefix()} Data on Local SSDs ({', '.join(local_ssds)}) will be permanently lost.")
+            lines_printed += 1
 
         print("")
-        response = input("Do you want to continue? [y/N]: ").strip().lower()
+        lines_printed += 1
+        response = input("Do you want to continue (y/N)? ").strip().lower()
+        lines_printed += 1  # The input line
+
         if response not in ('y', 'yes'):
-            print("\nOperation cancelled.")
+            print("\nAborted by user.")
             return 0
+
+        # Clear confirmation message after user confirms
+        clear_lines(lines_printed)
 
     # Convert to config
     config = args_to_rescue_config(args)
@@ -466,13 +740,14 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
 def handle_restore(args: argparse.Namespace) -> int:
     """Handle restore command."""
+    from .core.auth import AuthManager
 
     # Get project from args or gcloud config
     project = args.project or get_gcloud_config('core/project')
 
     # Validate project is set
     if not project:
-        print("ERROR: No project specified.", file=sys.stderr)
+        print(f"{error_prefix()} No project specified.", file=sys.stderr)
         print("", file=sys.stderr)
         print("Please specify a project using one of these methods:", file=sys.stderr)
         print("  1. --project=PROJECT_ID flag", file=sys.stderr)
@@ -480,19 +755,50 @@ def handle_restore(args: argparse.Namespace) -> int:
         print("  3. Set CLOUDSDK_CORE_PROJECT environment variable", file=sys.stderr)
         return 1
 
+    # Get compute client for API calls
+    try:
+        auth = AuthManager()
+        compute, project = auth.get_client(project)
+    except Exception as e:
+        print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
+        return 1
+
+    # Validate VM exists and is in rescue mode BEFORE confirmation
+    valid, vm_info, error_msg = _validate_vm_for_restore(compute, project, args.zone, args.instance_name)
+    if not valid:
+        print(f"{error_prefix()} {error_msg}", file=sys.stderr)
+        return 1
+
     # Interactive confirmation (unless --quiet)
     if not args.quiet:
-        print(f"\nYou are about to restore VM '{args.instance_name}' in zone '{args.zone}'.")
-        print("This will:")
-        print("  - Stop the VM")
-        print("  - Remove the rescue disk")
-        print("  - Re-attach the affected disk as boot")
-        print("  - Start the VM normally")
+        # Count lines for clearing after confirmation
+        lines_printed = 0
+
+        print(f"\nYou are about to restore instance [{args.instance_name}] in zone [{args.zone}] project [{project}].")
+        lines_printed += 2  # includes leading newline
         print("")
-        response = input("Do you want to continue? [y/N]: ").strip().lower()
+        lines_printed += 1
+        print("The following actions will be performed:")
+        lines_printed += 1
+        print(f" - Stop instance [{args.instance_name}].")
+        lines_printed += 1
+        print(" - Delete the rescue disk.")
+        lines_printed += 1
+        print(" - Restore your affected boot disk as the primary boot device.")
+        lines_printed += 1
+        print(f" - Start instance [{args.instance_name}].")
+        lines_printed += 1
+        print("")
+        lines_printed += 1
+        response = input("Do you want to continue (y/N)? ").strip().lower()
+        lines_printed += 1  # The input line
+
         if response not in ('y', 'yes'):
-            print("\nOperation cancelled.")
+            print("\nAborted by user.")
             return 0
+
+        # Clear confirmation message after user confirms
+        clear_lines(lines_printed)
 
     # Convert to config
     config = args_to_restore_config(args)
@@ -540,14 +846,14 @@ def main():
         elif args.command == 'restore':
             return handle_restore(args)
         else:
-            print(f"ERROR: (gce-rescue) Unknown command: {args.command}", file=sys.stderr)
+            print(f"{error_prefix()} (gce-rescue) Unknown command: {args.command}", file=sys.stderr)
             return 1
 
     except KeyboardInterrupt:
         print("\n\nOperation cancelled by user.", file=sys.stderr)
         return 130  # Standard exit code for SIGINT
     except Exception as e:
-        print(f"ERROR: (gce-rescue) Unexpected error: {str(e)}", file=sys.stderr)
+        print(f"{error_prefix()} (gce-rescue) Unexpected error: {str(e)}", file=sys.stderr)
         if '--verbosity=debug' in sys.argv or '--verbosity debug' in sys.argv:
             import traceback
             traceback.print_exc()

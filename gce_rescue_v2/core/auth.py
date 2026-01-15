@@ -134,7 +134,7 @@ class AuthManager:
                 def _request_builder(http, *args, **kwargs):
                     """Inject User-Agent header for usage tracking."""
                     headers = kwargs.setdefault('headers', {})
-                    headers['user-agent'] = f'gce_rescue-{VERSION}'
+                    headers['user-agent'] = f'gce-rescue-{VERSION}'
                     auth_http = google_auth_httplib2.AuthorizedHttp(
                         self._credentials,
                         http=httplib2.Http()

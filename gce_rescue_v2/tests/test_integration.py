@@ -27,6 +27,10 @@ def test_full_rescue_restore_cycle(monkeypatch):
             # Required attributes for main.py success message
             self.os_type = 'linux'
             self.windows_rescue_password = None
+            self.verification_succeeded = True
+            self.snapshot_name = 'pre-rescue-test-disk-1234567890'
+            self.original_disk_name = 'test-boot-disk'
+            self.rescue_disk_name = 'rescue-disk-1234567890'
 
         def validate(self):
             state["calls"].append("rescue-validate")

@@ -6,8 +6,13 @@ by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
 import time
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, METADATA_SET_FAILED
+from ..core.config import VERSION
 
 
 # Prefix used to backup original metadata keys that conflict with rescue keys
@@ -45,7 +50,7 @@ class SetMetadataOperation(BaseOperation):
         """
         return "Set Metadata"
 
-    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True) -> OperationResult:
+    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True, tracking_label: str = None) -> OperationResult:
         """
         Set metadata on the specified VM instance, preserving existing metadata.
 
@@ -60,6 +65,9 @@ class SetMetadataOperation(BaseOperation):
                 form {'key': str, 'value': str}.
             preserve_existing (bool): If True, merge with existing metadata
                 and backup conflicting keys. Default True.
+            tracking_label (str): Tracking label for usage analytics.
+                Format: '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-meta-set-rescue-keys'
 
         Returns:
             OperationResult: Result including `rollback_data` with `vm_name`
@@ -68,6 +76,8 @@ class SetMetadataOperation(BaseOperation):
 
         self._log_debug(f"Executing {self.name} for {vm_name}")
         self._log_debug(f"  Setting {len(metadata_items)} metadata items (preserve_existing={preserve_existing})")
+        if tracking_label:
+            self._log_debug(f"  Operation tracking: {tracking_label}")
 
         try:
             # Get current metadata for rollback
@@ -95,7 +105,13 @@ class SetMetadataOperation(BaseOperation):
                 'items': final_items
             }
 
-            operation = self.compute.instances().setMetadata(
+            # Use custom compute client with unique User-Agent if tracking_label provided (for tracking)
+            if tracking_label:
+                compute = self._create_tracked_client(tracking_label)
+            else:
+                compute = self.compute
+
+            operation = compute.instances().setMetadata(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
@@ -147,6 +163,43 @@ class SetMetadataOperation(BaseOperation):
                 message=f"Failed to set metadata: {error_msg}",
                 error=error_detail
             )
+
+    def _create_tracked_client(self, tracking_label: str):
+        """
+        Create a compute client with unique User-Agent for usage tracking.
+
+        Args:
+            tracking_label: Tracking label in format '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-meta-set-rescue-keys'
+
+        Returns:
+            Compute API client with custom User-Agent header
+        """
+        # Get credentials from the base compute client
+        credentials = self.compute._http.credentials
+
+        # Build unique User-Agent for tracking
+        # Format: gce-rescue-{VERSION}-{tracking_label}
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
+
+        def _request_builder(http, *args, **kwargs):
+            """Inject custom User-Agent header."""
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials,
+                http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        # Create compute client with custom request builder
+        return discovery.build(
+            'compute',
+            'v1',
+            credentials=credentials,
+            cache_discovery=False,
+            requestBuilder=_request_builder
+        )
 
     def _merge_with_backup(self, original_items: list, new_items: list) -> list:
         """

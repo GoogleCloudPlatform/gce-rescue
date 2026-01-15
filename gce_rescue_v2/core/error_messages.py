@@ -23,6 +23,8 @@ Provides user-friendly error messages with:
 
 from typing import Optional
 
+from ..utils.colors import error_prefix
+
 
 class ErrorSuggestion:
     """Container for error message with suggestions."""
@@ -37,7 +39,7 @@ class ErrorSuggestion:
     def format(self, vm_name: str = None, zone: str = None, project: str = None,
                disk_name: str = None) -> str:
         """Format the error with context-specific details."""
-        lines = [f"ERROR: {self.message}"]
+        lines = [f"{error_prefix()} {self.message}"]
 
         if self.causes:
             lines.append("")
@@ -327,6 +329,31 @@ METADATA_SET_FAILED = ErrorSuggestion(
     ],
     commands=[
         "gcloud compute instances describe {vm_name} --zone={zone} --format='value(metadata)'",
+    ]
+)
+
+# =============================================================================
+# Startup Verification Errors
+# =============================================================================
+
+STARTUP_VERIFICATION_TIMEOUT = ErrorSuggestion(
+    message="Startup script did not complete within timeout period",
+    causes=[
+        "VM boot is very slow (Windows can take 5-10 minutes)",
+        "Startup script crashed or encountered errors",
+        "Disk failed to attach or mount",
+        "Serial console output is not being captured",
+    ],
+    suggestions=[
+        "Check serial console output for errors",
+        "Increase timeout with longer --startup-verification-timeout if needed",
+        "Try rescue operation again (VM may be slow on first boot)",
+        "Use --skip-startup-verification to bypass (not recommended)",
+    ],
+    commands=[
+        "gcloud compute instances get-serial-port-output {vm_name} --zone={zone}",
+        "gcloud compute instances describe {vm_name} --zone={zone}",
+        "Check /var/log/gce-rescue.log (Linux) or C:\\gce-rescue.log (Windows) via SSH/RDP",
     ]
 )
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # Version for usage tracking (SemVer: MAJOR.MINOR.PATCH-PRERELEASE)
-VERSION = '2.0.0-beta.2'
+VERSION = '2.0.0-beta.3'
 
 # OS Types
 OS_TYPE_LINUX = 'linux'
@@ -55,6 +55,7 @@ class RescueConfig:
     vm_start_timeout: int = 300  # 5 minutes
     disk_create_timeout: int = 300  # 5 minutes
     operation_timeout: int = 600  # 10 minutes
+    startup_verification_timeout: int = 120  # 2 minutes for startup script completion
 
     # Logging settings
     log_level: str = 'INFO'

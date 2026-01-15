@@ -10,6 +10,11 @@ Pattern: Create a new validator by inheriting from BaseValidator
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
+from ..core.config import VERSION
 
 
 @dataclass
@@ -79,11 +84,38 @@ class ValidationResults:
         print()
         for result in failures:
             print(f"  [X] {result.validator_name}")
-            print(f"    {result.message}")
+            print(f"      {result.message}")
 
-            # Print fix suggestions if available
-            if result.details and 'fix' in result.details:
-                print(f"    Fix: {result.details['fix']}")
+            # Special handling for IAM permission failures
+            if result.details and 'missing' in result.details:
+                missing = result.details['missing']
+                if missing:
+                    print()
+                    print("      Missing permissions:")
+                    for perm in missing:
+                        print(f"        - {perm}")
+
+                # Show required roles
+                if 'required_roles' in result.details:
+                    print()
+                    print("      Required roles (grant one of these):")
+                    for role in result.details['required_roles']:
+                        print(f"        - {role}")
+
+                # Show how to grant
+                print()
+                print("      To grant access, run:")
+                print("        $ gcloud projects add-iam-policy-binding PROJECT_ID \\")
+                print("            --member=\"user:YOUR_EMAIL\" \\")
+                print("            --role=\"roles/compute.instanceAdmin.v1\"")
+                print()
+                print("      To check your current account:")
+                print("        $ gcloud auth list")
+
+            # Print general fix suggestions for other errors
+            elif result.details and 'fix' in result.details:
+                print(f"      Fix: {result.details['fix']}")
+
             print()
 
 
@@ -119,7 +151,7 @@ class BaseValidator(ABC):
                     )
     """
 
-    def __init__(self, compute, project: str, zone: str, vm_name: str = None):
+    def __init__(self, compute, project: str, zone: str, vm_name: str = None, tracking_label: str = None):
         """
         Initialize validator.
 
@@ -128,11 +160,52 @@ class BaseValidator(ABC):
             project: GCP project ID
             zone: GCP zone (e.g., 'us-central1-a')
             vm_name: Name of the VM to validate (optional for some validators)
+            tracking_label: Optional tracking label for usage analytics
+                Format: '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-val-iam'
         """
         self.compute = compute
         self.project = project
         self.zone = zone
         self.vm_name = vm_name
+        self.tracking_label = tracking_label
+
+    def _create_tracked_client(self, tracking_label: str):
+        """
+        Create a compute client with unique User-Agent for usage tracking.
+
+        Args:
+            tracking_label: Tracking label in format '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-val-iam'
+
+        Returns:
+            Compute API client with custom User-Agent header
+        """
+        # Get credentials from the base compute client
+        credentials = self.compute._http.credentials
+
+        # Build unique User-Agent for tracking
+        # Format: gce-rescue-{VERSION}-{tracking_label}
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
+
+        def _request_builder(http, *args, **kwargs):
+            """Inject custom User-Agent header."""
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials,
+                http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        # Create compute client with custom request builder
+        return discovery.build(
+            'compute',
+            'v1',
+            credentials=credentials,
+            cache_discovery=False,
+            requestBuilder=_request_builder
+        )
 
     @abstractmethod
     def validate(self) -> ValidationResult:
@@ -202,7 +275,7 @@ class ValidationRunner:
         for validator in self.validators:
             # Log what we're checking (DEBUG level)
             if logger:
-                logger.debug(f"Running validator: {validator.name}")
+                logger.debug(f"[Validator] Running: {validator.name}")
 
             # Run the validator
             result = validator.validate()
@@ -210,16 +283,16 @@ class ValidationRunner:
             # Log result (DEBUG level)
             if logger:
                 status = "PASS" if result.passed else "FAIL"
-                logger.debug(f"  {status}: {result.message}")
+                logger.debug(f"[Validator]   {status}: {result.message}")
 
             # Add to results
             results.add(result)
 
-            # Print result for user (INFO level)
+            # Print result for user (DEBUG level for individual validators)
             if logger:
                 if result.passed:
-                    logger.info(f"  [OK] {result.validator_name}")
+                    logger.debug(f"[Validator]   {result.validator_name}...done.")
                 else:
-                    logger.info(f"  [FAIL] {result.validator_name}")
+                    logger.info(f"  {result.validator_name}...FAILED.")
 
         return results

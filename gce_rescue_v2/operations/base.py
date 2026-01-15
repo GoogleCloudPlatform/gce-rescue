@@ -189,9 +189,9 @@ class BaseOperation(ABC):
         pass
 
     def _log_debug(self, message: str):
-        """Log debug message if logger available."""
+        """Log debug message with component prefix."""
         if self.logger:
-            self.logger.debug(message)
+            self.logger.debug(f"[{self.name}] {message}", stacklevel=2)
 
     def _log_info(self, message: str):
         """Log info message if logger available."""

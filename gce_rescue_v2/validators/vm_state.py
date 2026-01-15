@@ -64,8 +64,10 @@ class VMStateValidator(BaseValidator):
             )
 
         try:
+            # Use tracked client if tracking_label provided
+            compute = self._create_tracked_client(self.tracking_label) if self.tracking_label else self.compute
             # Try to get VM
-            vm = self.compute.instances().get(
+            vm = compute.instances().get(
                 project=self.project,
                 zone=self.zone,
                 instance=self.vm_name
@@ -222,8 +224,10 @@ class VMRestoreStateValidator(BaseValidator):
             )
 
         try:
+            # Use tracked client if tracking_label provided
+            compute = self._create_tracked_client(self.tracking_label) if self.tracking_label else self.compute
             # Get VM
-            vm = self.compute.instances().get(
+            vm = compute.instances().get(
                 project=self.project,
                 zone=self.zone,
                 instance=self.vm_name
