@@ -18,6 +18,9 @@ from ..core.config import VERSION
 # Prefix used to backup original metadata keys that conflict with rescue keys
 RESCUE_BACKUP_PREFIX = 'rescue-backup-'
 
+# Key used to store checkpoint data for resumable operations
+CHECKPOINT_KEY = 'gce-rescue-checkpoint'
+
 # Keys that rescue mode needs to set (may conflict with existing metadata)
 RESCUE_CONFLICT_KEYS = [
     'startup-script',
@@ -31,6 +34,7 @@ RESCUE_METADATA_KEYS = [
     'rescue-os-type',
     'startup-script',
     'windows-startup-script-ps1',
+    CHECKPOINT_KEY,  # Clean up checkpoint on restore
 ]
 
 

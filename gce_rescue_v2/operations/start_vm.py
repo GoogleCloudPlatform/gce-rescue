@@ -128,6 +128,101 @@ class StartVMOperation(BaseOperation):
                     }
                 )
 
+            elif original_status in ('STAGING', 'PROVISIONING'):
+                # VM is already starting up, just wait for it
+                self._log_debug(f"VM is {original_status}, waiting for RUNNING...")
+                start_time = time.time()
+
+                def get_status():
+                    vm = self.compute.instances().get(
+                        project=self.project,
+                        zone=self.zone,
+                        instance=vm_name
+                    ).execute()
+                    return vm['status']
+
+                if not self._wait_for_status(get_status, 'RUNNING', timeout):
+                    error_detail = VM_START_TIMEOUT.format(
+                        vm_name=vm_name,
+                        zone=self.zone,
+                        project=self.project
+                    )
+                    self._log_error(error_detail)
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message=f"Timeout waiting for VM to reach RUNNING (>{timeout}s)",
+                        error=error_detail
+                    )
+
+                duration = time.time() - start_time
+                self._log_debug(f"VM reached RUNNING in {duration:.2f}s")
+
+                return OperationResult(
+                    operation_name=self.name,
+                    success=True,
+                    message=f"VM started ({duration:.0f}s)",
+                    rollback_data={
+                        'vm_name': vm_name,
+                        'original_status': 'TERMINATED'  # Treat as if it was terminated
+                    }
+                )
+
+            elif original_status == 'STOPPING':
+                # VM is stopping, wait for TERMINATED then start
+                self._log_debug("VM is STOPPING, waiting for TERMINATED...")
+
+                def get_status():
+                    vm = self.compute.instances().get(
+                        project=self.project,
+                        zone=self.zone,
+                        instance=vm_name
+                    ).execute()
+                    return vm['status']
+
+                if not self._wait_for_status(get_status, 'TERMINATED', timeout // 2):
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message="Timeout waiting for VM to stop",
+                        error="VM stuck in STOPPING state"
+                    )
+
+                # Now start it
+                self._log_debug("VM stopped, now starting...")
+                compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
+                compute.instances().start(
+                    project=self.project,
+                    zone=self.zone,
+                    instance=vm_name
+                ).execute()
+
+                start_time = time.time()
+                if not self._wait_for_status(get_status, 'RUNNING', timeout // 2):
+                    error_detail = VM_START_TIMEOUT.format(
+                        vm_name=vm_name,
+                        zone=self.zone,
+                        project=self.project
+                    )
+                    self._log_error(error_detail)
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message=f"Timeout waiting for VM to start (>{timeout}s)",
+                        error=error_detail
+                    )
+
+                duration = time.time() - start_time
+                return OperationResult(
+                    operation_name=self.name,
+                    success=True,
+                    message=f"VM started ({duration:.0f}s)",
+                    rollback_data={
+                        'vm_name': vm_name,
+                        'original_status': 'TERMINATED'
+                    }
+                )
+
             else:
                 return OperationResult(
                     operation_name=self.name,
