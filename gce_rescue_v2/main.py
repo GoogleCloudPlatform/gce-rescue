@@ -24,10 +24,11 @@ from .orchestration import RescueOrchestrator, RestoreOrchestrator
 
 
 def rescue_vm(vm_name: str, zone: str, project: str = None,
-              config: RescueConfig = None, debug: bool = False) -> bool:
+              config: RescueConfig = None, debug: bool = False,
+              resume_checkpoint=None, log_file: str = None) -> bool:
     """
     Rescue a VM (enter rescue mode).
-    
+
     This will:
     1. Validate credentials and permissions
     2. Stop the VM
@@ -37,33 +38,38 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
     6. Set rescue metadata and startup script
     7. Start VM in rescue mode
     8. Re-attach original disk as secondary
-    
+
     On failure, automatically rolls back to original state.
-    
+    Supports resuming from interrupted operations via resume_checkpoint.
+
     Args:
         vm_name: Name of VM to rescue
         zone: GCP zone (e.g., 'us-central1-a')
         project: GCP project ID (optional, uses default if not provided)
         config: Optional RescueConfig for advanced settings
         debug: Enable debug logging (default: False)
-    
+        resume_checkpoint: Optional checkpoint data to resume from
+
     Returns:
         True if rescue succeeded, False if failed
-    
+
     Example:
         >>> rescue_vm('my-vm', 'us-central1-a', debug=True)
         True
     """
 
-    # Setup logging with auto-generated log file
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_file = f"{vm_name}-rescue-{timestamp}.log"
+    # Setup logging - use provided log_file (resume) or generate new one
+    if not log_file:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = f"{vm_name}-rescue-{timestamp}.log"
     logger = setup_logging(
         level='DEBUG' if debug else 'INFO',
         log_file=log_file,
         debug=debug
     )
 
+    if resume_checkpoint:
+        logger.debug(f"=== Session Resumed ===")
     logger.debug(f"GCE Rescue V2 - Rescue")
     logger.debug(f"Log file: {log_file}")
     logger.debug(f"VM: {vm_name}, Zone: {zone}" + (f", Project: {project}" if project else ""))
@@ -85,11 +91,17 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
             zone=zone,
             vm_name=vm_name,
             config=config,
-            logger=logger
+            logger=logger,
+            log_file=log_file
         )
-        
-        # Step 1: Validate
-        if not orchestrator.validate():
+
+        # Set resume state if resuming from checkpoint
+        if resume_checkpoint:
+            orchestrator.set_resume_state(resume_checkpoint)
+            logger.debug(f"Resuming from step {resume_checkpoint.current_step + 1}")
+
+        # Step 1: Validate (skip if resuming - already validated)
+        if not resume_checkpoint and not orchestrator.validate():
             logger.error("Validation failed. Cannot proceed with rescue.")
             return False
 
@@ -125,18 +137,24 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
 
         # Show OS-specific connection and mount instructions
         if orchestrator.os_type == OS_TYPE_WINDOWS:
-            # Get external IP for RDP connection
+            # Get external/internal IP for RDP connection
             vm = compute.instances().get(project=project, zone=zone, instance=vm_name).execute()
             external_ip = None
+            internal_ip = None
             for iface in vm.get('networkInterfaces', []):
+                if not internal_ip:
+                    internal_ip = iface.get('networkIP')
                 for access in iface.get('accessConfigs', []):
                     if access.get('natIP'):
                         external_ip = access.get('natIP')
                         break
 
-            ip_str = external_ip if external_ip else "N/A"
             logger.info("1. Connect via RDP:")
-            logger.info(f"   IP: {ip_str}")
+            if external_ip:
+                logger.info(f"   IP: {external_ip}")
+            else:
+                logger.info(f"   IP: {internal_ip} (internal - use IAP tunnel)")
+                logger.info(f"   Tunnel: gcloud compute start-iap-tunnel {vm_name} 3389 --local-host-port=localhost:3389 --zone={zone} --project={project}")
             logger.info(f"   User: rescue_admin")
             logger.info(f"   Password: {orchestrator.windows_rescue_password}")
             logger.info("")
@@ -176,10 +194,11 @@ def rescue_vm(vm_name: str, zone: str, project: str = None,
 
 
 def restore_vm(vm_name: str, zone: str, project: str = None,
-               config: RestoreConfig = None, debug: bool = False) -> bool:
+               config: RestoreConfig = None, debug: bool = False,
+               resume_checkpoint=None, log_file: str = None) -> bool:
     """
     Restore a VM (exit rescue mode).
-    
+
     This will:
     1. Validate VM is in rescue mode
     2. Stop the VM
@@ -189,33 +208,38 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
     6. Remove rescue metadata
     7. Start VM normally
     8. Delete rescue disk (if configured)
-    
+
     On failure, automatically rolls back to rescue mode.
-    
+    Supports resuming from interrupted operations via resume_checkpoint.
+
     Args:
         vm_name: Name of VM to restore
         zone: GCP zone (e.g., 'us-central1-a')
         project: GCP project ID (optional, uses default if not provided)
         config: Optional RestoreConfig for advanced settings
         debug: Enable debug logging (default: False)
-    
+        resume_checkpoint: Optional checkpoint data to resume from
+
     Returns:
         True if restore succeeded, False if failed
-    
+
     Example:
         >>> restore_vm('my-vm', 'us-central1-a')
         True
     """
 
-    # Setup logging with auto-generated log file
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_file = f"{vm_name}-restore-{timestamp}.log"
+    # Setup logging - use provided log_file (resume) or generate new one
+    if not log_file:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = f"{vm_name}-restore-{timestamp}.log"
     logger = setup_logging(
         level='DEBUG' if debug else 'INFO',
         log_file=log_file,
         debug=debug
     )
 
+    if resume_checkpoint:
+        logger.debug(f"=== Session Resumed ===")
     logger.debug(f"GCE Rescue V2 - Restore")
     logger.debug(f"Log file: {log_file}")
     logger.debug(f"VM: {vm_name}, Zone: {zone}" + (f", Project: {project}" if project else ""))
@@ -237,11 +261,17 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
             zone=zone,
             vm_name=vm_name,
             config=config,
-            logger=logger
+            logger=logger,
+            log_file=log_file
         )
-        
-        # Step 1: Validate
-        if not orchestrator.validate():
+
+        # Set resume state if resuming from checkpoint
+        if resume_checkpoint:
+            orchestrator.set_resume_state(resume_checkpoint)
+            logger.debug(f"Resuming from step {resume_checkpoint.current_step + 1}")
+
+        # Step 1: Validate (skip if resuming - already validated)
+        if not resume_checkpoint and not orchestrator.validate():
             logger.error("Validation failed. Cannot proceed with restore.")
             logger.error("Is the VM in rescue mode?")
             return False
@@ -270,10 +300,13 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
         logger.info(f"Instance [{vm_name}] restored to normal operation.")
         logger.info("")
         if os_type == OS_TYPE_WINDOWS:
-            # Get external IP for RDP connection
+            # Get external/internal IP for RDP connection
             external_ip = None
+            internal_ip = None
             try:
                 for iface in vm.get('networkInterfaces', []):
+                    if not internal_ip:
+                        internal_ip = iface.get('networkIP')
                     for access in iface.get('accessConfigs', []):
                         if access.get('natIP'):
                             external_ip = access.get('natIP')
@@ -284,8 +317,11 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
             logger.info("Connect via RDP using your original credentials:")
             if external_ip:
                 logger.info(f"  IP: {external_ip}")
+            elif internal_ip:
+                logger.info(f"  IP: {internal_ip} (internal - use IAP tunnel)")
+                logger.info(f"  Tunnel: gcloud compute start-iap-tunnel {vm_name} 3389 --local-host-port=localhost:3389 --zone={zone} --project={project}")
             else:
-                logger.info(f"  $ gcloud compute instances describe {vm_name} --zone={zone} --project={project} --format=\"get(networkInterfaces[0].accessConfigs[0].natIP)\"")
+                logger.info(f"  $ gcloud compute instances describe {vm_name} --zone={zone} --project={project} --format=\"get(networkInterfaces[0].networkIP)\"")
             logger.info("")
             logger.info("Forgot password? Reset it:")
             logger.info(f"  $ gcloud compute reset-windows-password {vm_name} --zone={zone} --project={project}")

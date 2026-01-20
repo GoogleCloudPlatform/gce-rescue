@@ -21,6 +21,7 @@ from typing import Optional, Dict, Any
 from .core.config import RescueConfig, RestoreConfig, VERSION
 from .main import rescue_vm, restore_vm
 from .utils.colors import error_prefix, warning_prefix, clear_lines
+from .orchestration.checkpoint import CheckpointManager, CheckpointData
 
 
 class OutputFormatter:
@@ -622,6 +623,200 @@ def _validate_vm_for_restore(compute, project: str, zone: str, vm_name: str) -> 
         return (False, None, _parse_api_error(e, vm_name, zone, project))
 
 
+def _prompt_incomplete_operation(checkpoint: CheckpointData, operation_type: str) -> str:
+    """
+    Prompt user about incomplete operation (interactive mode only).
+
+    Args:
+        checkpoint: Checkpoint data from incomplete operation
+        operation_type: 'rescue' or 'restore'
+
+    Returns:
+        'continue', 'rollback', or 'abort'
+    """
+    # Get next step name for continue option
+    next_step = checkpoint.current_step + 1
+    step_names = {
+        1: "Stop VM", 2: "Detach Boot Disk", 3: "Create Snapshot",
+        4: "Create Rescue Disk", 5: "Attach Rescue Disk", 6: "Set Metadata",
+        7: "Start VM", 8: "Attach Original Disk", 9: "Verify Startup"
+    }
+    next_step_name = step_names.get(next_step, f"Step {next_step}")
+    last_step_name = checkpoint.get_last_completed_operation() or "None"
+
+    # Track lines for clearing after continue
+    lines_printed = 0
+
+    print(f"\n{warning_prefix()} An incomplete {operation_type} operation was detected for this instance.")
+    lines_printed += 2  # includes leading newline
+    print("")
+    lines_printed += 1
+    print(f"  Started:    {checkpoint.started_at[:19].replace('T', ' ')} ({checkpoint.get_age_display()})")
+    lines_printed += 1
+    print(f"  Progress:   {checkpoint.current_step} of {checkpoint.total_steps} steps completed")
+    lines_printed += 1
+    print(f"  Last step:  {last_step_name}")
+    lines_printed += 1
+    print("")
+    lines_printed += 1
+    print("What would you like to do?")
+    lines_printed += 1
+    print(f"  [1] Continue  Resume from \"{next_step_name}\"")
+    lines_printed += 1
+    print("  [2] Rollback  Undo completed steps and restore original state")
+    lines_printed += 1
+    print("  [3] Abort     Do nothing and exit")
+    lines_printed += 1
+    print("")
+    lines_printed += 1
+
+    while True:
+        try:
+            response = input("Enter your choice (1/2/3): ").strip()
+            lines_printed += 1  # input line
+            if response == '1':
+                # Clear the warning message when continuing
+                clear_lines(lines_printed)
+                return 'continue'
+            elif response == '2':
+                return 'rollback'
+            elif response == '3':
+                return 'abort'
+            else:
+                print("Please enter 1, 2, or 3.")
+                lines_printed += 1
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 'abort'
+
+
+def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
+                                        checkpoint: CheckpointData, logger=None) -> bool:
+    """
+    Rollback restore operation to return to rescue mode.
+
+    Args:
+        compute: GCP compute client
+        project: GCP project ID
+        zone: GCP zone
+        vm_name: VM name
+        checkpoint: Checkpoint data
+        logger: Optional logger
+
+    Returns:
+        True if rollback succeeded
+    """
+    from .orchestration.rollback import RollbackHandler
+    from .orchestration.state import StateTracker
+    from .operations import (
+        StopVMOperation, DetachDiskOperation, AttachDiskOperation,
+        SetMetadataOperation, StartVMOperation
+    )
+
+    print(f"\nRolling back to rescue mode for instance [{vm_name}]:")
+
+    # Create operations map for restore operations
+    operations_map = {
+        "Stop VM": StopVMOperation(compute, project, zone, logger),
+        "Detach Rescue Disk": DetachDiskOperation(compute, project, zone, logger),
+        "Detach Original Disk": DetachDiskOperation(compute, project, zone, logger),
+        "Attach Original Disk": AttachDiskOperation(compute, project, zone, logger),
+        "Set Metadata": SetMetadataOperation(compute, project, zone, logger),
+        "Start VM": StartVMOperation(compute, project, zone, logger),
+    }
+
+    # Build state tracker from checkpoint
+    state_tracker = StateTracker()
+    for op in checkpoint.completed_operations:
+        state_tracker.add_operation(
+            operation_name=op.name,
+            success=True,
+            message="Completed in previous session",
+            rollback_data=op.rollback_data,
+            step_number=op.step
+        )
+
+    # Perform rollback
+    handler = RollbackHandler(logger)
+    success = handler.rollback(state_tracker, operations_map)
+
+    # Clear checkpoint after rollback
+    checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
+    checkpoint_mgr.clear_checkpoint()
+
+    if success:
+        print(f"\nInstance [{vm_name}] is back in rescue mode.")
+    else:
+        print(f"\n{error_prefix()} Rollback completed with errors. Manual intervention may be required.")
+
+    return success
+
+
+def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
+                                checkpoint: CheckpointData, logger=None) -> bool:
+    """
+    Rollback from checkpoint.
+
+    Args:
+        compute: GCP compute client
+        project: GCP project ID
+        zone: GCP zone
+        vm_name: VM name
+        checkpoint: Checkpoint data
+        logger: Optional logger
+
+    Returns:
+        True if rollback succeeded
+    """
+    from .orchestration.rollback import RollbackHandler
+    from .orchestration.state import StateTracker, OperationState
+    from .operations import (
+        StopVMOperation, DetachDiskOperation, AttachDiskOperation,
+        SetMetadataOperation, StartVMOperation, DeleteDiskOperation,
+        CreateSnapshotOperation, CreateDiskOperation
+    )
+
+    print(f"\nRolling back instance [{vm_name}]:")
+
+    # Create operations map
+    operations_map = {
+        "Stop VM": StopVMOperation(compute, project, zone, logger),
+        "Detach Boot Disk": DetachDiskOperation(compute, project, zone, logger),
+        "Create Snapshot": CreateSnapshotOperation(compute, project, zone, logger),
+        "Create Rescue Disk": CreateDiskOperation(compute, project, zone, logger),
+        "Attach Rescue Disk": AttachDiskOperation(compute, project, zone, logger),
+        "Set Metadata": SetMetadataOperation(compute, project, zone, logger),
+        "Start VM": StartVMOperation(compute, project, zone, logger),
+        "Attach Original Disk": AttachDiskOperation(compute, project, zone, logger),
+    }
+
+    # Build state tracker from checkpoint
+    state_tracker = StateTracker()
+    for op in checkpoint.completed_operations:
+        state_tracker.add_operation(
+            operation_name=op.name,
+            success=True,
+            message="Completed in previous session",
+            rollback_data=op.rollback_data,
+            step_number=op.step
+        )
+
+    # Perform rollback
+    handler = RollbackHandler(logger)
+    success = handler.rollback(state_tracker, operations_map)
+
+    # Clear checkpoint after rollback
+    checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
+    checkpoint_mgr.clear_checkpoint()
+
+    if success:
+        print(f"\nInstance [{vm_name}] has been restored to its original state.")
+    else:
+        print(f"\n{error_prefix()} Rollback completed with errors. Manual intervention may be required.")
+
+    return success
+
+
 def handle_rescue(args: argparse.Namespace) -> int:
     """Handle rescue command."""
     from .core.auth import AuthManager
@@ -647,30 +842,54 @@ def handle_rescue(args: argparse.Namespace) -> int:
         print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
         return 1
 
-    # Validate VM exists and state BEFORE confirmation
-    valid, vm_info, error_msg = _validate_vm_exists(compute, project, args.zone, args.instance_name)
-    if not valid:
-        print(f"{error_prefix()} {error_msg}", file=sys.stderr)
-        return 1
-
-    # Check for Local SSDs using validated VM info
-    local_ssds = _check_local_ssds(vm_info)
-    has_local_ssd = len(local_ssds) > 0
-
-    # In quiet mode with Local SSDs, require --force
-    if args.quiet and has_local_ssd and not args.force:
-        print(f"{error_prefix()} VM has Local SSDs attached.", file=sys.stderr)
-        print("", file=sys.stderr)
-        print(f"Local SSDs found: {', '.join(local_ssds)}", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("WARNING: Stopping this VM will PERMANENTLY LOSE all data on Local SSDs!", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
-        print(f"  gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --quiet --force", file=sys.stderr)
-        return 1
-
-    # Interactive confirmation (unless --quiet)
+    # Check for incomplete operation (interactive mode only)
+    checkpoint = None
+    resuming = False
     if not args.quiet:
+        checkpoint_mgr = CheckpointManager(compute, project, args.zone, args.instance_name)
+        checkpoint = checkpoint_mgr.detect_incomplete(operation_type='rescue')
+
+        if checkpoint:
+            action = _prompt_incomplete_operation(checkpoint, 'rescue')
+
+            if action == 'abort':
+                return 0
+            elif action == 'rollback':
+                success = _handle_checkpoint_rollback(
+                    compute, project, args.zone, args.instance_name, checkpoint
+                )
+                return 0 if success else 1
+            # action == 'continue': proceed with resume
+            # Skip normal validation and confirmation when resuming
+            vm_info = None
+            has_local_ssd = False
+            resuming = True
+
+    if not resuming:
+        # Validate VM exists and state BEFORE confirmation
+        valid, vm_info, error_msg = _validate_vm_exists(compute, project, args.zone, args.instance_name)
+        if not valid:
+            print(f"{error_prefix()} {error_msg}", file=sys.stderr)
+            return 1
+
+        # Check for Local SSDs using validated VM info
+        local_ssds = _check_local_ssds(vm_info)
+        has_local_ssd = len(local_ssds) > 0
+
+        # In quiet mode with Local SSDs, require --force
+        if args.quiet and has_local_ssd and not args.force:
+            print(f"{error_prefix()} VM has Local SSDs attached.", file=sys.stderr)
+            print("", file=sys.stderr)
+            print(f"Local SSDs found: {', '.join(local_ssds)}", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("WARNING: Stopping this VM will PERMANENTLY LOSE all data on Local SSDs!", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
+            print(f"  gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --quiet --force", file=sys.stderr)
+            return 1
+
+    # Interactive confirmation (unless --quiet or resuming)
+    if not args.quiet and not resuming:
         # Count lines for clearing after confirmation
         lines_printed = 0
 
@@ -715,12 +934,16 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
     # Execute
     debug = args.verbosity == 'debug'
+    # Use log_file from checkpoint if resuming (continues logging to same file)
+    log_file = checkpoint.context.get('log_file') if checkpoint else None
     success = rescue_vm(
         vm_name=args.instance_name,
         zone=args.zone,
         project=project,
         config=config,
-        debug=debug
+        debug=debug,
+        resume_checkpoint=checkpoint if checkpoint else None,
+        log_file=log_file
     )
 
     # Format output
@@ -763,14 +986,37 @@ def handle_restore(args: argparse.Namespace) -> int:
         print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
         return 1
 
-    # Validate VM exists and is in rescue mode BEFORE confirmation
-    valid, vm_info, error_msg = _validate_vm_for_restore(compute, project, args.zone, args.instance_name)
-    if not valid:
-        print(f"{error_prefix()} {error_msg}", file=sys.stderr)
-        return 1
-
-    # Interactive confirmation (unless --quiet)
+    # Check for incomplete restore operation (interactive mode only)
+    checkpoint = None
+    resuming = False
     if not args.quiet:
+        checkpoint_mgr = CheckpointManager(compute, project, args.zone, args.instance_name)
+        checkpoint = checkpoint_mgr.detect_incomplete(operation_type='restore')
+
+        if checkpoint:
+            action = _prompt_incomplete_operation(checkpoint, 'restore')
+
+            if action == 'abort':
+                return 0
+            elif action == 'rollback':
+                # For restore rollback, we go back to rescue mode
+                success = _handle_restore_checkpoint_rollback(
+                    compute, project, args.zone, args.instance_name, checkpoint
+                )
+                return 0 if success else 1
+            # action == 'continue': proceed with resume
+            # Skip normal validation and confirmation when resuming
+            resuming = True
+
+    if not resuming:
+        # Validate VM exists and is in rescue mode BEFORE confirmation
+        valid, vm_info, error_msg = _validate_vm_for_restore(compute, project, args.zone, args.instance_name)
+        if not valid:
+            print(f"{error_prefix()} {error_msg}", file=sys.stderr)
+            return 1
+
+    # Interactive confirmation (unless --quiet or resuming)
+    if not args.quiet and not resuming:
         # Count lines for clearing after confirmation
         lines_printed = 0
 
@@ -805,12 +1051,16 @@ def handle_restore(args: argparse.Namespace) -> int:
 
     # Execute
     debug = args.verbosity == 'debug'
+    # Use log_file from checkpoint if resuming (continues logging to same file)
+    log_file = checkpoint.context.get('log_file') if checkpoint else None
     success = restore_vm(
         vm_name=args.instance_name,
         zone=args.zone,
         project=project,
         config=config,
-        debug=debug
+        debug=debug,
+        resume_checkpoint=checkpoint if checkpoint else None,
+        log_file=log_file
     )
 
     # Format output

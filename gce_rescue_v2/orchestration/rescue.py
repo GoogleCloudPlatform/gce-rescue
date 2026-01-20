@@ -30,6 +30,7 @@ from ..operations import (
 )
 from .state import StateTracker
 from .rollback import RollbackHandler
+from .checkpoint import CheckpointManager, CheckpointData
 
 
 class RescueOrchestrator:
@@ -68,7 +69,7 @@ class RescueOrchestrator:
     """
 
     def __init__(self, compute, project: str, zone: str, vm_name: str,
-                 config: RescueConfig = None, logger=None):
+                 config: RescueConfig = None, logger=None, log_file: str = None):
         """
         Initialize rescue orchestrator.
 
@@ -79,6 +80,7 @@ class RescueOrchestrator:
             vm_name: Name of VM to rescue
             config: Optional rescue configuration
             logger: Optional logger
+            log_file: Log file path (for checkpoint persistence)
         """
         self.compute = compute
         self.project = project
@@ -86,6 +88,7 @@ class RescueOrchestrator:
         self.vm_name = vm_name
         self.config = config or RescueConfig()
         self.logger = logger
+        self.log_file = log_file
 
         # State tracking
         self.state_tracker = StateTracker()
@@ -121,6 +124,15 @@ class RescueOrchestrator:
         self._progress_lock = None
         self._total_steps = 5  # Stopping, Snapshotting, Creating rescue disk, Starting, Attaching
 
+        # Checkpoint manager for resumable operations
+        self.checkpoint_manager = CheckpointManager(
+            compute, project, zone, vm_name, logger
+        )
+
+        # Resume state (set when resuming from checkpoint)
+        self._resume_from_step = 0  # 0 = fresh start, >0 = resume from this step
+        self._resumed_context = None  # Context from checkpoint
+
     def _init_progress(self):
         """Initialize spinner with phases display."""
         import sys
@@ -132,6 +144,22 @@ class RescueOrchestrator:
         self._is_debug_mode = console_level <= logging.DEBUG
         self._progress_phases = []
         self._progress_lock = threading.Lock()
+
+        # If resuming, initialize phases from completed steps
+        if self._resume_from_step > 0:
+            # Map step numbers to phases (phases are added at these steps)
+            # Step 1: Stopping, Step 3: Snapshotting, Step 4: Creating rescue disk,
+            # Step 7: Starting, Step 9: Attaching affected disk
+            step_to_phase = {
+                1: "Stopping",
+                3: "Snapshotting",
+                4: "Creating rescue disk",
+                7: "Starting",
+                9: "Attaching affected disk"
+            }
+            for step in sorted(step_to_phase.keys()):
+                if step <= self._resume_from_step:
+                    self._progress_phases.append(step_to_phase[step])
 
         if not self._is_debug_mode:
             # Print header line
@@ -216,6 +244,83 @@ class RescueOrchestrator:
         if self.logger:
             self.logger.error(message)
 
+    def set_resume_state(self, checkpoint: CheckpointData):
+        """
+        Set resume state from a checkpoint.
+
+        Call this before execute() to resume from an interrupted operation.
+
+        Args:
+            checkpoint: Checkpoint data from previous interrupted operation
+        """
+        self._resume_from_step = checkpoint.current_step
+        self._resumed_context = checkpoint.context
+        self.checkpoint_manager.set_session_id(checkpoint.session_id)
+
+        # Restore context from checkpoint
+        if self._resumed_context:
+            self.original_disk_name = self._resumed_context.get('original_disk_name')
+            self.original_device_name = self._resumed_context.get('original_device_name')
+            self.rescue_disk_name = self._resumed_context.get('rescue_disk_name')
+            self.os_type = self._resumed_context.get('os_type')
+
+        self._log_debug(f"Resume state set: continuing from step {self._resume_from_step + 1}")
+
+    def _should_skip_step(self, step: int) -> bool:
+        """Check if a step should be skipped (already completed in previous session)."""
+        return step <= self._resume_from_step
+
+    def _is_disk_attached(self, disk_name: str) -> bool:
+        """Check if a disk is already attached to the VM."""
+        try:
+            vm = self.compute.instances().get(
+                project=self.project,
+                zone=self.zone,
+                instance=self.vm_name
+            ).execute()
+            for disk in vm.get('disks', []):
+                if disk.get('source', '').endswith(f'/disks/{disk_name}'):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _disk_exists(self, disk_name: str) -> bool:
+        """Check if a disk exists."""
+        try:
+            self.compute.disks().get(
+                project=self.project,
+                zone=self.zone,
+                disk=disk_name
+            ).execute()
+            return True
+        except Exception:
+            return False
+
+    def _get_vm_status(self) -> str:
+        """Get current VM status."""
+        try:
+            vm = self.compute.instances().get(
+                project=self.project,
+                zone=self.zone,
+                instance=self.vm_name
+            ).execute()
+            return vm.get('status', 'UNKNOWN')
+        except Exception:
+            return 'UNKNOWN'
+
+    def _get_checkpoint_context(self) -> dict:
+        """Get context dict for checkpoint."""
+        return {
+            'vm_name': self.vm_name,
+            'zone': self.zone,
+            'original_disk_name': self.original_disk_name,
+            'original_device_name': self.original_device_name,
+            'rescue_disk_name': self.rescue_disk_name,
+            'os_type': self.os_type,
+            'log_file': self.log_file
+        }
+
     def validate(self) -> bool:
         """
         Run pre-flight validation.
@@ -274,14 +379,29 @@ class RescueOrchestrator:
         # Initialize progress display
         self._init_progress()
 
+        # Total internal steps for checkpoint tracking
+        total_checkpoint_steps = 9  # Stop, Detach, Snapshot, CreateDisk, AttachRescue, SetMeta, Start, AttachOrig, Verify
+
         try:
-            # Generate rescue disk name
-            rescue_disk_name = f"rescue-disk-{int(time.time())}"
-            self.rescue_disk_name = rescue_disk_name  # Store for output
+            # Get original disk info if not resuming (or if not already set)
+            if not self._resume_from_step or not self.original_disk_name:
+                self._get_original_disk_info()
+
+            # Generate rescue disk name if not resuming
+            if not self._resume_from_step or not self.rescue_disk_name:
+                rescue_disk_name = f"rescue-disk-{int(time.time())}"
+                self.rescue_disk_name = rescue_disk_name
+            else:
+                rescue_disk_name = self.rescue_disk_name
             self._log_debug(f"Rescue disk name: {rescue_disk_name}")
 
-            # Get original disk info
-            self._get_original_disk_info()
+            # Create initial checkpoint if not resuming
+            if not self._resume_from_step:
+                self.checkpoint_manager.create_checkpoint(
+                    operation_type='rescue',
+                    total_steps=total_checkpoint_steps,
+                    context=self._get_checkpoint_context()
+                )
 
             # Create operations (in execution order)
             stop_vm = StopVMOperation(self.compute, self.project, self.zone, self.logger)
@@ -306,36 +426,53 @@ class RescueOrchestrator:
             }
 
             # Step 1: Stop VM
-            self._update_progress("Stopping")
-            self._log_debug(f"Stopping instance {self.vm_name}...")
-            result = stop_vm.execute(
-                vm_name=self.vm_name,
-                timeout=self.config.vm_stop_timeout,
-                discard_local_ssd=self.config.force,
-                tracking_label='rescue-vm-stop'
-            )
-            self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(1):
+                self._update_progress("Stopping")
+                self._log_debug(f"Stopping instance {self.vm_name}...")
+                result = stop_vm.execute(
+                    vm_name=self.vm_name,
+                    timeout=self.config.vm_stop_timeout,
+                    discard_local_ssd=self.config.force,
+                    tracking_label='rescue-vm-stop'
+                )
+                self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data, step_number=1)
+                if not result.success:
+                    self._finish_progress(False)
+                    self._rollback()
+                    return False
+                # Update checkpoint after successful step
+                self.checkpoint_manager.update_checkpoint(
+                    step=1, operation_name="Stop VM",
+                    rollback_data=result.rollback_data,
+                    context_updates=self._get_checkpoint_context()
+                )
+            else:
+                self._log_debug("Skipping Step 1 (Stop VM) - already completed")
 
             # Step 2: Detach boot disk
-            self._log_debug("Detaching boot disk...")
-            result = detach_boot.execute(
-                vm_name=self.vm_name,
-                device_name=self.original_device_name,
-                tracking_label='rescue-disk-detach-orig'
-            )
-            self.state_tracker.add_operation("Detach Boot Disk", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(2):
+                self._log_debug("Detaching boot disk...")
+                result = detach_boot.execute(
+                    vm_name=self.vm_name,
+                    device_name=self.original_device_name,
+                    tracking_label='rescue-disk-detach-orig'
+                )
+                self.state_tracker.add_operation("Detach Boot Disk", result.success, result.message, result.rollback_data, step_number=2)
+                if not result.success:
+                    self._finish_progress(False)
+                    self._rollback()
+                    return False
+                # Update checkpoint
+                self.checkpoint_manager.update_checkpoint(
+                    step=2, operation_name="Detach Boot Disk",
+                    rollback_data=result.rollback_data
+                )
+            else:
+                self._log_debug("Skipping Step 2 (Detach Boot Disk) - already completed")
 
             # Step 3: Create safety snapshot
             pending_snapshot_name = None
-            if self.config.create_snapshot:
+            if self.config.create_snapshot and not self._should_skip_step(3):
                 self._update_progress("Snapshotting")
                 self._log_debug("Creating snapshot...")
                 result = create_snapshot.execute(
@@ -346,7 +483,7 @@ class RescueOrchestrator:
                     wait=not self.config.async_snapshot,
                     tracking_label='rescue-disk-snapshot'
                 )
-                self.state_tracker.add_operation("Create Snapshot", result.success, result.message, result.rollback_data)
+                self.state_tracker.add_operation("Create Snapshot", result.success, result.message, result.rollback_data, step_number=3)
 
                 if not result.success:
                     if self.config.require_snapshot:
@@ -356,86 +493,167 @@ class RescueOrchestrator:
                 else:
                     pending_snapshot_name = result.rollback_data.get('snapshot_name')
                     self.snapshot_name = pending_snapshot_name  # Store for output
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=3, operation_name="Create Snapshot",
+                        rollback_data=result.rollback_data,
+                        context_updates={'snapshot_name': pending_snapshot_name}
+                    )
+            elif self._should_skip_step(3):
+                self._log_debug("Skipping Step 3 (Create Snapshot) - already completed")
+                # Restore snapshot name from context if resuming
+                if self._resumed_context:
+                    pending_snapshot_name = self._resumed_context.get('snapshot_name')
+                    self.snapshot_name = pending_snapshot_name
 
             # Step 4: Create rescue disk
-            self._update_progress("Creating rescue disk")
-            if self.os_type == OS_TYPE_WINDOWS:
-                rescue_image_project = self.config.windows_rescue_image_project
-                rescue_image_family = self.config.windows_rescue_image_family
-                rescue_disk_size = self.config.windows_rescue_disk_size_gb
-            else:
-                rescue_image_project = self.config.rescue_image_project
-                rescue_image_family = self.config.rescue_image_family
-                rescue_disk_size = self.config.rescue_disk_size_gb
+            if not self._should_skip_step(4):
+                self._update_progress("Creating rescue disk")
+                # Idempotency check: skip if rescue disk already exists
+                if self._disk_exists(rescue_disk_name):
+                    self._log_debug("Skipping Step 4 (Create Rescue Disk) - disk already exists")
+                    # Update checkpoint to record this step as done
+                    self.checkpoint_manager.update_checkpoint(
+                        step=4, operation_name="Create Rescue Disk",
+                        rollback_data={'disk_name': rescue_disk_name},
+                        context_updates={'rescue_disk_name': rescue_disk_name}
+                    )
+                else:
+                    if self.os_type == OS_TYPE_WINDOWS:
+                        rescue_image_project = self.config.windows_rescue_image_project
+                        rescue_image_family = self.config.windows_rescue_image_family
+                        rescue_disk_size = self.config.windows_rescue_disk_size_gb
+                    else:
+                        rescue_image_project = self.config.rescue_image_project
+                        rescue_image_family = self.config.rescue_image_family
+                        rescue_disk_size = self.config.rescue_disk_size_gb
 
-            self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB)...")
-            result = create_disk.execute(
-                disk_name=rescue_disk_name,
-                size_gb=rescue_disk_size,
-                disk_type=self.config.rescue_disk_type,
-                source_image=f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}',
-                timeout=self.config.disk_create_timeout,
-                tracking_label='rescue-disk-create-rescue'
-            )
-            self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+                    self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB)...")
+                    result = create_disk.execute(
+                        disk_name=rescue_disk_name,
+                        size_gb=rescue_disk_size,
+                        disk_type=self.config.rescue_disk_type,
+                        source_image=f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}',
+                        timeout=self.config.disk_create_timeout,
+                        tracking_label='rescue-disk-create-rescue'
+                    )
+                    self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data, step_number=4)
+                    if not result.success:
+                        self._finish_progress(False)
+                        self._rollback()
+                        return False
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=4, operation_name="Create Rescue Disk",
+                        rollback_data=result.rollback_data,
+                        context_updates={'rescue_disk_name': rescue_disk_name}
+                    )
+            else:
+                self._log_debug("Skipping Step 4 (Create Rescue Disk) - already completed")
 
             # Step 5: Attach rescue disk as boot
-            self._log_debug("Attaching rescue disk as boot...")
-            result = attach_rescue.execute(
-                vm_name=self.vm_name,
-                disk_name=rescue_disk_name,
-                boot=True,
-                tracking_label='rescue-disk-attach-rescue'
-            )
-            self.state_tracker.add_operation("Attach Rescue Disk", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(5):
+                # Idempotency check: skip if rescue disk already attached
+                if self._is_disk_attached(rescue_disk_name):
+                    self._log_debug("Skipping Step 5 (Attach Rescue Disk) - disk already attached")
+                    # Update checkpoint to record this step as done
+                    self.checkpoint_manager.update_checkpoint(
+                        step=5, operation_name="Attach Rescue Disk",
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': rescue_disk_name}
+                    )
+                else:
+                    self._log_debug("Attaching rescue disk as boot...")
+                    result = attach_rescue.execute(
+                        vm_name=self.vm_name,
+                        disk_name=rescue_disk_name,
+                        boot=True,
+                        tracking_label='rescue-disk-attach-rescue'
+                    )
+                    self.state_tracker.add_operation("Attach Rescue Disk", result.success, result.message, result.rollback_data, step_number=5)
+                    if not result.success:
+                        self._finish_progress(False)
+                        self._rollback()
+                        return False
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=5, operation_name="Attach Rescue Disk",
+                        rollback_data=result.rollback_data
+                    )
+            else:
+                self._log_debug("Skipping Step 5 (Attach Rescue Disk) - already completed")
 
             # Step 6: Set rescue metadata
-            self._log_debug("Setting rescue metadata...")
-            startup_script = self._generate_startup_script()
+            if not self._should_skip_step(6):
+                self._log_debug("Setting rescue metadata...")
+                startup_script = self._generate_startup_script()
 
-            if self.os_type == OS_TYPE_WINDOWS:
-                script_key = 'windows-startup-script-ps1'
+                if self.os_type == OS_TYPE_WINDOWS:
+                    script_key = 'windows-startup-script-ps1'
+                else:
+                    script_key = 'startup-script'
+
+                metadata_items = [
+                    {'key': script_key, 'value': startup_script},
+                    {'key': 'rescue-mode', 'value': str(int(time.time()))},
+                    {'key': 'rescue-original-disk', 'value': self.original_disk_name},
+                    {'key': 'rescue-os-type', 'value': self.os_type}
+                ]
+                result = set_metadata.execute(
+                    vm_name=self.vm_name,
+                    metadata_items=metadata_items,
+                    tracking_label='rescue-meta-set-rescue-keys'
+                )
+                self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data, step_number=6)
+                if not result.success:
+                    self._finish_progress(False)
+                    self._rollback()
+                    return False
+                # Update checkpoint - include Windows password if set
+                context_updates = {}
+                if self.os_type == OS_TYPE_WINDOWS and self.windows_rescue_password:
+                    context_updates['windows_rescue_password'] = self.windows_rescue_password
+                self.checkpoint_manager.update_checkpoint(
+                    step=6, operation_name="Set Metadata",
+                    rollback_data=result.rollback_data,
+                    context_updates=context_updates if context_updates else None
+                )
             else:
-                script_key = 'startup-script'
-
-            metadata_items = [
-                {'key': script_key, 'value': startup_script},
-                {'key': 'rescue-mode', 'value': str(int(time.time()))},
-                {'key': 'rescue-original-disk', 'value': self.original_disk_name},
-                {'key': 'rescue-os-type', 'value': self.os_type}
-            ]
-            result = set_metadata.execute(
-                vm_name=self.vm_name,
-                metadata_items=metadata_items,
-                tracking_label='rescue-meta-set-rescue-keys'
-            )
-            self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+                self._log_debug("Skipping Step 6 (Set Metadata) - already completed")
+                # Restore Windows password from checkpoint context if resuming
+                if self._resumed_context and self.os_type == OS_TYPE_WINDOWS:
+                    self.windows_rescue_password = self._resumed_context.get('windows_rescue_password')
 
             # Step 7: Start VM in rescue mode
-            self._update_progress("Starting")
-            self._log_debug(f"Starting instance {self.vm_name}...")
-            result = start_vm.execute(
-                vm_name=self.vm_name,
-                timeout=self.config.vm_start_timeout,
-                tracking_label='rescue-vm-start'
-            )
-            self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(7):
+                self._update_progress("Starting")
+                # Idempotency check: skip if VM is already running
+                vm_status = self._get_vm_status()
+                if vm_status == 'RUNNING':
+                    self._log_debug("Skipping Step 7 (Start VM) - VM already running")
+                    # Update checkpoint to record this step as done
+                    self.checkpoint_manager.update_checkpoint(
+                        step=7, operation_name="Start VM",
+                        rollback_data={'vm_name': self.vm_name, 'original_status': 'TERMINATED'}
+                    )
+                else:
+                    self._log_debug(f"Starting instance {self.vm_name}...")
+                    result = start_vm.execute(
+                        vm_name=self.vm_name,
+                        timeout=self.config.vm_start_timeout,
+                        tracking_label='rescue-vm-start'
+                    )
+                    self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data, step_number=7)
+                    if not result.success:
+                        self._finish_progress(False)
+                        self._rollback()
+                        return False
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=7, operation_name="Start VM",
+                        rollback_data=result.rollback_data
+                    )
+            else:
+                self._log_debug("Skipping Step 7 (Start VM) - already completed")
 
             # Wait for snapshot completion (if async mode) - not a numbered step
             if pending_snapshot_name and self.config.async_snapshot:
@@ -481,33 +699,60 @@ class RescueOrchestrator:
                     time.sleep(5)
 
             # Step 8: Re-attach original disk as secondary
-            self._log_debug("Attaching original boot disk as secondary...")
-            time.sleep(5)  # Brief wait for VM stability
-            result = attach_original.execute(
-                vm_name=self.vm_name,
-                disk_name=self.original_disk_name,
-                boot=False,
-                tracking_label='rescue-disk-attach-orig'
-            )
-            self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(8):
+                # Idempotency check: skip if original disk already attached
+                if self._is_disk_attached(self.original_disk_name):
+                    self._log_debug("Skipping Step 8 (Attach Original Disk) - disk already attached")
+                    # Update checkpoint to record this step as done
+                    self.checkpoint_manager.update_checkpoint(
+                        step=8, operation_name="Attach Original Disk",
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name}
+                    )
+                else:
+                    self._log_debug("Attaching original boot disk as secondary...")
+                    time.sleep(5)  # Brief wait for VM stability
+                    result = attach_original.execute(
+                        vm_name=self.vm_name,
+                        disk_name=self.original_disk_name,
+                        boot=False,
+                        tracking_label='rescue-disk-attach-orig'
+                    )
+                    self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data, step_number=8)
+                    if not result.success:
+                        self._finish_progress(False)
+                        self._rollback()
+                        return False
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=8, operation_name="Attach Original Disk",
+                        rollback_data=result.rollback_data
+                    )
+            else:
+                self._log_debug("Skipping Step 8 (Attach Original Disk) - already completed")
 
             # Step 9: Verify startup script completion (disk mounting)
-            self._update_progress("Attaching affected disk")
-            self._log_debug("Verifying startup script...")
-            verify_startup = VerifyStartupOperation(self.compute, self.project, self.zone, self.logger)
-            result = verify_startup.execute(
-                vm_name=self.vm_name,
-                timeout=self.config.startup_verification_timeout,
-                tracking_label='rescue-vm-verify-startup'
-            )
-            self.verification_succeeded = result.success
-            # Don't fail on verification timeout - continue
+            if not self._should_skip_step(9):
+                self._update_progress("Attaching affected disk")
+                self._log_debug("Verifying startup script...")
+                verify_startup = VerifyStartupOperation(self.compute, self.project, self.zone, self.logger)
+                result = verify_startup.execute(
+                    vm_name=self.vm_name,
+                    timeout=self.config.startup_verification_timeout,
+                    tracking_label='rescue-vm-verify-startup'
+                )
+                self.verification_succeeded = result.success
+                # Don't fail on verification timeout - continue
+                # Update checkpoint (final step)
+                self.checkpoint_manager.update_checkpoint(
+                    step=9, operation_name="Verify Startup",
+                    rollback_data={}
+                )
+            else:
+                self._log_debug("Skipping Step 9 (Verify Startup) - already completed")
+                self.verification_succeeded = True  # Assume success if resuming past this step
 
-            # Success!
+            # Success! Clear checkpoint
+            self.checkpoint_manager.clear_checkpoint()
             self._finish_progress(True)
             return True
 

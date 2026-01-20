@@ -19,11 +19,12 @@ def test_full_rescue_restore_cycle(monkeypatch):
         return Mock(), project or "default-project"
 
     class FakeRescueOrchestrator:
-        def __init__(self, compute, project, zone, vm_name, config, logger):
+        def __init__(self, compute, project, zone, vm_name, config, logger, log_file=None):
             self.compute = compute
             self.project = project
             self.zone = zone
             self.vm_name = vm_name
+            self.log_file = log_file
             # Required attributes for main.py success message
             self.os_type = 'linux'
             self.windows_rescue_password = None
@@ -42,11 +43,12 @@ def test_full_rescue_restore_cycle(monkeypatch):
             return True
 
     class FakeRestoreOrchestrator:
-        def __init__(self, compute, project, zone, vm_name, config, logger):
+        def __init__(self, compute, project, zone, vm_name, config, logger, log_file=None):
             self.compute = compute
             self.project = project
             self.zone = zone
             self.vm_name = vm_name
+            self.log_file = log_file
 
         def validate(self):
             state["calls"].append("restore-validate")

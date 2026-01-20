@@ -30,6 +30,7 @@ from ..operations import (
 )
 from .state import StateTracker
 from .rollback import RollbackHandler
+from .checkpoint import CheckpointManager, CheckpointData
 
 
 class RestoreOrchestrator:
@@ -62,7 +63,7 @@ class RestoreOrchestrator:
     """
 
     def __init__(self, compute, project: str, zone: str, vm_name: str,
-                 config: RestoreConfig = None, logger=None):
+                 config: RestoreConfig = None, logger=None, log_file: str = None):
         """
         Initialize restore orchestrator.
 
@@ -73,6 +74,7 @@ class RestoreOrchestrator:
             vm_name: Name of VM to restore
             config: Optional restore configuration
             logger: Optional logger
+            log_file: Log file path (for checkpoint persistence)
         """
         self.compute = compute
         self.project = project
@@ -80,6 +82,7 @@ class RestoreOrchestrator:
         self.vm_name = vm_name
         self.config = config or RestoreConfig()
         self.logger = logger
+        self.log_file = log_file
 
         # State tracking
         self.state_tracker = StateTracker()
@@ -101,6 +104,15 @@ class RestoreOrchestrator:
         self._progress_lock = None
         self._total_steps = 3  # Stopping, Restoring affected disk, Starting
 
+        # Checkpoint manager for resumable operations
+        self.checkpoint_manager = CheckpointManager(
+            compute, project, zone, vm_name, logger
+        )
+
+        # Resume state (set when resuming from checkpoint)
+        self._resume_from_step = 0  # 0 = fresh start, >0 = resume from this step
+        self._resumed_context = None  # Context from checkpoint
+
     def _init_progress(self):
         """Initialize spinner with phases display."""
         import sys
@@ -112,6 +124,19 @@ class RestoreOrchestrator:
         self._is_debug_mode = console_level <= logging.DEBUG
         self._progress_phases = []
         self._progress_lock = threading.Lock()
+
+        # If resuming, initialize phases from completed steps
+        if self._resume_from_step > 0:
+            # Map step numbers to phases (phases are added at these steps)
+            # Step 1: Stopping, Step 2: Restoring affected disk, Step 6: Starting
+            step_to_phase = {
+                1: "Stopping",
+                2: "Restoring affected disk",
+                6: "Starting"
+            }
+            for step in sorted(step_to_phase.keys()):
+                if step <= self._resume_from_step:
+                    self._progress_phases.append(step_to_phase[step])
 
         if not self._is_debug_mode:
             # Print header line
@@ -196,6 +221,98 @@ class RestoreOrchestrator:
         if self.logger:
             self.logger.error(message)
 
+    def set_resume_state(self, checkpoint: CheckpointData):
+        """
+        Set resume state from a checkpoint.
+
+        Call this before execute() to resume from an interrupted operation.
+
+        Args:
+            checkpoint: Checkpoint data from previous interrupted operation
+        """
+        self._resume_from_step = checkpoint.current_step
+        self._resumed_context = checkpoint.context
+        self.checkpoint_manager.set_session_id(checkpoint.session_id)
+
+        # Restore context from checkpoint
+        if self._resumed_context:
+            self.rescue_disk_name = self._resumed_context.get('rescue_disk_name')
+            self.rescue_device_name = self._resumed_context.get('rescue_device_name')
+            self.original_disk_name = self._resumed_context.get('original_disk_name')
+            self.original_device_name = self._resumed_context.get('original_device_name')
+
+        self._log_debug(f"Resume state set: continuing from step {self._resume_from_step + 1}")
+
+    def _should_skip_step(self, step: int) -> bool:
+        """Check if a step should be skipped (already completed in previous session)."""
+        return step <= self._resume_from_step
+
+    def _is_disk_attached(self, disk_name: str) -> bool:
+        """Check if a disk is attached to the VM."""
+        try:
+            vm = self.compute.instances().get(
+                project=self.project,
+                zone=self.zone,
+                instance=self.vm_name
+            ).execute()
+            for disk in vm.get('disks', []):
+                if disk.get('source', '').endswith(f'/disks/{disk_name}'):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _is_disk_boot(self, disk_name: str) -> bool:
+        """Check if a disk is attached as boot disk."""
+        try:
+            vm = self.compute.instances().get(
+                project=self.project,
+                zone=self.zone,
+                instance=self.vm_name
+            ).execute()
+            for disk in vm.get('disks', []):
+                if disk.get('source', '').endswith(f'/disks/{disk_name}') and disk.get('boot'):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _disk_exists(self, disk_name: str) -> bool:
+        """Check if a disk exists."""
+        try:
+            self.compute.disks().get(
+                project=self.project,
+                zone=self.zone,
+                disk=disk_name
+            ).execute()
+            return True
+        except Exception:
+            return False
+
+    def _get_vm_status(self) -> str:
+        """Get current VM status."""
+        try:
+            vm = self.compute.instances().get(
+                project=self.project,
+                zone=self.zone,
+                instance=self.vm_name
+            ).execute()
+            return vm.get('status', 'UNKNOWN')
+        except Exception:
+            return 'UNKNOWN'
+
+    def _get_checkpoint_context(self) -> dict:
+        """Get context dict for checkpoint."""
+        return {
+            'vm_name': self.vm_name,
+            'zone': self.zone,
+            'rescue_disk_name': self.rescue_disk_name,
+            'rescue_device_name': self.rescue_device_name,
+            'original_disk_name': self.original_disk_name,
+            'original_device_name': self.original_device_name,
+            'log_file': self.log_file
+        }
+
     def validate(self) -> bool:
         """
         Run pre-flight validation.
@@ -239,12 +356,25 @@ class RestoreOrchestrator:
         # Initialize progress display
         self._init_progress()
 
+        # Total internal steps for checkpoint tracking
+        total_checkpoint_steps = 7  # Stop, DetachRescue, DetachOrig, AttachOrig, SetMeta, Start, DeleteRescue
+
         try:
-            # Get disk info (before progress display)
-            self._get_disk_info()
+            # Get disk info (before progress display) if not resuming
+            if not self._resume_from_step or not self.rescue_disk_name:
+                self._get_disk_info()
 
             # Check snapshot status (warn if failed or missing)
-            self._check_snapshot_status()
+            if not self._resume_from_step:
+                self._check_snapshot_status()
+
+            # Create initial checkpoint if not resuming
+            if not self._resume_from_step:
+                self.checkpoint_manager.create_checkpoint(
+                    operation_type='restore',
+                    total_steps=total_checkpoint_steps,
+                    context=self._get_checkpoint_context()
+                )
 
             # Create operations
             stop_vm = StopVMOperation(self.compute, self.project, self.zone, self.logger)
@@ -267,112 +397,203 @@ class RestoreOrchestrator:
             }
 
             # Step 1: Stop VM
-            self._update_progress("Stopping")
-            self._log_debug(f"Stopping instance {self.vm_name}...")
-            # Auto-detect Local SSDs and handle automatically
-            # (user already acknowledged data loss during rescue)
-            has_local_ssd = any(
-                disk.get('type') == 'SCRATCH'
-                for disk in self.compute.instances().get(
-                    project=self.project, zone=self.zone, instance=self.vm_name
-                ).execute().get('disks', [])
-            )
-            result = stop_vm.execute(
-                vm_name=self.vm_name,
-                timeout=self.config.vm_stop_timeout,
-                discard_local_ssd=has_local_ssd,  # Auto-handle Local SSDs during restore
-                tracking_label='restore-vm-stop'
-            )
-            self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(1):
+                self._update_progress("Stopping")
+                self._log_debug(f"Stopping instance {self.vm_name}...")
+                # Auto-detect Local SSDs and handle automatically
+                has_local_ssd = any(
+                    disk.get('type') == 'SCRATCH'
+                    for disk in self.compute.instances().get(
+                        project=self.project, zone=self.zone, instance=self.vm_name
+                    ).execute().get('disks', [])
+                )
+                result = stop_vm.execute(
+                    vm_name=self.vm_name,
+                    timeout=self.config.vm_stop_timeout,
+                    discard_local_ssd=has_local_ssd,
+                    tracking_label='restore-vm-stop'
+                )
+                self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data, step_number=1)
+                if not result.success:
+                    self._finish_progress(False)
+                    self._rollback()
+                    return False
+                # Update checkpoint
+                self.checkpoint_manager.update_checkpoint(
+                    step=1, operation_name="Stop VM",
+                    rollback_data=result.rollback_data,
+                    context_updates=self._get_checkpoint_context()
+                )
+            else:
+                self._log_debug("Skipping Step 1 (Stop VM) - already completed")
 
             # Step 2: Detach rescue disk
-            self._update_progress("Restoring affected disk")
-            self._log_debug("Detaching rescue disk...")
-            result = detach_rescue.execute(
-                vm_name=self.vm_name,
-                device_name=self.rescue_device_name,
-                tracking_label='restore-disk-detach-rescue'
-            )
-            self.state_tracker.add_operation("Detach Rescue Disk", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(2):
+                self._update_progress("Restoring affected disk")
+                # Idempotency check: skip if rescue disk already detached
+                if not self._is_disk_attached(self.rescue_disk_name):
+                    self._log_debug("Skipping Step 2 (Detach Rescue Disk) - disk already detached")
+                    self.checkpoint_manager.update_checkpoint(
+                        step=2, operation_name="Detach Rescue Disk",
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.rescue_disk_name}
+                    )
+                else:
+                    self._log_debug("Detaching rescue disk...")
+                    result = detach_rescue.execute(
+                        vm_name=self.vm_name,
+                        device_name=self.rescue_device_name,
+                        tracking_label='restore-disk-detach-rescue'
+                    )
+                    self.state_tracker.add_operation("Detach Rescue Disk", result.success, result.message, result.rollback_data, step_number=2)
+                    if not result.success:
+                        self._finish_progress(False)
+                        self._rollback()
+                        return False
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=2, operation_name="Detach Rescue Disk",
+                        rollback_data=result.rollback_data
+                    )
+            else:
+                self._log_debug("Skipping Step 2 (Detach Rescue Disk) - already completed")
 
             # Step 3: Detach original disk
-            self._log_debug("Detaching original boot disk...")
-            result = detach_original.execute(
-                vm_name=self.vm_name,
-                device_name=self.original_device_name,
-                tracking_label='restore-disk-detach-orig'
-            )
-            self.state_tracker.add_operation("Detach Original Disk", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(3):
+                # Idempotency check: skip if original disk already detached
+                if not self._is_disk_attached(self.original_disk_name):
+                    self._log_debug("Skipping Step 3 (Detach Original Disk) - disk already detached")
+                    self.checkpoint_manager.update_checkpoint(
+                        step=3, operation_name="Detach Original Disk",
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name}
+                    )
+                else:
+                    self._log_debug("Detaching original boot disk...")
+                    result = detach_original.execute(
+                        vm_name=self.vm_name,
+                        device_name=self.original_device_name,
+                        tracking_label='restore-disk-detach-orig'
+                    )
+                    self.state_tracker.add_operation("Detach Original Disk", result.success, result.message, result.rollback_data, step_number=3)
+                    if not result.success:
+                        self._finish_progress(False)
+                        self._rollback()
+                        return False
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=3, operation_name="Detach Original Disk",
+                        rollback_data=result.rollback_data
+                    )
+            else:
+                self._log_debug("Skipping Step 3 (Detach Original Disk) - already completed")
 
             # Step 4: Re-attach original disk as boot
-            self._log_debug("Attaching boot disk...")
-            result = attach_original.execute(
-                vm_name=self.vm_name,
-                disk_name=self.original_disk_name,
-                boot=True,
-                tracking_label='restore-disk-attach-orig'
-            )
-            self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(4):
+                # Idempotency check: skip if original disk already attached as boot
+                if self._is_disk_boot(self.original_disk_name):
+                    self._log_debug("Skipping Step 4 (Attach Original Disk) - disk already attached as boot")
+                    self.checkpoint_manager.update_checkpoint(
+                        step=4, operation_name="Attach Original Disk",
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name}
+                    )
+                else:
+                    self._log_debug("Attaching boot disk...")
+                    result = attach_original.execute(
+                        vm_name=self.vm_name,
+                        disk_name=self.original_disk_name,
+                        boot=True,
+                        tracking_label='restore-disk-attach-orig'
+                    )
+                    self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data, step_number=4)
+                    if not result.success:
+                        self._finish_progress(False)
+                        self._rollback()
+                        return False
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=4, operation_name="Attach Original Disk",
+                        rollback_data=result.rollback_data
+                    )
+            else:
+                self._log_debug("Skipping Step 4 (Attach Original Disk) - already completed")
 
             # Step 5: Remove rescue metadata and restore backed up keys
-            self._log_debug("Removing rescue metadata...")
-            clean_metadata = self._get_clean_metadata()
-            # Use preserve_existing=False to REPLACE metadata (not merge)
-            # because clean_metadata already contains the correct final state
-            result = set_metadata.execute(
-                vm_name=self.vm_name,
-                metadata_items=clean_metadata,
-                preserve_existing=False,
-                tracking_label='restore-meta-restore-orig'
-            )
-            self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(5):
+                self._log_debug("Removing rescue metadata...")
+                clean_metadata = self._get_clean_metadata()
+                result = set_metadata.execute(
+                    vm_name=self.vm_name,
+                    metadata_items=clean_metadata,
+                    preserve_existing=False,
+                    tracking_label='restore-meta-restore-orig'
+                )
+                self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data, step_number=5)
+                if not result.success:
+                    self._finish_progress(False)
+                    self._rollback()
+                    return False
+                # Update checkpoint
+                self.checkpoint_manager.update_checkpoint(
+                    step=5, operation_name="Set Metadata",
+                    rollback_data=result.rollback_data
+                )
+            else:
+                self._log_debug("Skipping Step 5 (Set Metadata) - already completed")
 
             # Step 6: Start VM
-            self._update_progress("Starting")
-            self._log_debug(f"Starting instance {self.vm_name}...")
-            result = start_vm.execute(
-                vm_name=self.vm_name,
-                timeout=self.config.vm_start_timeout,
-                tracking_label='restore-vm-start'
-            )
-            self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data)
-            if not result.success:
-                self._finish_progress(False)
-                self._rollback()
-                return False
+            if not self._should_skip_step(6):
+                self._update_progress("Starting")
+                # Idempotency check: skip if VM is already running
+                vm_status = self._get_vm_status()
+                if vm_status == 'RUNNING':
+                    self._log_debug("Skipping Step 6 (Start VM) - VM already running")
+                    self.checkpoint_manager.update_checkpoint(
+                        step=6, operation_name="Start VM",
+                        rollback_data={'vm_name': self.vm_name, 'original_status': 'TERMINATED'}
+                    )
+                else:
+                    self._log_debug(f"Starting instance {self.vm_name}...")
+                    result = start_vm.execute(
+                        vm_name=self.vm_name,
+                        timeout=self.config.vm_start_timeout,
+                        tracking_label='restore-vm-start'
+                    )
+                    self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data, step_number=6)
+                    if not result.success:
+                        self._finish_progress(False)
+                        self._rollback()
+                        return False
+                    # Update checkpoint
+                    self.checkpoint_manager.update_checkpoint(
+                        step=6, operation_name="Start VM",
+                        rollback_data=result.rollback_data
+                    )
+            else:
+                self._log_debug("Skipping Step 6 (Start VM) - already completed")
 
             # Step 7: Delete rescue disk (only if config allows)
-            if self.config.delete_rescue_disk:
-                self._log_debug("Deleting rescue disk...")
-                result = delete_rescue.execute(
-                    disk_name=self.rescue_disk_name,
-                    tracking_label='restore-disk-delete-rescue'
+            if self.config.delete_rescue_disk and not self._should_skip_step(7):
+                # Idempotency check: skip if rescue disk doesn't exist
+                if not self._disk_exists(self.rescue_disk_name):
+                    self._log_debug("Skipping Step 7 (Delete Rescue Disk) - disk already deleted")
+                else:
+                    self._log_debug("Deleting rescue disk...")
+                    result = delete_rescue.execute(
+                        disk_name=self.rescue_disk_name,
+                        tracking_label='restore-disk-delete-rescue'
+                    )
+                    # Note: Don't add to state tracker (can't rollback deletion)
+                    if not result.success:
+                        self._log_debug("Rescue disk deletion failed (can delete manually)")
+                # Update checkpoint (final step)
+                self.checkpoint_manager.update_checkpoint(
+                    step=7, operation_name="Delete Rescue Disk",
+                    rollback_data={}
                 )
-                # Note: Don't add to state tracker (can't rollback deletion)
-                if not result.success:
-                    self._log_debug("Rescue disk deletion failed (can delete manually)")
+            elif self._should_skip_step(7):
+                self._log_debug("Skipping Step 7 (Delete Rescue Disk) - already completed")
 
-            # Success!
+            # Success! Clear checkpoint
+            self.checkpoint_manager.clear_checkpoint()
             self._finish_progress(True)
             return True
 
