@@ -22,6 +22,30 @@ class OperationState:
     message: str
     rollback_data: Dict[str, Any] = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    step_number: int = 0  # Step number in the workflow (1-indexed)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'operation_name': self.operation_name,
+            'success': self.success,
+            'message': self.message,
+            'rollback_data': self.rollback_data,
+            'timestamp': self.timestamp,
+            'step_number': self.step_number
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'OperationState':
+        """Create from dictionary."""
+        return cls(
+            operation_name=data['operation_name'],
+            success=data['success'],
+            message=data['message'],
+            rollback_data=data.get('rollback_data'),
+            timestamp=data.get('timestamp', datetime.now().isoformat()),
+            step_number=data.get('step_number', 0)
+        )
 
 
 class StateTracker:
@@ -53,7 +77,8 @@ class StateTracker:
         self.workflow_start_time = datetime.now()
 
     def add_operation(self, operation_name: str, success: bool,
-                     message: str, rollback_data: Dict[str, Any] = None):
+                     message: str, rollback_data: Dict[str, Any] = None,
+                     step_number: int = 0):
         """
         Record an operation.
 
@@ -62,12 +87,14 @@ class StateTracker:
             success: Whether it succeeded
             message: Result message
             rollback_data: Data needed for rollback
+            step_number: Step number in the workflow (1-indexed)
         """
         state = OperationState(
             operation_name=operation_name,
             success=success,
             message=message,
-            rollback_data=rollback_data
+            rollback_data=rollback_data,
+            step_number=step_number if step_number else len(self.operations) + 1
         )
         self.operations.append(state)
 
@@ -120,3 +147,31 @@ class StateTracker:
         for i, op in enumerate(self.operations, 1):
             status = "[OK]" if op.success else "[X]"
             print(f"  {i}. {status} {op.operation_name}: {op.message}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert state tracker to dictionary for serialization."""
+        return {
+            'operations': [op.to_dict() for op in self.operations],
+            'workflow_start_time': self.workflow_start_time.isoformat()
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'StateTracker':
+        """Create state tracker from dictionary."""
+        tracker = cls()
+        tracker.workflow_start_time = datetime.fromisoformat(data['workflow_start_time'])
+        tracker.operations = [
+            OperationState.from_dict(op_data)
+            for op_data in data.get('operations', [])
+        ]
+        return tracker
+
+    def get_current_step(self) -> int:
+        """Get the current step number (number of operations added)."""
+        return len(self.operations)
+
+    def get_last_operation(self) -> str:
+        """Get the name of the last operation added."""
+        if self.operations:
+            return self.operations[-1].operation_name
+        return None

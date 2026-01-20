@@ -5,6 +5,31 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.4] - 2026-01-20
+
+### Added
+
+- **Session Recovery**: Resume or rollback interrupted rescue/restore operations
+  - Checkpoint stored in VM metadata (`gce-rescue-checkpoint`)
+  - Detects incomplete operations on next run
+  - Interactive prompt: Continue, Rollback, or Abort
+  - Idempotent operations handle partial state gracefully
+  - Progress resumes from where it left off (e.g., `(3/5)` not `(0/5)`)
+  - Log file persists across session recovery
+
+- **Transitional State Handling**: Graceful handling of VM states
+  - Handles STAGING, PROVISIONING, STOPPING states during resume
+  - Waits for stable state before proceeding
+
+- **Private Network VM Support**: Better UX for VMs without external IP
+  - Shows internal IP when no external IP exists
+  - Provides IAP tunnel command for RDP access
+
+### Fixed
+
+- Windows rescue password now preserved across session recovery
+- Completed checkpoints auto-cleared to prevent stale state errors
+
 ## [2.0.0-beta.3] - 2025-01-14
 
 ### Added
