@@ -11,7 +11,9 @@ Coordinates the rescue workflow:
 
 import time
 from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX
-from ..utils.os_detection import detect_os_type, get_os_display_name
+from ..utils.os_detection import (
+    detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64
+)
 from ..validators import (
     ValidationRunner,
     CredentialsValidator,
@@ -99,8 +101,9 @@ class RescueOrchestrator:
         self.original_disk_name = None
         self.original_device_name = None
 
-        # OS detection (will be set during execution)
+        # OS and architecture detection (will be set during execution)
         self.os_type = None
+        self.architecture = None
         self.vm_info = None
 
         # Windows rescue credentials (generated for RDP access)
@@ -263,6 +266,7 @@ class RescueOrchestrator:
             self.original_device_name = self._resumed_context.get('original_device_name')
             self.rescue_disk_name = self._resumed_context.get('rescue_disk_name')
             self.os_type = self._resumed_context.get('os_type')
+            self.architecture = self._resumed_context.get('architecture')
 
         self._log_debug(f"Resume state set: continuing from step {self._resume_from_step + 1}")
 
@@ -318,6 +322,7 @@ class RescueOrchestrator:
             'original_device_name': self.original_device_name,
             'rescue_disk_name': self.rescue_disk_name,
             'os_type': self.os_type,
+            'architecture': self.architecture,
             'log_file': self.log_file
         }
 
@@ -523,12 +528,18 @@ class RescueOrchestrator:
                         rescue_image_project = self.config.windows_rescue_image_project
                         rescue_image_family = self.config.windows_rescue_image_family
                         rescue_disk_size = self.config.windows_rescue_disk_size_gb
+                    elif self.architecture == ARCH_ARM64:
+                        # ARM64 Linux (T2A instances)
+                        rescue_image_project = self.config.arm64_rescue_image_project
+                        rescue_image_family = self.config.arm64_rescue_image_family
+                        rescue_disk_size = self.config.rescue_disk_size_gb
                     else:
+                        # x86_64 Linux (default)
                         rescue_image_project = self.config.rescue_image_project
                         rescue_image_family = self.config.rescue_image_family
                         rescue_disk_size = self.config.rescue_disk_size_gb
 
-                    self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB)...")
+                    self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
                     result = create_disk.execute(
                         disk_name=rescue_disk_name,
                         size_gb=rescue_disk_size,
@@ -770,9 +781,10 @@ class RescueOrchestrator:
             instance=self.vm_name
         ).execute()
 
-        # Detect OS type
+        # Detect OS type and architecture
         self.os_type = detect_os_type(self.vm_info)
-        self._log_debug(f"Detected OS: {get_os_display_name(self.os_type)}")
+        self.architecture = detect_architecture(self.vm_info)
+        self._log_debug(f"Detected OS: {get_os_display_name(self.os_type)}, Architecture: {self.architecture}")
 
         for disk in self.vm_info.get('disks', []):
             if disk.get('boot'):
