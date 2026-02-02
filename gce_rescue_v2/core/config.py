@@ -43,6 +43,10 @@ class RescueConfig:
     windows_rescue_image_project: str = 'windows-cloud'
     windows_rescue_disk_size_gb: int = 50  # Windows needs more space
 
+    # ARM64 Linux rescue image (auto-selected for ARM64/T2A VMs)
+    arm64_rescue_image_family: str = 'debian-12-arm64'
+    arm64_rescue_image_project: str = 'debian-cloud'
+
     # Snapshot settings (safety feature)
     create_snapshot: bool = True  # DEFAULT: Create snapshot for safety
     require_snapshot: bool = False  # Abort if snapshot creation fails

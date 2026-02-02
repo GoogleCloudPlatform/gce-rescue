@@ -206,6 +206,89 @@ class TestVMStateValidator:
         assert result.passed is False
         assert "no boot disk" in result.message.lower()
 
+    def test_confidential_vm_blocked(self, mock_compute):
+        """Test Confidential VM is blocked with clear message."""
+        payload = {
+            "status": "RUNNING",
+            "disks": [{"source": "projects/p/zones/z/disks/d", "boot": True, "deviceName": "d"}],
+            "confidentialInstanceConfig": {"enableConfidentialCompute": True}
+        }
+        self._set_vm(mock_compute, payload)
+        validator = VMStateValidator(mock_compute, "proj", "zone", "vm-1")
+
+        result = validator.validate()
+
+        assert result.passed is False
+        assert "Confidential VM" in result.message
+        assert "not supported" in result.message.lower()
+        assert "fix" in result.details
+
+    def test_confidential_vm_with_type(self, mock_compute):
+        """Test Confidential VM shows type in error message."""
+        payload = {
+            "status": "RUNNING",
+            "disks": [{"source": "projects/p/zones/z/disks/d", "boot": True, "deviceName": "d"}],
+            "confidentialInstanceConfig": {
+                "enableConfidentialCompute": True,
+                "confidentialInstanceType": "SEV_SNP"
+            }
+        }
+        self._set_vm(mock_compute, payload)
+        validator = VMStateValidator(mock_compute, "proj", "zone", "vm-1")
+
+        result = validator.validate()
+
+        assert result.passed is False
+        assert "SEV_SNP" in result.message
+
+    def test_shielded_vm_secure_boot_blocked(self, mock_compute):
+        """Test Shielded VM with Secure Boot is blocked."""
+        payload = {
+            "status": "RUNNING",
+            "disks": [{"source": "projects/p/zones/z/disks/d", "boot": True, "deviceName": "d"}],
+            "shieldedInstanceConfig": {"enableSecureBoot": True}
+        }
+        self._set_vm(mock_compute, payload)
+        validator = VMStateValidator(mock_compute, "proj", "zone", "vm-1")
+
+        result = validator.validate()
+
+        assert result.passed is False
+        assert "Shielded VM" in result.message
+        assert "Secure Boot" in result.message
+        assert "fix" in result.details
+
+    def test_shielded_vm_without_secure_boot_allowed(self, mock_compute):
+        """Test Shielded VM without Secure Boot is allowed."""
+        payload = {
+            "status": "RUNNING",
+            "disks": [{"source": "projects/p/zones/z/disks/d", "boot": True, "deviceName": "d"}],
+            "shieldedInstanceConfig": {
+                "enableSecureBoot": False,
+                "enableVtpm": True,
+                "enableIntegrityMonitoring": True
+            }
+        }
+        self._set_vm(mock_compute, payload)
+        validator = VMStateValidator(mock_compute, "proj", "zone", "vm-1")
+
+        result = validator.validate()
+
+        assert result.passed is True
+
+    def test_non_confidential_non_shielded_vm_allowed(self, mock_compute):
+        """Test regular VM without Confidential or Shielded is allowed."""
+        payload = {
+            "status": "RUNNING",
+            "disks": [{"source": "projects/p/zones/z/disks/d", "boot": True, "deviceName": "d"}],
+        }
+        self._set_vm(mock_compute, payload)
+        validator = VMStateValidator(mock_compute, "proj", "zone", "vm-1")
+
+        result = validator.validate()
+
+        assert result.passed is True
+
 
 class TestValidationRunner:
     """Tests for ValidationRunner."""

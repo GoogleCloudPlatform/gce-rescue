@@ -7,6 +7,7 @@ Validates that the VM exists and is in a valid state for rescue operations.
 from googleapiclient.errors import HttpError
 
 from .base import BaseValidator, ValidationResult
+from ..utils.os_detection import is_shielded_vm, is_confidential_vm, get_confidential_type
 
 
 class VMStateValidator(BaseValidator):
@@ -125,6 +126,55 @@ class VMStateValidator(BaseValidator):
                     passed=False,
                     message="VM has no boot disk",
                     details={"error": "No boot disk found"}
+                )
+
+            # Check for Confidential VM (not supported)
+            if is_confidential_vm(vm):
+                conf_type = get_confidential_type(vm) or 'SEV'
+                return ValidationResult(
+                    validator_name=self.name,
+                    passed=False,
+                    message=f"Confidential VMs ({conf_type}) are not supported",
+                    details={
+                        "vm_name": self.vm_name,
+                        "confidential_type": conf_type,
+                        "reason": (
+                            "Confidential VMs use memory encryption that prevents "
+                            "external access to disk contents from a rescue environment."
+                        ),
+                        "fix": (
+                            "Alternatives for Confidential VMs:\n"
+                            f"  1. Use serial console: gcloud compute instances "
+                            f"get-serial-port-output {self.vm_name} --zone={self.zone}\n"
+                            "  2. Create a snapshot and new VM for data recovery\n"
+                            "  3. Contact Google Cloud Support for assistance"
+                        )
+                    }
+                )
+
+            # Check for Shielded VM with Secure Boot (not supported)
+            if is_shielded_vm(vm):
+                return ValidationResult(
+                    validator_name=self.name,
+                    passed=False,
+                    message="Shielded VMs with Secure Boot are not supported",
+                    details={
+                        "vm_name": self.vm_name,
+                        "reason": (
+                            "Shielded VMs with Secure Boot enabled require signed boot disks. "
+                            "The rescue disk cannot boot with Secure Boot enabled."
+                        ),
+                        "fix": (
+                            "Options for Shielded VMs:\n"
+                            f"  1. Temporarily disable Secure Boot:\n"
+                            f"     gcloud compute instances stop {self.vm_name} --zone={self.zone}\n"
+                            f"     gcloud compute instances update {self.vm_name} --zone={self.zone} "
+                            "--no-shielded-secure-boot\n"
+                            "     Then run rescue again.\n"
+                            "  2. Use serial console for debugging\n"
+                            "  3. Create a snapshot and attach to another VM"
+                        )
+                    }
                 )
 
             # Build result details
