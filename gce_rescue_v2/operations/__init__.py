@@ -41,6 +41,7 @@ from .set_metadata import SetMetadataOperation
 from .delete_disk import DeleteDiskOperation
 from .create_snapshot import CreateSnapshotOperation
 from .verify_startup import VerifyStartupOperation
+from .diagnose import DiagnoseOperation
 
 __all__ = [
     # Base classes
@@ -57,4 +58,5 @@ __all__ = [
     'DeleteDiskOperation',
     'CreateSnapshotOperation',
     'VerifyStartupOperation',
+    'DiagnoseOperation',
 ]

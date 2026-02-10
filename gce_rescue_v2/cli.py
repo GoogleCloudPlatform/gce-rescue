@@ -125,8 +125,9 @@ class CustomArgumentParser(argparse.ArgumentParser):
                     lines.append("Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]")
                     lines.append("")
                     lines.append("Available commands:")
-                    lines.append("  rescue   Boot a VM into rescue mode")
-                    lines.append("  restore  Restore a VM from rescue mode")
+                    lines.append("  rescue         Boot a VM into rescue mode")
+                    lines.append("  restore        Restore a VM from rescue mode")
+                    lines.append("  diagnose-boot  Diagnose VM boot issues (read-only)")
                 else:
                     lines.append(f"{message}")
             else:
@@ -177,8 +178,9 @@ class CustomArgumentParser(argparse.ArgumentParser):
                 "Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]",
                 "",
                 "Commands:",
-                "  rescue   Boot a VM into rescue mode",
-                "  restore  Restore a VM from rescue mode",
+                "  rescue         Boot a VM into rescue mode",
+                "  restore        Restore a VM from rescue mode",
+                "  diagnose-boot  Diagnose VM boot issues (read-only)",
                 "",
                 "Examples:",
                 "  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a",
@@ -238,6 +240,9 @@ EXAMPLES
 
     Automation (no prompts):
         $ gce-rescue-v2 rescue my-vm --zone=us-central1-a --quiet
+
+    Diagnose boot issues:
+        $ gce-rescue-v2 diagnose-boot my-vm --zone=us-central1-a
 
 SUPPORTED OS
     - Linux (auto-detected): Boots Debian 12 rescue environment
@@ -313,6 +318,31 @@ NOTES
 
     _add_common_args(restore_parser)
     _add_restore_args(restore_parser)
+
+    # DIAGNOSE-BOOT COMMAND
+    diagnose_parser = subparsers.add_parser(
+        'diagnose-boot',
+        help='Diagnose VM boot issues (read-only)',
+        description='Analyze VM serial console output to detect boot errors.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+EXAMPLES
+    Diagnose a VM:
+        $ gce-rescue-v2 diagnose-boot my-vm --zone=us-central1-a
+
+    Diagnose and output as JSON:
+        $ gce-rescue-v2 diagnose-boot my-vm --zone=us-central1-a --format=json
+
+    Diagnose and output as YAML:
+        $ gce-rescue-v2 diagnose-boot my-vm --zone=us-central1-a --format=yaml
+
+NOTES
+    This is a read-only operation that does not modify the VM.
+    It analyzes serial console output for common boot error patterns.
+        """
+    )
+
+    _add_common_args(diagnose_parser)
 
     return parser
 
@@ -1078,6 +1108,136 @@ def handle_restore(args: argparse.Namespace) -> int:
     return 0 if success else 1
 
 
+def handle_diagnose(args: argparse.Namespace) -> int:
+    """Handle diagnose command."""
+    from .core.auth import AuthManager
+    from .operations import DiagnoseOperation
+    import logging
+
+    # Get project from args or gcloud config
+    project = args.project or get_gcloud_config('core/project')
+
+    # Validate project is set
+    if not project:
+        print(f"{error_prefix()} No project specified.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Please specify a project using one of these methods:", file=sys.stderr)
+        print("  1. --project=PROJECT_ID flag", file=sys.stderr)
+        print("  2. gcloud config set project PROJECT_ID", file=sys.stderr)
+        print("  3. Set CLOUDSDK_CORE_PROJECT environment variable", file=sys.stderr)
+        return 1
+
+    # Get compute client for API calls
+    try:
+        auth = AuthManager()
+        compute, project = auth.get_client(project)
+    except Exception as e:
+        print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
+        return 1
+
+    # Setup logging
+    debug = args.verbosity == 'debug'
+    log_level = logging.DEBUG if debug else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format='%(levelname)s: %(message)s'
+    )
+    logger = logging.getLogger(__name__)
+
+    # Create and execute diagnose operation
+    try:
+        diagnose_op = DiagnoseOperation(compute, project, args.zone, logger)
+        result = diagnose_op.execute(args.instance_name)
+
+        if not result.success:
+            # Operation failed (e.g., serial console disabled)
+            print(f"{error_prefix()} {result.message}", file=sys.stderr)
+
+            # Print recommendations if available
+            if result.rollback_data and result.rollback_data.get('recommendations'):
+                print("", file=sys.stderr)
+                for rec in result.rollback_data['recommendations']:
+                    print(f"  {rec}", file=sys.stderr)
+
+            return 1
+
+        # Operation succeeded - format and print results
+        diagnosis = result.rollback_data
+
+        # If format is json/yaml, use structured output
+        if args.format in ('json', 'yaml', 'table', 'value'):
+            print(OutputFormatter.format_output(diagnosis, args.format))
+            return 0
+
+        # Otherwise, print human-readable output
+        print(f"\n{'='*70}")
+        print(f"DIAGNOSIS REPORT: {diagnosis['vm_name']}")
+        print(f"{'='*70}")
+        print(f"Zone:              {diagnosis['zone']}")
+        print(f"VM Status:         {diagnosis['status']}")
+        print(f"Diagnosis Status:  {diagnosis['diagnosis_status'].replace('_', ' ').title()}")
+        print(f"{'='*70}\n")
+
+        # Print boot errors if any
+        if diagnosis['boot_errors']:
+            print(f"BOOT ERRORS DETECTED ({len(diagnosis['boot_errors'])}):\n")
+            for i, error in enumerate(diagnosis['boot_errors'], 1):
+                print(f"{i}. [{error['category'].upper()}] {error['severity'].upper()}")
+                print(f"   Description: {error['description']}\n")
+
+                # Show context from serial console
+                if error.get('context_lines'):
+                    print(f"   Serial Console Context:")
+                    for line in error['context_lines']:
+                        if line.strip():
+                            print(f"     | {line}")
+                    print()
+
+                # Format fixes with actual VM name and zone
+                print(f"   Suggested Fixes:")
+                for fix in error['suggested_fixes']:
+                    # Replace placeholders with actual values
+                    fix = fix.replace('VM_NAME', diagnosis['vm_name'])
+                    fix = fix.replace('ZONE', diagnosis['zone'])
+                    print(f"     - {fix}")
+                print()
+        else:
+            print("No boot errors detected\n")
+
+        # Print recommendations
+        if diagnosis['recommendations']:
+            print(f"{'='*70}")
+            print("RECOMMENDATIONS:\n")
+            for rec in diagnosis['recommendations']:
+                print(f"  - {rec}")
+            print(f"{'='*70}\n")
+
+        # Add NEXT STEPS section if errors were found
+        if diagnosis['boot_errors']:
+            print(f"{'='*70}")
+            print("NEXT STEPS:\n")
+            print(f"1. Enter rescue mode to fix the issue:")
+            print(f"   gce-rescue rescue {diagnosis['vm_name']} --zone={diagnosis['zone']}\n")
+
+            # Provide category-specific guidance
+            categories = set(err['category'] for err in diagnosis['boot_errors'])
+            if 'fstab' in categories:
+                print(f"2. Once in rescue mode, fix /etc/fstab:")
+                print(f"   sudo nano /mnt/sysroot/etc/fstab")
+                print(f"   # Comment out or fix broken mount entries\n")
+
+            print(f"3. Restore the VM after fixing:")
+            print(f"   gce-rescue restore {diagnosis['vm_name']} --zone={diagnosis['zone']}")
+            print(f"{'='*70}\n")
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Unexpected error during diagnosis: {e}", exc_info=debug)
+        print(f"{error_prefix()} Unexpected error: {e}", file=sys.stderr)
+        return 1
+
+
 def main():
     """Main CLI entry point (gcloud-compatible)."""
 
@@ -1095,6 +1255,8 @@ def main():
             return handle_rescue(args)
         elif args.command == 'restore':
             return handle_restore(args)
+        elif args.command == 'diagnose-boot':
+            return handle_diagnose(args)
         else:
             print(f"{error_prefix()} (gce-rescue) Unknown command: {args.command}", file=sys.stderr)
             return 1
