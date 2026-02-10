@@ -60,7 +60,7 @@ class DiagnoseOperation(BaseOperation):
 
             except HttpError as e:
                 error_msg = extract_error_message(e)
-                self._log_warning(f"Failed to fetch serial console: {error_msg}")
+                self._log_error(f"Failed to fetch serial console: {error_msg}")
 
                 # Handle specific error cases
                 if e.resp.status == 403:
