@@ -5,6 +5,20 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.4] - 2026-02-02
+
+### Added
+
+- **ARM64 Support**: Automatic architecture detection and rescue image selection
+  - Detects ARM64 from disk architecture field or T2A machine type
+  - Auto-selects `debian-12-arm64` rescue image for ARM64 instances
+  - Works with Ampere Altra (T2A) VMs
+
+- **Unsupported VM Blocking**: Clear validation errors for incompatible VM types
+  - Blocks Shielded VMs with Secure Boot (can't boot unsigned rescue disk)
+  - Blocks Confidential VMs (encrypted memory prevents external disk access)
+  - Includes actionable suggestions in error messages
+
 ## [2.0.0-beta.4] - 2026-01-20
 
 ### Added

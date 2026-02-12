@@ -36,6 +36,7 @@ from .base import (
 from .credentials import CredentialsValidator
 from .iam_permissions import IAMPermissionsValidator
 from .vm_state import VMStateValidator, VMRestoreStateValidator
+from .diagnose import DiagnosePermissionsValidator
 
 __all__ = [
     # Base classes
@@ -49,4 +50,5 @@ __all__ = [
     'IAMPermissionsValidator',
     'VMStateValidator',
     'VMRestoreStateValidator',
+    'DiagnosePermissionsValidator',
 ]

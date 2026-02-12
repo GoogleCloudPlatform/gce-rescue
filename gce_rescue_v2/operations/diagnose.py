@@ -64,10 +64,13 @@ class DiagnoseOperation(BaseOperation):
 
                 # Handle specific error cases
                 if e.resp.status == 403:
+                    # Pre-flight validation already checked IAM permissions,
+                    # so a 403 here means serial console access is disabled
+                    # at the project or VM level.
                     return OperationResult(
                         operation_name=self.name,
                         success=False,
-                        message="Serial console is disabled for this VM",
+                        message="Serial console access is disabled",
                         rollback_data={
                             'vm_name': vm_name,
                             'zone': self.zone,
@@ -75,9 +78,12 @@ class DiagnoseOperation(BaseOperation):
                             'diagnosis_status': 'unable_to_diagnose',
                             'boot_errors': [],
                             'recommendations': [
-                                "Serial console is disabled for this VM",
-                                "Enable it with: gcloud compute instances add-metadata VM_NAME --metadata serial-port-enable=TRUE",
-                                "Then wait a few minutes for logs to accumulate and try diagnosis again"
+                                "Serial console access is disabled for this VM or project",
+                                "Enable on VM: gcloud compute instances add-metadata "
+                                f"{vm_name} --zone={self.zone} --metadata serial-port-enable=TRUE",
+                                "Enable on project: gcloud compute project-info add-metadata "
+                                "--metadata serial-port-enable=TRUE",
+                                "Then wait a few minutes for logs to accumulate and try again"
                             ]
                         }
                     )
@@ -121,7 +127,8 @@ class DiagnoseOperation(BaseOperation):
                         'description': err.description,
                         'detected_pattern': err.detected_pattern,
                         'suggested_fixes': err.suggested_fixes,
-                        'context_lines': err.context_lines
+                        'context_lines': err.context_lines,
+                        'matched_line_index': err.matched_line_index
                     }
                     for err in diagnosis.boot_errors
                 ],

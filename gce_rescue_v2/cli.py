@@ -21,6 +21,7 @@ from typing import Optional, Dict, Any
 from .core.config import RescueConfig, RestoreConfig, VERSION
 from .main import rescue_vm, restore_vm
 from .utils.colors import error_prefix, warning_prefix, clear_lines
+from .utils.report_formatter import DiagnosisReportFormatter
 from .orchestration.checkpoint import CheckpointManager, CheckpointData
 
 
@@ -1112,6 +1113,11 @@ def handle_diagnose(args: argparse.Namespace) -> int:
     """Handle diagnose command."""
     from .core.auth import AuthManager
     from .operations import DiagnoseOperation
+    from .validators import (
+        ValidationRunner,
+        CredentialsValidator,
+        DiagnosePermissionsValidator,
+    )
     import logging
 
     # Get project from args or gcloud config
@@ -1144,6 +1150,19 @@ def handle_diagnose(args: argparse.Namespace) -> int:
     )
     logger = logging.getLogger(__name__)
 
+    # Pre-flight validation: credentials + permissions + VM exists
+    runner = ValidationRunner()
+    runner.add(CredentialsValidator(compute, project, args.zone))
+    runner.add(DiagnosePermissionsValidator(
+        compute, project, args.zone, args.instance_name,
+        tracking_label='diagnose-val-iam'
+    ))
+    results = runner.run_all(logger)
+
+    if not results.all_passed():
+        results.print_failures()
+        return 1
+
     # Create and execute diagnose operation
     try:
         diagnose_op = DiagnoseOperation(compute, project, args.zone, logger)
@@ -1170,65 +1189,8 @@ def handle_diagnose(args: argparse.Namespace) -> int:
             return 0
 
         # Otherwise, print human-readable output
-        print(f"\n{'='*70}")
-        print(f"DIAGNOSIS REPORT: {diagnosis['vm_name']}")
-        print(f"{'='*70}")
-        print(f"Zone:              {diagnosis['zone']}")
-        print(f"VM Status:         {diagnosis['status']}")
-        print(f"Diagnosis Status:  {diagnosis['diagnosis_status'].replace('_', ' ').title()}")
-        print(f"{'='*70}\n")
-
-        # Print boot errors if any
-        if diagnosis['boot_errors']:
-            print(f"BOOT ERRORS DETECTED ({len(diagnosis['boot_errors'])}):\n")
-            for i, error in enumerate(diagnosis['boot_errors'], 1):
-                print(f"{i}. [{error['category'].upper()}] {error['severity'].upper()}")
-                print(f"   Description: {error['description']}\n")
-
-                # Show context from serial console
-                if error.get('context_lines'):
-                    print(f"   Serial Console Context:")
-                    for line in error['context_lines']:
-                        if line.strip():
-                            print(f"     | {line}")
-                    print()
-
-                # Format fixes with actual VM name and zone
-                print(f"   Suggested Fixes:")
-                for fix in error['suggested_fixes']:
-                    # Replace placeholders with actual values
-                    fix = fix.replace('VM_NAME', diagnosis['vm_name'])
-                    fix = fix.replace('ZONE', diagnosis['zone'])
-                    print(f"     - {fix}")
-                print()
-        else:
-            print("No boot errors detected\n")
-
-        # Print recommendations
-        if diagnosis['recommendations']:
-            print(f"{'='*70}")
-            print("RECOMMENDATIONS:\n")
-            for rec in diagnosis['recommendations']:
-                print(f"  - {rec}")
-            print(f"{'='*70}\n")
-
-        # Add NEXT STEPS section if errors were found
-        if diagnosis['boot_errors']:
-            print(f"{'='*70}")
-            print("NEXT STEPS:\n")
-            print(f"1. Enter rescue mode to fix the issue:")
-            print(f"   gce-rescue rescue {diagnosis['vm_name']} --zone={diagnosis['zone']}\n")
-
-            # Provide category-specific guidance
-            categories = set(err['category'] for err in diagnosis['boot_errors'])
-            if 'fstab' in categories:
-                print(f"2. Once in rescue mode, fix /etc/fstab:")
-                print(f"   sudo nano /mnt/sysroot/etc/fstab")
-                print(f"   # Comment out or fix broken mount entries\n")
-
-            print(f"3. Restore the VM after fixing:")
-            print(f"   gce-rescue restore {diagnosis['vm_name']} --zone={diagnosis['zone']}")
-            print(f"{'='*70}\n")
+        formatter = DiagnosisReportFormatter()
+        print(formatter.format_report(diagnosis))
 
         return 0
 
