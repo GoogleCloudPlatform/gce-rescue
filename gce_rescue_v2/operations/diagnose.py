@@ -22,111 +22,6 @@ class DiagnoseOperation(BaseOperation):
         """Return the operation name."""
         return "Diagnose VM"
 
-    def _get_vm_status(self, vm_name: str) -> str:
-        """Fetch VM status. Returns 'UNKNOWN' if permission denied.
-
-        Args:
-            vm_name: Name of the VM
-
-        Returns:
-            VM status string (e.g., 'RUNNING', 'TERMINATED', 'UNKNOWN')
-        """
-        try:
-            self._log_debug("Fetching VM instance details")
-            vm_instance = self.compute.instances().get(
-                project=self.project,
-                zone=self.zone,
-                instance=vm_name
-            ).execute()
-
-            vm_status = vm_instance.get('status', 'UNKNOWN')
-            self._log_info(f"VM status: {vm_status}")
-            return vm_status
-
-        except HttpError as e:
-            if e.resp.status == 403:
-                self._log_debug(
-                    "No compute.instances.get permission, "
-                    "continuing with serial console only"
-                )
-                return 'UNKNOWN'
-            # 404 and other errors should stop execution
-            raise
-
-    def _get_serial_output(self, vm_name: str, vm_status: str) -> OperationResult:
-        """Fetch serial console output.
-
-        Args:
-            vm_name: Name of the VM
-            vm_status: VM status (for error reporting)
-
-        Returns:
-            OperationResult on failure, None on success (serial_output set as side effect)
-
-        Raises:
-            Sets self._serial_output on success.
-        """
-        try:
-            self._log_debug("Fetching serial console output")
-            serial_response = self.compute.instances().getSerialPortOutput(
-                project=self.project,
-                zone=self.zone,
-                instance=vm_name,
-                port=1
-            ).execute()
-
-            self._serial_output = serial_response.get('contents', '')
-            self._log_debug(f"Retrieved {len(self._serial_output)} bytes of serial output")
-            return None  # Success
-
-        except HttpError as e:
-            error_msg = extract_error_message(e)
-
-            if e.resp.status == 403:
-                return OperationResult(
-                    operation_name=self.name,
-                    success=False,
-                    message="Serial console access is disabled or permission denied",
-                    rollback_data={
-                        'vm_name': vm_name,
-                        'zone': self.zone,
-                        'status': vm_status,
-                        'diagnosis_status': 'unable_to_diagnose',
-                        'boot_errors': [],
-                        'recommendations': [
-                            "Could not read serial console output.",
-                            "",
-                            "Possible causes:",
-                            "  1. Serial port access is disabled for this VM or project",
-                            "  2. Missing permission: compute.instances.getSerialPortOutput",
-                            "",
-                            "To enable serial console on the VM:",
-                            f"  gcloud compute instances add-metadata {vm_name} "
-                            f"--zone={self.zone} --metadata serial-port-enable=TRUE",
-                            "",
-                            "To enable serial console on the project:",
-                            "  gcloud compute project-info add-metadata "
-                            "--metadata serial-port-enable=TRUE",
-                        ]
-                    }
-                )
-            else:
-                return OperationResult(
-                    operation_name=self.name,
-                    success=False,
-                    message=f"Failed to fetch serial console: {error_msg}",
-                    rollback_data={
-                        'vm_name': vm_name,
-                        'zone': self.zone,
-                        'status': vm_status,
-                        'diagnosis_status': 'unable_to_diagnose',
-                        'boot_errors': [],
-                        'recommendations': [
-                            f"Unable to fetch serial console output: {error_msg}",
-                        ]
-                    }
-                )
-
     def execute(self, vm_name: str) -> OperationResult:
         """Execute diagnosis by fetching and analyzing serial console output.
 
@@ -139,19 +34,81 @@ class DiagnoseOperation(BaseOperation):
         try:
             self._log_info(f"Starting diagnosis for VM: {vm_name}")
 
-            # Step 1: Try to get VM status (non-fatal if 403)
-            vm_status = self._get_vm_status(vm_name)
+            # Get VM status
+            self._log_debug("Fetching VM instance details")
+            vm_instance = self.compute.instances().get(
+                project=self.project,
+                zone=self.zone,
+                instance=vm_name
+            ).execute()
 
-            # Step 2: Fetch serial console output (required)
-            self._serial_output = ''
-            error_result = self._get_serial_output(vm_name, vm_status)
-            if error_result is not None:
-                return error_result
+            vm_status = vm_instance.get('status', 'UNKNOWN')
+            self._log_info(f"VM status: {vm_status}")
 
-            # Step 3: Analyze serial output
+            # Fetch serial console output
+            self._log_debug("Fetching serial console output")
+            try:
+                serial_response = self.compute.instances().getSerialPortOutput(
+                    project=self.project,
+                    zone=self.zone,
+                    instance=vm_name,
+                    port=1
+                ).execute()
+
+                serial_output = serial_response.get('contents', '')
+                self._log_debug(f"Retrieved {len(serial_output)} bytes of serial output")
+
+            except HttpError as e:
+                error_msg = extract_error_message(e)
+                self._log_error(f"Failed to fetch serial console: {error_msg}")
+
+                # Handle specific error cases
+                if e.resp.status == 403:
+                    # Pre-flight validation already checked IAM permissions,
+                    # so a 403 here means serial console access is disabled
+                    # at the project or VM level.
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message="Serial console access is disabled",
+                        rollback_data={
+                            'vm_name': vm_name,
+                            'zone': self.zone,
+                            'status': vm_status,
+                            'diagnosis_status': 'unable_to_diagnose',
+                            'boot_errors': [],
+                            'recommendations': [
+                                "Serial console access is disabled for this VM or project",
+                                "Enable on VM: gcloud compute instances add-metadata "
+                                f"{vm_name} --zone={self.zone} --metadata serial-port-enable=TRUE",
+                                "Enable on project: gcloud compute project-info add-metadata "
+                                "--metadata serial-port-enable=TRUE",
+                                "Then wait a few minutes for logs to accumulate and try again"
+                            ]
+                        }
+                    )
+                else:
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message=f"Failed to fetch serial console: {error_msg}",
+                        rollback_data={
+                            'vm_name': vm_name,
+                            'zone': self.zone,
+                            'status': vm_status,
+                            'diagnosis_status': 'unable_to_diagnose',
+                            'boot_errors': [],
+                            'recommendations': [
+                                f"Unable to fetch serial console output: {error_msg}",
+                                "Check VM permissions and try again"
+                            ]
+                        }
+                    )
+
+            # Analyze serial output
             self._log_info("Analyzing serial console output for boot errors")
             diagnosis: DiagnosisResult = analyze_serial_output(
-                serial_output=self._serial_output,
+                serial_output=serial_output,
                 vm_name=vm_name,
                 zone=self.zone,
                 vm_status=vm_status
@@ -202,7 +159,18 @@ class DiagnoseOperation(BaseOperation):
             error_msg = extract_error_message(e)
             self._log_debug(f"HTTP error during diagnosis: {error_msg}")
 
-            if e.resp.status == 404:
+            if e.resp.status == 403:
+                message = f"Permission denied on project '{self.project}'"
+                recommendations = [
+                    "Required permission: compute.instances.get",
+                    "",
+                    "To check your current access:",
+                    "  gcloud auth list",
+                    "",
+                    "To request access, ask the project owner to grant:",
+                    "  roles/compute.viewer",
+                ]
+            elif e.resp.status == 404:
                 message = f"Instance '{vm_name}' not found in zone '{self.zone}'"
                 recommendations = [
                     "Verify the instance name and zone are correct:",
