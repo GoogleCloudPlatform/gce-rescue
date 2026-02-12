@@ -157,7 +157,7 @@ class DiagnoseOperation(BaseOperation):
 
         except HttpError as e:
             error_msg = extract_error_message(e)
-            self._log_error(f"HTTP error during diagnosis: {error_msg}")
+            self._log_debug(f"HTTP error during diagnosis: {error_msg}")
 
             if e.resp.status == 403:
                 message = f"Permission denied on project '{self.project}'"
