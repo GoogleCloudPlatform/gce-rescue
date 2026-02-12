@@ -34,16 +34,26 @@ class DiagnoseOperation(BaseOperation):
         try:
             self._log_info(f"Starting diagnosis for VM: {vm_name}")
 
-            # Get VM status
-            self._log_debug("Fetching VM instance details")
-            vm_instance = self.compute.instances().get(
-                project=self.project,
-                zone=self.zone,
-                instance=vm_name
-            ).execute()
-
-            vm_status = vm_instance.get('status', 'UNKNOWN')
-            self._log_info(f"VM status: {vm_status}")
+            # Get VM status (non-fatal if 403 - user may only have
+            # serial console read permission on this project)
+            vm_status = 'UNKNOWN'
+            try:
+                self._log_debug("Fetching VM instance details")
+                vm_instance = self.compute.instances().get(
+                    project=self.project,
+                    zone=self.zone,
+                    instance=vm_name
+                ).execute()
+                vm_status = vm_instance.get('status', 'UNKNOWN')
+                self._log_info(f"VM status: {vm_status}")
+            except HttpError as e:
+                if e.resp.status == 403:
+                    self._log_debug(
+                        "No compute.instances.get permission, "
+                        "continuing with serial console only"
+                    )
+                else:
+                    raise
 
             # Fetch serial console output
             self._log_debug("Fetching serial console output")
@@ -159,18 +169,7 @@ class DiagnoseOperation(BaseOperation):
             error_msg = extract_error_message(e)
             self._log_debug(f"HTTP error during diagnosis: {error_msg}")
 
-            if e.resp.status == 403:
-                message = f"Permission denied on project '{self.project}'"
-                recommendations = [
-                    "Required permission: compute.instances.get",
-                    "",
-                    "To check your current access:",
-                    "  gcloud auth list",
-                    "",
-                    "To request access, ask the project owner to grant:",
-                    "  roles/compute.viewer",
-                ]
-            elif e.resp.status == 404:
+            if e.resp.status == 404:
                 message = f"Instance '{vm_name}' not found in zone '{self.zone}'"
                 recommendations = [
                     "Verify the instance name and zone are correct:",
