@@ -114,6 +114,23 @@ class DiagnosePermissionsValidator(BaseValidator):
                         ),
                     }
                 )
+            elif e.resp.status == 403:
+                # testIamPermissions itself requires compute.instances.list
+                # at the project level. In production environments, users often
+                # have instance-level access without project-level list.
+                # Pass through and let the actual API calls validate access.
+                return ValidationResult(
+                    validator_name=self.name,
+                    passed=True,
+                    message="Skipped (insufficient access to testIamPermissions API)",
+                    details={
+                        "note": (
+                            "Could not pre-check permissions because "
+                            "testIamPermissions requires compute.instances.list. "
+                            "Actual permissions will be validated during execution."
+                        ),
+                    }
+                )
             else:
                 return ValidationResult(
                     validator_name=self.name,
