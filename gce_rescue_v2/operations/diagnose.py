@@ -158,20 +158,41 @@ class DiagnoseOperation(BaseOperation):
         except HttpError as e:
             error_msg = extract_error_message(e)
             self._log_error(f"HTTP error during diagnosis: {error_msg}")
+
+            if e.resp.status == 403:
+                message = f"Permission denied on project '{self.project}'"
+                recommendations = [
+                    "Required permission: compute.instances.get",
+                    "",
+                    "To check your current access:",
+                    "  gcloud auth list",
+                    "",
+                    "To request access, ask the project owner to grant:",
+                    "  roles/compute.viewer",
+                ]
+            elif e.resp.status == 404:
+                message = f"Instance '{vm_name}' not found in zone '{self.zone}'"
+                recommendations = [
+                    "Verify the instance name and zone are correct:",
+                    f"  gcloud compute instances list --project={self.project}",
+                ]
+            else:
+                message = f"Failed to diagnose VM: {error_msg}"
+                recommendations = [
+                    "Check VM exists and you have necessary permissions",
+                ]
+
             return OperationResult(
                 operation_name=self.name,
                 success=False,
-                message=f"Failed to diagnose VM: {error_msg}",
+                message=message,
                 rollback_data={
                     'vm_name': vm_name,
                     'zone': self.zone,
                     'status': 'UNKNOWN',
                     'diagnosis_status': 'unable_to_diagnose',
                     'boot_errors': [],
-                    'recommendations': [
-                        f"Error: {error_msg}",
-                        "Check VM exists and you have necessary permissions"
-                    ]
+                    'recommendations': recommendations
                 }
             )
 
