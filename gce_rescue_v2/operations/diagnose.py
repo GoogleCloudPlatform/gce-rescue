@@ -9,6 +9,9 @@ import logging
 from googleapiclient.errors import HttpError
 
 from ..core.boot_patterns import analyze_serial_output, DiagnosisResult
+from ..utils.os_detection import (
+    detect_os_type, detect_os_flavor, detect_architecture, detect_license_type,
+)
 from .base import BaseOperation, OperationResult, extract_error_message
 
 logger = logging.getLogger(__name__)
@@ -34,9 +37,13 @@ class DiagnoseOperation(BaseOperation):
         try:
             self._log_info(f"Starting diagnosis for VM: {vm_name}")
 
-            # Get VM status (non-fatal if 403 - user may only have
-            # serial console read permission on this project)
+            # Get VM status and OS info (non-fatal if 403 - user may only
+            # have serial console read permission on this project)
             vm_status = 'UNKNOWN'
+            os_type = 'unknown'
+            os_flavor = 'unknown'
+            architecture = 'unknown'
+            license_type = 'unknown'
             try:
                 self._log_debug("Fetching VM instance details")
                 vm_instance = self.compute.instances().get(
@@ -46,6 +53,16 @@ class DiagnoseOperation(BaseOperation):
                 ).execute()
                 vm_status = vm_instance.get('status', 'UNKNOWN')
                 self._log_info(f"VM status: {vm_status}")
+
+                # Detect OS info
+                os_type = detect_os_type(vm_instance)
+                os_flavor = detect_os_flavor(vm_instance)
+                architecture = detect_architecture(vm_instance)
+                license_type = detect_license_type(vm_instance)
+                self._log_info(
+                    f"OS: {os_type}, flavor: {os_flavor}, "
+                    f"arch: {architecture}, license: {license_type}"
+                )
             except HttpError as e:
                 if e.resp.status == 403:
                     self._log_debug(
@@ -54,6 +71,17 @@ class DiagnoseOperation(BaseOperation):
                     )
                 else:
                     raise
+
+            # Status-aware warnings
+            if vm_status == 'SUSPENDED':
+                self._log_info(
+                    "VM is suspended, serial logs may not contain "
+                    "recent boot activity"
+                )
+            elif vm_status in ('STAGING', 'PROVISIONING'):
+                self._log_info(
+                    "VM is still starting, serial output may be incomplete"
+                )
 
             # Fetch serial console output
             self._log_debug("Fetching serial console output")
@@ -85,6 +113,10 @@ class DiagnoseOperation(BaseOperation):
                             'vm_name': vm_name,
                             'zone': self.zone,
                             'status': vm_status,
+                            'os_type': os_type,
+                            'os_flavor': os_flavor,
+                            'architecture': architecture,
+                            'license_type': license_type,
                             'diagnosis_status': 'unable_to_diagnose',
                             'boot_errors': [],
                             'recommendations': [
@@ -106,6 +138,10 @@ class DiagnoseOperation(BaseOperation):
                             'vm_name': vm_name,
                             'zone': self.zone,
                             'status': vm_status,
+                            'os_type': os_type,
+                            'os_flavor': os_flavor,
+                            'architecture': architecture,
+                            'license_type': license_type,
                             'diagnosis_status': 'unable_to_diagnose',
                             'boot_errors': [],
                             'recommendations': [
@@ -129,6 +165,10 @@ class DiagnoseOperation(BaseOperation):
                 'vm_name': diagnosis.vm_name,
                 'zone': diagnosis.zone,
                 'status': diagnosis.status,
+                'os_type': os_type,
+                'os_flavor': os_flavor,
+                'architecture': architecture,
+                'license_type': license_type,
                 'diagnosis_status': diagnosis.diagnosis_status,
                 'boot_errors': [
                     {
@@ -189,6 +229,10 @@ class DiagnoseOperation(BaseOperation):
                     'vm_name': vm_name,
                     'zone': self.zone,
                     'status': 'UNKNOWN',
+                    'os_type': 'unknown',
+                    'os_flavor': 'unknown',
+                    'architecture': 'unknown',
+                    'license_type': 'unknown',
                     'diagnosis_status': 'unable_to_diagnose',
                     'boot_errors': [],
                     'recommendations': recommendations
@@ -205,6 +249,10 @@ class DiagnoseOperation(BaseOperation):
                     'vm_name': vm_name,
                     'zone': self.zone,
                     'status': 'UNKNOWN',
+                    'os_type': 'unknown',
+                    'os_flavor': 'unknown',
+                    'architecture': 'unknown',
+                    'license_type': 'unknown',
                     'diagnosis_status': 'unable_to_diagnose',
                     'boot_errors': [],
                     'recommendations': [

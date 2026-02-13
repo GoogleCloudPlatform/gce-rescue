@@ -16,6 +16,10 @@ def healthy_diagnosis():
         'vm_name': 'test-vm',
         'zone': 'us-central1-a',
         'status': 'RUNNING',
+        'os_type': 'linux',
+        'os_flavor': 'debian-12',
+        'architecture': 'x86_64',
+        'license_type': 'free',
         'diagnosis_status': 'healthy',
         'boot_errors': [],
         'recommendations': [
@@ -32,6 +36,10 @@ def healthy_terminated_diagnosis():
         'vm_name': 'test-vm',
         'zone': 'us-central1-a',
         'status': 'TERMINATED',
+        'os_type': 'linux',
+        'os_flavor': 'debian-12',
+        'architecture': 'x86_64',
+        'license_type': 'free',
         'diagnosis_status': 'healthy',
         'boot_errors': [],
         'recommendations': [
@@ -48,6 +56,10 @@ def single_error_diagnosis():
         'vm_name': 'test-vm',
         'zone': 'us-central1-a',
         'status': 'TERMINATED',
+        'os_type': 'linux',
+        'os_flavor': 'debian-12',
+        'architecture': 'x86_64',
+        'license_type': 'free',
         'diagnosis_status': 'boot_errors_detected',
         'boot_errors': [
             {
@@ -80,6 +92,10 @@ def multi_error_diagnosis():
         'vm_name': 'test-vm',
         'zone': 'us-central1-a',
         'status': 'TERMINATED',
+        'os_type': 'linux',
+        'os_flavor': 'rhel-9',
+        'architecture': 'x86_64',
+        'license_type': 'payg',
         'diagnosis_status': 'boot_errors_detected',
         'boot_errors': [
             {
@@ -122,6 +138,10 @@ def unable_diagnosis():
         'vm_name': 'test-vm',
         'zone': 'us-central1-a',
         'status': 'RUNNING',
+        'os_type': 'unknown',
+        'os_flavor': 'unknown',
+        'architecture': 'unknown',
+        'license_type': 'unknown',
         'diagnosis_status': 'unable_to_diagnose',
         'boot_errors': [],
         'recommendations': [
@@ -135,16 +155,17 @@ class TestHealthyReport:
     """Tests for healthy VM reports."""
 
     def test_healthy_running_is_compact(self, formatter, healthy_diagnosis):
-        """Healthy running VM should be 3 lines."""
+        """Healthy running VM should be 4 lines."""
         report = formatter.format_report(healthy_diagnosis)
         lines = [l for l in report.split('\n') if l.strip()]
-        assert len(lines) == 3
+        assert len(lines) == 4
 
     def test_healthy_contains_header(self, formatter, healthy_diagnosis):
-        """Healthy report should have Diagnosis/Status/Result header."""
+        """Healthy report should have Diagnosis/Status/OS/Result header."""
         report = formatter.format_report(healthy_diagnosis)
         assert 'Diagnosis: test-vm (us-central1-a)' in report
         assert 'Status:    RUNNING' in report
+        assert 'OS:        Linux (debian-12, x86_64, Free)' in report
         assert 'No boot issues detected' in report
 
     def test_healthy_no_borders(self, formatter, healthy_diagnosis):
@@ -249,6 +270,10 @@ class TestArrowPlacement:
             'vm_name': 'test-vm',
             'zone': 'us-central1-a',
             'status': 'TERMINATED',
+            'os_type': 'linux',
+            'os_flavor': 'debian-12',
+            'architecture': 'x86_64',
+            'license_type': 'free',
             'diagnosis_status': 'boot_errors_detected',
             'boot_errors': [
                 {
@@ -282,6 +307,10 @@ class TestArrowPlacement:
             'vm_name': 'test-vm',
             'zone': 'us-central1-a',
             'status': 'TERMINATED',
+            'os_type': 'linux',
+            'os_flavor': 'debian-12',
+            'architecture': 'x86_64',
+            'license_type': 'free',
             'diagnosis_status': 'boot_errors_detected',
             'boot_errors': [
                 {
@@ -331,7 +360,7 @@ class TestUnableReport:
     def test_unable_shows_retry_hint(self, formatter, unable_diagnosis):
         """Unable report should show how to retry diagnosis."""
         report = formatter.format_report(unable_diagnosis)
-        assert 'gce-rescue diagnose-boot test-vm' in report
+        assert 'gce-rescue diagnose test-vm' in report
 
 
 class TestSerialConsoleStyling:

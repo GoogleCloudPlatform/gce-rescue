@@ -128,7 +128,7 @@ class CustomArgumentParser(argparse.ArgumentParser):
                     lines.append("Available commands:")
                     lines.append("  rescue         Boot a VM into rescue mode")
                     lines.append("  restore        Restore a VM from rescue mode")
-                    lines.append("  diagnose-boot  Diagnose VM boot issues (read-only)")
+                    lines.append("  diagnose  Diagnose VM boot issues (read-only)")
                 else:
                     lines.append(f"{message}")
             else:
@@ -181,7 +181,7 @@ class CustomArgumentParser(argparse.ArgumentParser):
                 "Commands:",
                 "  rescue         Boot a VM into rescue mode",
                 "  restore        Restore a VM from rescue mode",
-                "  diagnose-boot  Diagnose VM boot issues (read-only)",
+                "  diagnose  Diagnose VM boot issues (read-only)",
                 "",
                 "Examples:",
                 "  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a",
@@ -243,7 +243,7 @@ EXAMPLES
         $ gce-rescue-v2 rescue my-vm --zone=us-central1-a --quiet
 
     Diagnose boot issues:
-        $ gce-rescue-v2 diagnose-boot my-vm --zone=us-central1-a
+        $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a
 
 SUPPORTED OS
     - Linux (auto-detected): Boots Debian 12 rescue environment
@@ -322,20 +322,20 @@ NOTES
 
     # DIAGNOSE-BOOT COMMAND
     diagnose_parser = subparsers.add_parser(
-        'diagnose-boot',
+        'diagnose',
         help='Diagnose VM boot issues (read-only)',
         description='Analyze VM serial console output to detect boot errors.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES
     Diagnose a VM:
-        $ gce-rescue-v2 diagnose-boot my-vm --zone=us-central1-a
+        $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a
 
     Diagnose and output as JSON:
-        $ gce-rescue-v2 diagnose-boot my-vm --zone=us-central1-a --format=json
+        $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a --format=json
 
     Diagnose and output as YAML:
-        $ gce-rescue-v2 diagnose-boot my-vm --zone=us-central1-a --format=yaml
+        $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a --format=yaml
 
 NOTES
     This is a read-only operation that does not modify the VM.
@@ -1217,7 +1217,7 @@ def main():
             return handle_rescue(args)
         elif args.command == 'restore':
             return handle_restore(args)
-        elif args.command == 'diagnose-boot':
+        elif args.command == 'diagnose':
             return handle_diagnose(args)
         else:
             print(f"{error_prefix()} (gce-rescue) Unknown command: {args.command}", file=sys.stderr)

@@ -1,7 +1,7 @@
 """
 GCE Rescue - Diagnose Permissions Validator
 
-Validates that the user has required IAM permissions for diagnose-boot.
+Validates that the user has required IAM permissions for diagnose.
 This is a lightweight check - diagnose only needs read permissions.
 """
 
@@ -12,7 +12,7 @@ from .base import BaseValidator, ValidationResult
 
 class DiagnosePermissionsValidator(BaseValidator):
     """
-    Validates that user has required IAM permissions for diagnose-boot.
+    Validates that user has required IAM permissions for diagnose.
 
     Required permissions (read-only):
     - compute.instances.get (to fetch VM status)
@@ -37,7 +37,7 @@ class DiagnosePermissionsValidator(BaseValidator):
         return "Diagnose Permissions"
 
     def validate(self) -> ValidationResult:
-        """Check if user has required IAM permissions for diagnose-boot.
+        """Check if user has required IAM permissions for diagnose.
 
         Returns:
             ValidationResult with pass/fail

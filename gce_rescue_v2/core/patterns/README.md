@@ -64,7 +64,7 @@ entry under `patterns:`.
 python -m pytest gce_rescue_v2/tests/test_pattern_loader.py -v
 
 # Test against a real VM
-python -m gce_rescue_v2.cli diagnose-boot VM_NAME --zone=ZONE --project=PROJECT
+python -m gce_rescue_v2.cli diagnose VM_NAME --zone=ZONE --project=PROJECT
 ```
 
 ## File Naming

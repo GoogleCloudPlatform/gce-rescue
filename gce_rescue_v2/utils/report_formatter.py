@@ -1,4 +1,4 @@
-"""Diagnostic report formatter for diagnose-boot command.
+"""Diagnostic report formatter for diagnose command.
 
 Formats diagnosis results into clean, professional CLI output
 following gcloud conventions and trivy/kubectl-style design.
@@ -33,14 +33,45 @@ class DiagnosisReportFormatter:
             return self._format_unable(diagnosis)
 
     def _format_header(self, diagnosis: Dict[str, Any]) -> str:
-        """Format the 3-line header block."""
+        """Format the header block with VM info."""
         vm_name = diagnosis['vm_name']
         zone = diagnosis['zone']
         vm_status = diagnosis['status']
-        return (
+        os_line = self._format_os_line(diagnosis)
+        header = (
             f"Diagnosis: {vm_name} ({zone})\n"
             f"Status:    {vm_status}"
         )
+        if os_line:
+            header += f"\n{os_line}"
+        return header
+
+    def _format_os_line(self, diagnosis: Dict[str, Any]) -> str:
+        """Format the OS info line.
+
+        Returns empty string if no OS info is available.
+        """
+        os_type = diagnosis.get('os_type', 'unknown')
+        os_flavor = diagnosis.get('os_flavor', 'unknown')
+        architecture = diagnosis.get('architecture', 'unknown')
+        license_type = diagnosis.get('license_type', 'unknown')
+
+        if os_type == 'unknown':
+            return "OS:        Unknown"
+
+        display_name = 'Windows' if os_type == 'windows' else 'Linux'
+        details = []
+        if os_flavor != 'unknown':
+            details.append(os_flavor)
+        if architecture != 'unknown':
+            details.append(architecture)
+        if license_type != 'unknown':
+            details.append(license_type.upper() if license_type == 'payg'
+                           else license_type.capitalize())
+
+        if details:
+            return f"OS:        {display_name} ({', '.join(details)})"
+        return f"OS:        {display_name}"
 
     def _format_result_line(self, diagnosis: Dict[str, Any]) -> str:
         """Format the result summary line with severity counts."""
@@ -230,7 +261,7 @@ class DiagnosisReportFormatter:
 
         lines.append("")
         lines.append("Then run diagnosis again:")
-        lines.append(f"  $ gce-rescue diagnose-boot {vm_name} --zone={zone}")
+        lines.append(f"  $ gce-rescue diagnose {vm_name} --zone={zone}")
 
         return "\n".join(lines)
 
