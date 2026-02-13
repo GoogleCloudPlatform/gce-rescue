@@ -129,7 +129,6 @@ class DiagnosisReportFormatter:
         severity = error['severity'].upper()
         category = error['category'].upper()
         description = error['description']
-        matched = error.get('detected_pattern', '')
         context = error.get('context_lines', [])
         matched_idx = error.get('matched_line_index', -1)
         fixes = error.get('suggested_fixes', [])
@@ -147,12 +146,9 @@ class DiagnosisReportFormatter:
         # Severity + category + description
         lines.append(f"{sev_label} [{category}] {description}")
 
-        # Matched pattern
         indent = " " * 10
         vm_name = diagnosis['vm_name']
         zone = diagnosis['zone']
-        formatted_matched = matched.replace('VM_NAME', vm_name).replace('ZONE', zone)
-        lines.append(f"{indent}Matched: {formatted_matched}")
 
         # Serial console log lines
         if context:

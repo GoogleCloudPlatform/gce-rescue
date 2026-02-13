@@ -9,6 +9,7 @@ patterns:
       - 'UUID=[\w-]+ does not exist'
       - "can't find UUID=[\\w-]+"
       - 'Timed out waiting for device.*UUID='
+      - 'Expecting device.*/dev/disk/by-uuid/'
     fixes:
       - "Check /mnt/sysroot/etc/fstab for invalid UUID entries"
       - "Run 'blkid' to see available UUIDs"

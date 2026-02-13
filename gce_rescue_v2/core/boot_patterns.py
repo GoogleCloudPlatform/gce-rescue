@@ -277,18 +277,34 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                 logger.error(f"Invalid regex pattern: {regex_pattern} - {e}")
                 continue
 
-    # Deduplicate: remove generic emergency mode if a specific root cause
-    # was already detected in the same category (e.g., device timeout
-    # already explains why emergency mode was entered).
+    # Deduplicate with two tiers:
+    # Tier 1 (catch-all): emergency mode - remove if ANY other error exists
+    # Tier 2 (generic symptom): mount failed, dependency failed - remove
+    #         only if a specific root cause error exists
+    _CATCH_ALL = {
+        "System entered emergency mode due to boot failure",
+    }
+    _GENERIC_SYMPTOM = {
+        "Failed to mount filesystem listed in /etc/fstab",
+        "Mount point dependency failed (device not available)",
+    }
     if len(detected_errors) > 1:
-        has_specific = any(
-            e.description != "System entered emergency mode due to boot failure"
-            for e in detected_errors
+        has_non_catchall = any(
+            e.description not in _CATCH_ALL for e in detected_errors
         )
-        if has_specific:
+        if has_non_catchall:
             detected_errors = [
                 e for e in detected_errors
-                if e.description != "System entered emergency mode due to boot failure"
+                if e.description not in _CATCH_ALL
+            ]
+    if len(detected_errors) > 1:
+        has_root_cause = any(
+            e.description not in _GENERIC_SYMPTOM for e in detected_errors
+        )
+        if has_root_cause:
+            detected_errors = [
+                e for e in detected_errors
+                if e.description not in _GENERIC_SYMPTOM
             ]
 
     # Determine diagnosis status and recommendations
