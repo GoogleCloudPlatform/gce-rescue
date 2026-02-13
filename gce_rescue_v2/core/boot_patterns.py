@@ -277,6 +277,20 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                 logger.error(f"Invalid regex pattern: {regex_pattern} - {e}")
                 continue
 
+    # Deduplicate: remove generic emergency mode if a specific root cause
+    # was already detected in the same category (e.g., device timeout
+    # already explains why emergency mode was entered).
+    if len(detected_errors) > 1:
+        has_specific = any(
+            e.description != "System entered emergency mode due to boot failure"
+            for e in detected_errors
+        )
+        if has_specific:
+            detected_errors = [
+                e for e in detected_errors
+                if e.description != "System entered emergency mode due to boot failure"
+            ]
+
     # Determine diagnosis status and recommendations
     if detected_errors:
         diagnosis_status = "boot_errors_detected"
