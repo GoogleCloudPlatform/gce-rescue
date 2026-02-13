@@ -255,7 +255,7 @@ class TestShippedPatterns:
 
     def test_fstab_patterns_present(self):
         fstab_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'fstab']
-        assert len(fstab_patterns) == 5
+        assert len(fstab_patterns) == 7
 
     def test_fstab_fix_guidance_present(self):
         assert 'fstab' in CATEGORY_FIX_GUIDANCE
