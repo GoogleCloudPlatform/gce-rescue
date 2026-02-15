@@ -5,6 +5,65 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.5] - 2026-02-15
+
+### Added
+
+- **`diagnose` command**: Read-only boot diagnostics from serial console
+  - Pattern library for fstab errors (UUID not found, device missing, mount
+    failed, emergency mode, dependency failed, device timeout, fsck failed)
+  - OS detection and license type display (PAYG, BYOL, free-tier)
+  - Tiered deduplication (category + description level)
+  - Multiple output formats: table, json, yaml
+  - Context lines showing surrounding serial output for each error
+
+- **`repair` command**: Automated diagnose-fix-restore in one command (Linux only)
+  - Embeds fix script directly in startup script (no SSH needed)
+  - Creates backup snapshot before any changes (default: enabled)
+  - Backs up modified files on disk (e.g., `/etc/fstab.gce-repair-backup`)
+  - Structured result parsing from serial console markers
+  - Multi-line progress display showing rescue/repair/restore phases
+  - Supports `--no-snapshot` for faster repair
+  - Resume support for interrupted repair operations
+  - fstab fix script: comments out invalid UUID, device, and label entries
+
+### Improved
+
+- **Safety and transparency**: Users now see exactly what the tool will change
+  - Rescue confirmation lists all major changes (disk detach, metadata
+    replacement, rescue disk creation)
+  - Restore confirmation shows disk swap, metadata restore, rescue disk deletion
+  - All repair failure paths show backup snapshot name for recovery
+  - Snapshot cleanup hint shown after successful restore with `gcloud` delete
+    command
+  - Repair results show fstab backup location on disk
+
+- **Documentation**: Complete overhaul of internal docs
+  - Architecture doc rewritten with diagrams and safety mechanism details
+  - CLI reference updated with decision tree, diagnose and repair sections
+  - FAQ updated with repair safety info, roadmap, and new feature tables
+  - Contributing guide updated with fix script and boot pattern guides
+
+### Fixed
+
+- Entry point in pyproject.toml corrected from `gce-rescue` to `gce-rescue-v2`
+- Snapshot-on-resume: snapshot name restored from checkpoint context
+- Graceful degradation when `instances.get` returns 403
+
+## [2.0.0-beta.4] - 2026-02-02
+
+### Added
+
+- **ARM64 Support**: Automatic architecture detection and rescue image selection
+  - Detects ARM64 from disk architecture field or T2A machine type
+  - Auto-selects `debian-12-arm64` rescue image for ARM64 instances
+  - Works with Ampere Altra (T2A) VMs
+
+- **Unsupported VM Blocking**: Clear validation errors for incompatible VM types
+  - Blocks Shielded VMs with Secure Boot (can't boot unsigned rescue disk)
+  - Blocks Confidential VMs (encrypted memory prevents external disk access)
+  - Includes actionable suggestions in error messages
+
 ## [2.0.0-beta.4] - 2026-01-20
 
 ### Added

@@ -137,7 +137,7 @@ VM_ALREADY_IN_RESCUE = ErrorSuggestion(
         "Or use --force to re-rescue (not recommended)",
     ],
     commands=[
-        "gce-rescue-v2 restore {vm_name} --zone={zone}",
+        "gce-rescue-v2 restore {vm_name} --zone={zone} --project={project}",
     ]
 )
 

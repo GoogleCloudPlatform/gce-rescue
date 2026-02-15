@@ -59,7 +59,12 @@ setup(
   package_dir = {'': '.'},
   package_data = {
       '': ['startup-script.txt'],
-      'gce_rescue_v2': ['startup_scripts/*.sh', 'startup_scripts/*.ps1'],
+      'gce_rescue_v2': [
+          'startup_scripts/*.sh',
+          'startup_scripts/*.ps1',
+          'core/patterns/*.yaml',
+          'core/patterns/README.md',
+      ],
   },
   include_package_data = True,
   python_requires='>=3.9',

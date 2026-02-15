@@ -9,7 +9,10 @@ import sys
 
 # ANSI color codes
 RED = '\033[91m'
+GREEN = '\033[92m'
 YELLOW = '\033[93m'
+BOLD = '\033[1m'
+DIM = '\033[2m'
 RESET = '\033[0m'
 
 
@@ -29,6 +32,27 @@ def yellow(text: str) -> str:
     """Return text in yellow if TTY, otherwise plain text."""
     if _is_tty():
         return f"{YELLOW}{text}{RESET}"
+    return text
+
+
+def green(text: str) -> str:
+    """Return text in green if TTY, otherwise plain text."""
+    if _is_tty():
+        return f"{GREEN}{text}{RESET}"
+    return text
+
+
+def bold(text: str) -> str:
+    """Return text in bold if TTY, otherwise plain text."""
+    if _is_tty():
+        return f"{BOLD}{text}{RESET}"
+    return text
+
+
+def dim(text: str) -> str:
+    """Return text in dim/faint if TTY, otherwise plain text."""
+    if _is_tty():
+        return f"{DIM}{text}{RESET}"
     return text
 
 

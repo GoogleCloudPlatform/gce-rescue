@@ -1,0 +1,87 @@
+category: fstab
+fix_guidance: "sudo nano /mnt/sysroot/etc/fstab"
+
+patterns:
+  - name: fstab_uuid_not_found
+    severity: critical
+    description: "UUID specified in /etc/fstab cannot be found"
+    regex:
+      - 'UUID=[\w-]+ does not exist'
+      - "can't find UUID=[\\w-]+"
+      - 'Timed out waiting for device.*UUID='
+      - 'Expecting device.*/dev/disk/by-uuid/'
+    fixes:
+      - "Check /mnt/sysroot/etc/fstab for invalid UUID entries"
+      - "Run 'blkid' to see available UUIDs"
+      - "Comment out or fix the invalid UUID entry"
+
+  - name: fstab_device_timeout
+    severity: critical
+    description: "Device referenced in /etc/fstab timed out waiting"
+    regex:
+      - 'Timed out waiting for device.*/dev/'
+    fixes:
+      - "Check /mnt/sysroot/etc/fstab for missing or invalid devices"
+      - "Verify disk is attached: gcloud compute instances describe VM_NAME --zone=ZONE"
+      - "Comment out or fix the invalid entry in /etc/fstab"
+
+  - name: fstab_device_not_exist
+    severity: critical
+    description: "Device specified in /etc/fstab does not exist"
+    regex:
+      - 'special device .* does not exist'
+      - 'mount: .*: special device .* does not exist'
+      - 'Device .* does not exist'
+    fixes:
+      - "Check /mnt/sysroot/etc/fstab for invalid device paths"
+      - "Verify disk attachments in GCP Console"
+      - "Comment out or fix the invalid device entry"
+
+  - name: fstab_mount_failed
+    severity: critical
+    description: "Failed to mount filesystem listed in /etc/fstab"
+    regex:
+      - 'Dependency failed for .*\.mount'
+      - 'Failed to mount .*\.mount'
+      - 'mount.*failed'
+      - 'systemd.*Failed to mount'
+    fixes:
+      - "Check /mnt/sysroot/etc/fstab for mount errors"
+      - "Verify filesystem type and mount options are correct"
+      - "Check serial console for specific error messages"
+
+  - name: fstab_dependency_failed
+    severity: critical
+    description: "Mount point dependency failed (device not available)"
+    regex:
+      - 'Dependency failed for /[a-zA-Z]'
+      - 'Dependency failed for File System Check'
+    fixes:
+      - "Check /mnt/sysroot/etc/fstab for entries referencing missing devices"
+      - "Run 'blkid' to list available devices and UUIDs"
+      - "Comment out or fix the problematic entry"
+
+  - name: fstab_emergency_mode
+    severity: critical
+    description: "System entered emergency mode due to boot failure"
+    regex:
+      - 'You are now being dropped into an emergency shell'
+      - 'You are in emergency mode'
+      - 'Welcome to emergency mode'
+      - 'Entering emergency mode'
+    fixes:
+      - "Check /mnt/sysroot/etc/fstab for errors"
+      - "Review serial console for preceding error messages"
+
+  - name: fstab_fsck_failed
+    severity: critical
+    description: "Filesystem check (fsck) failed on a mounted partition"
+    regex:
+      - 'fsck.*failed'
+      - 'fsck exited with status code'
+      - 'FILE SYSTEM CHECK FAILED'
+      - 'UNEXPECTED INCONSISTENCY'
+    fixes:
+      - "Run filesystem check: fsck -y /dev/sdb1 (replace with actual device)"
+      - "May need to run: e2fsck -y /dev/sdb1 for ext4 filesystems"
+      - "If persistent, check disk health in GCP Console"
