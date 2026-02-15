@@ -16,10 +16,12 @@ import argparse
 import sys
 import os
 import json
+import threading
+import time
 import yaml
 from typing import Optional, Dict, Any
 from .core.config import RescueConfig, RestoreConfig, VERSION
-from .main import rescue_vm, restore_vm
+from .main import rescue_vm, restore_vm, repair_vm
 from .utils.colors import error_prefix, warning_prefix, clear_lines
 from .utils.report_formatter import DiagnosisReportFormatter
 from .orchestration.checkpoint import CheckpointManager, CheckpointData
@@ -29,7 +31,7 @@ class OutputFormatter:
     """
     Handle output formatting similar to gcloud.
 
-    Supports: json, yaml, table, csv, value
+    Supports: json, yaml, table
     """
 
     @staticmethod
@@ -105,6 +107,7 @@ class CustomArgumentParser(argparse.ArgumentParser):
     # Flags specific to each command (for helpful error messages)
     RESCUE_ONLY_FLAGS = ['--snapshot', '--no-snapshot']
     RESTORE_ONLY_FLAGS = ['--keep-rescue-disk']
+    REPAIR_ONLY_FLAGS = []  # repair uses same flags as rescue for now
 
     def error(self, message: str):
         """Override to provide cleaner error format."""
@@ -128,7 +131,8 @@ class CustomArgumentParser(argparse.ArgumentParser):
                     lines.append("Available commands:")
                     lines.append("  rescue         Boot a VM into rescue mode")
                     lines.append("  restore        Restore a VM from rescue mode")
-                    lines.append("  diagnose  Diagnose VM boot issues (read-only)")
+                    lines.append("  diagnose       Diagnose VM boot issues (read-only)")
+                    lines.append("  repair         Diagnose and auto-fix boot issues")
                 else:
                     lines.append(f"{message}")
             else:
@@ -181,7 +185,8 @@ class CustomArgumentParser(argparse.ArgumentParser):
                 "Commands:",
                 "  rescue         Boot a VM into rescue mode",
                 "  restore        Restore a VM from rescue mode",
-                "  diagnose  Diagnose VM boot issues (read-only)",
+                "  diagnose       Diagnose VM boot issues (read-only)",
+                "  repair         Diagnose and auto-fix boot issues",
                 "",
                 "Examples:",
                 "  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a",
@@ -244,6 +249,9 @@ EXAMPLES
 
     Diagnose boot issues:
         $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a
+
+    Auto-repair boot issues:
+        $ gce-rescue-v2 repair my-vm --zone=us-central1-a
 
 SUPPORTED OS
     - Linux (auto-detected): Boots Debian 12 rescue environment
@@ -345,6 +353,35 @@ NOTES
 
     _add_common_args(diagnose_parser)
 
+    # REPAIR COMMAND
+    repair_parser = subparsers.add_parser(
+        'repair',
+        help='Diagnose and auto-fix boot issues (Linux only)',
+        description='Automatically diagnose and repair boot issues. Combines diagnose, rescue (with embedded fix), and restore into a single command.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+EXAMPLES
+    Repair a VM with boot issues:
+        $ gce-rescue-v2 repair my-vm --zone=us-central1-a
+
+    Repair without snapshot (faster):
+        $ gce-rescue-v2 repair my-vm --zone=us-central1-a --no-snapshot
+
+    Repair in automation (no prompts):
+        $ gce-rescue-v2 repair my-vm --zone=us-central1-a --quiet
+
+SUPPORTED FIXES
+    - fstab: Comments out invalid UUID, device, or label entries
+
+NOTES
+    This command is Linux-only. For Windows VMs, use 'rescue' for manual fix.
+    The VM will be stopped during repair and restarted when complete.
+        """
+    )
+
+    _add_common_args(repair_parser)
+    _add_repair_args(repair_parser)
+
     return parser
 
 
@@ -426,6 +463,23 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
     )
 
 
+def _add_repair_args(parser: argparse.ArgumentParser):
+    """Add repair-specific arguments."""
+    snapshot_group = parser.add_argument_group('SNAPSHOT FLAGS')
+    snapshot_group.add_argument(
+        '--snapshot',
+        action='store_true',
+        default=True,
+        help='Create snapshot of boot disk before repair (default: enabled)'
+    )
+    snapshot_group.add_argument(
+        '--no-snapshot',
+        dest='snapshot',
+        action='store_false',
+        help='Skip snapshot creation (faster but riskier)'
+    )
+
+
 def _add_restore_args(parser: argparse.ArgumentParser):
     """Add restore-specific arguments."""
 
@@ -497,6 +551,49 @@ def args_to_restore_config(args: argparse.Namespace) -> RestoreConfig:
     config.log_level = verbosity_map.get(args.verbosity, 'INFO')
 
     return config
+
+
+class _Spinner:
+    """Simple inline spinner for short-lived operations."""
+
+    def __init__(self, message: str):
+        self._message = message
+        self._stop = False
+        self._thread = None
+
+    def start(self):
+        self._stop = False
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def stop(self, clear: bool = True):
+        self._stop = True
+        if self._thread:
+            self._thread.join(timeout=0.5)
+        if clear:
+            sys.stdout.write(f"\r{' ' * (len(self._message) + 10)}\r")
+            sys.stdout.flush()
+
+    def _spin(self):
+        chars = ['|', '/', '-', '\\']
+        idx = 0
+        while not self._stop:
+            sys.stdout.write(f"\r{self._message}..{chars[idx]}")
+            sys.stdout.flush()
+            idx = (idx + 1) % len(chars)
+            time.sleep(0.1)
+
+
+def _format_duration(seconds: float) -> str:
+    """Format seconds into a human-readable duration string (e.g. '1m 42s')."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    minutes = total // 60
+    secs = total % 60
+    if secs == 0:
+        return f"{minutes}m"
+    return f"{minutes}m {secs}s"
 
 
 def _parse_api_error(e: Exception, vm_name: str, zone: str, project: str = None) -> str:
@@ -744,8 +841,6 @@ def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_nam
         SetMetadataOperation, StartVMOperation
     )
 
-    print(f"\nRolling back to rescue mode for instance [{vm_name}]:")
-
     # Create operations map for restore operations
     operations_map = {
         "Stop VM": StopVMOperation(compute, project, zone, logger),
@@ -767,20 +862,181 @@ def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_nam
             step_number=op.step
         )
 
-    # Perform rollback
+    # Check if there's anything to rollback
+    rollback_ops = state_tracker.get_rollback_operations()
+    if not rollback_ops:
+        checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
+        checkpoint_mgr.clear_checkpoint()
+        print(f"\nNo changes were made. Checkpoint cleared for instance [{vm_name}].")
+        return True
+
+    # Perform rollback with progress indicator
+    print(f"\nRolling back to rescue mode for instance [{vm_name}]:")
+    spinner = _Spinner("  Undoing changes")
+    spinner.start()
     handler = RollbackHandler(logger)
     success = handler.rollback(state_tracker, operations_map)
+    spinner.stop()
 
     # Clear checkpoint after rollback
     checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
     checkpoint_mgr.clear_checkpoint()
 
     if success:
-        print(f"\nInstance [{vm_name}] is back in rescue mode.")
+        print(f"Instance [{vm_name}] is back in rescue mode.")
     else:
-        print(f"\n{error_prefix()} Rollback completed with errors. Manual intervention may be required.")
+        print(f"{error_prefix()} Rollback completed with errors. Manual intervention may be required.", file=sys.stderr)
 
     return success
+
+
+def _reconcile_rescue_state(compute, project: str, zone: str, vm_name: str,
+                            checkpoint: CheckpointData, state_tracker,
+                            logger=None) -> None:
+    """
+    Reconcile checkpoint state with actual VM disk state.
+
+    Inspects the real VM via GCP API and adds any operations that completed
+    server-side but weren't checkpointed (e.g., Ctrl+C during API call).
+
+    Args:
+        compute: GCP compute client
+        project: GCP project ID
+        zone: GCP zone
+        vm_name: VM name
+        checkpoint: Checkpoint data from metadata
+        state_tracker: StateTracker to add missing operations to
+        logger: Optional logger
+    """
+    def _log(msg):
+        if logger:
+            logger.debug(f"[Reconcile] {msg}")
+
+    context = checkpoint.context or {}
+    original_disk_name = context.get('original_disk_name')
+    rescue_disk_name = context.get('rescue_disk_name')
+
+    if not original_disk_name:
+        _log("No original_disk_name in checkpoint context, skipping reconciliation")
+        return
+
+    # Get actual VM state
+    try:
+        vm = compute.instances().get(
+            project=project, zone=zone, instance=vm_name
+        ).execute()
+    except Exception as e:
+        _log(f"Could not fetch VM state: {e}")
+        return
+
+    attached_disks = vm.get('disks', [])
+    attached_disk_names = []
+    for d in attached_disks:
+        source = d.get('source', '')
+        if source:
+            attached_disk_names.append(source.split('/')[-1])
+
+    checkpointed_op_names = {op.name for op in checkpoint.completed_operations}
+
+    # Check 1: Original boot disk detached but not in checkpoint
+    if original_disk_name not in attached_disk_names:
+        if "Detach Boot Disk" not in checkpointed_op_names:
+            _log(f"Original boot disk '{original_disk_name}' is detached but not in checkpoint - adding to rollback")
+            disk_source = f"projects/{project}/zones/{zone}/disks/{original_disk_name}"
+            state_tracker.add_operation(
+                operation_name="Detach Boot Disk",
+                success=True,
+                message="Detected via reconciliation (completed but not checkpointed)",
+                rollback_data={
+                    'vm_name': vm_name,
+                    'disk_info': {
+                        'source': disk_source,
+                        'boot': True,
+                        'autoDelete': True,
+                        'deviceName': original_disk_name,
+                        'mode': 'READ_WRITE'
+                    }
+                },
+                step_number=2
+            )
+
+    # Check 2: Rescue disk exists and is attached but not in checkpoint
+    if rescue_disk_name and rescue_disk_name in attached_disk_names:
+        if "Attach Rescue Disk" not in checkpointed_op_names:
+            _log(f"Rescue disk '{rescue_disk_name}' is attached but not in checkpoint - adding to rollback")
+            # Need to add Create Rescue Disk first (so rollback deletes it)
+            if "Create Rescue Disk" not in checkpointed_op_names:
+                state_tracker.add_operation(
+                    operation_name="Create Rescue Disk",
+                    success=True,
+                    message="Detected via reconciliation",
+                    rollback_data={'disk_name': rescue_disk_name},
+                    step_number=4
+                )
+            state_tracker.add_operation(
+                operation_name="Attach Rescue Disk",
+                success=True,
+                message="Detected via reconciliation",
+                rollback_data={
+                    'vm_name': vm_name,
+                    'device_name': rescue_disk_name
+                },
+                step_number=5
+            )
+
+    # Check 3: Rescue disk exists (not attached) but creation not in checkpoint
+    if rescue_disk_name and "Create Rescue Disk" not in checkpointed_op_names:
+        if rescue_disk_name not in attached_disk_names:
+            try:
+                compute.disks().get(
+                    project=project, zone=zone, disk=rescue_disk_name
+                ).execute()
+                _log(f"Rescue disk '{rescue_disk_name}' exists but not in checkpoint - adding to rollback")
+                state_tracker.add_operation(
+                    operation_name="Create Rescue Disk",
+                    success=True,
+                    message="Detected via reconciliation",
+                    rollback_data={'disk_name': rescue_disk_name},
+                    step_number=4
+                )
+            except Exception:
+                pass  # Disk doesn't exist, nothing to reconcile
+
+    # Check 4: Rescue metadata set but not in checkpoint
+    metadata_obj = vm.get('metadata', {})
+    metadata_items = metadata_obj.get('items', [])
+    has_rescue_metadata = any(item.get('key') == 'rescue-mode' for item in metadata_items)
+    if has_rescue_metadata and "Set Metadata" not in checkpointed_op_names:
+        _log("Rescue metadata found but not in checkpoint - adding to rollback")
+        # Reconstruct pre-rescue metadata by removing rescue keys and restoring backups
+        rescue_keys = {'rescue-mode', 'startup-script', 'windows-startup-script-ps1',
+                       'rescue-original-disk', 'rescue-os-type'}
+        backup_prefix = 'rescue-backup-'
+        restored_items = []
+        for item in metadata_items:
+            if item['key'] in rescue_keys:
+                continue
+            if item['key'].startswith(backup_prefix):
+                restored_items.append({
+                    'key': item['key'][len(backup_prefix):],
+                    'value': item['value']
+                })
+            else:
+                restored_items.append(item)
+        original_metadata = {
+            'fingerprint': metadata_obj.get('fingerprint', ''),
+            'items': restored_items
+        }
+        state_tracker.add_operation(
+            operation_name="Set Metadata",
+            success=True,
+            message="Detected via reconciliation",
+            rollback_data={
+                'vm_name': vm_name,
+                'original_metadata': original_metadata
+            },
+            step_number=6
+        )
 
 
 def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
@@ -807,8 +1063,6 @@ def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
         CreateSnapshotOperation, CreateDiskOperation
     )
 
-    print(f"\nRolling back instance [{vm_name}]:")
-
     # Create operations map
     operations_map = {
         "Stop VM": StopVMOperation(compute, project, zone, logger),
@@ -832,18 +1086,38 @@ def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
             step_number=op.step
         )
 
-    # Perform rollback
+    # Reconcile with actual VM state to catch operations that completed
+    # server-side but weren't checkpointed (e.g., Ctrl+C during API call)
+    if checkpoint.operation == 'rescue':
+        _reconcile_rescue_state(
+            compute, project, zone, vm_name, checkpoint, state_tracker, logger
+        )
+
+    # Check if there's anything to rollback
+    rollback_ops = state_tracker.get_rollback_operations()
+    if not rollback_ops:
+        # Nothing was changed — just clear the stale checkpoint
+        checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
+        checkpoint_mgr.clear_checkpoint()
+        print(f"\nNo changes were made. Checkpoint cleared for instance [{vm_name}].")
+        return True
+
+    # Perform rollback with progress indicator
+    print(f"\nRolling back instance [{vm_name}]:")
+    spinner = _Spinner("  Undoing changes")
+    spinner.start()
     handler = RollbackHandler(logger)
     success = handler.rollback(state_tracker, operations_map)
+    spinner.stop()
 
     # Clear checkpoint after rollback
     checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
     checkpoint_mgr.clear_checkpoint()
 
     if success:
-        print(f"\nInstance [{vm_name}] has been restored to its original state.")
+        print(f"Instance [{vm_name}] has been restored to its original state.")
     else:
-        print(f"\n{error_prefix()} Rollback completed with errors. Manual intervention may be required.")
+        print(f"{error_prefix()} Rollback completed with errors. Manual intervention may be required.", file=sys.stderr)
 
     return success
 
@@ -916,7 +1190,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
             print("WARNING: Stopping this VM will PERMANENTLY LOSE all data on Local SSDs!", file=sys.stderr)
             print("", file=sys.stderr)
             print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
-            print(f"  gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --quiet --force", file=sys.stderr)
+            print(f"  $ gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --quiet --force", file=sys.stderr)
             return 1
 
     # Interactive confirmation (unless --quiet or resuming)
@@ -924,7 +1198,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
         # Count lines for clearing after confirmation
         lines_printed = 0
 
-        print(f"\nYou are about to rescue instance [{args.instance_name}] in zone [{args.zone}].")
+        print(f"\nYou are about to rescue instance [{args.instance_name}] in zone [{args.zone}] project [{project}].")
         lines_printed += 2  # includes leading newline
         print("")
         lines_printed += 1
@@ -932,11 +1206,18 @@ def handle_rescue(args: argparse.Namespace) -> int:
         lines_printed += 1
         print(f" - Stop instance [{args.instance_name}].")
         lines_printed += 1
-        print(" - Create a snapshot of your affected boot disk.")
+        if args.snapshot:
+            print(" - Create a backup snapshot of the boot disk.")
+        else:
+            print(" - Snapshot creation skipped (--no-snapshot).")
         lines_printed += 1
-        print(" - Create a rescue disk and boot from it.")
+        print(" - Detach the original boot disk.")
         lines_printed += 1
-        print(" - Attach your affected boot disk for repair.")
+        print(" - Create a rescue disk and attach it as the new boot disk.")
+        lines_printed += 1
+        print(" - Replace startup-script metadata (original will be backed up).")
+        lines_printed += 1
+        print(" - Start the VM and attach original disk as secondary for repair.")
         lines_printed += 1
 
         # Show Local SSD warning if applicable
@@ -1059,11 +1340,16 @@ def handle_restore(args: argparse.Namespace) -> int:
         lines_printed += 1
         print(f" - Stop instance [{args.instance_name}].")
         lines_printed += 1
-        print(" - Delete the rescue disk.")
+        print(" - Detach rescue disk and re-attach original disk as boot.")
         lines_printed += 1
-        print(" - Restore your affected boot disk as the primary boot device.")
+        print(" - Restore original metadata (startup-script, etc.).")
         lines_printed += 1
         print(f" - Start instance [{args.instance_name}].")
+        lines_printed += 1
+        if hasattr(args, 'keep_rescue_disk') and args.keep_rescue_disk:
+            print(" - Keep rescue disk for post-mortem analysis.")
+        else:
+            print(" - Delete the rescue disk.")
         lines_printed += 1
         print("")
         lines_printed += 1
@@ -1150,23 +1436,79 @@ def handle_diagnose(args: argparse.Namespace) -> int:
     )
     logger = logging.getLogger(__name__)
 
-    # Pre-flight validation: credentials + permissions + VM exists
+    # Pre-flight validation: credentials + permissions + VM state
     runner = ValidationRunner()
     runner.add(CredentialsValidator(compute, project, args.zone))
     runner.add(DiagnosePermissionsValidator(
         compute, project, args.zone, args.instance_name,
         tracking_label='diagnose-val-iam'
     ))
+
+    spinner = _Spinner("Checking VM state")
+    if not debug:
+        spinner.start()
     results = runner.run_all(logger)
+
+    # Also fetch VM info for state/rescue/OS checks under the same spinner
+    vm = None
+    try:
+        vm = compute.instances().get(
+            project=project, zone=args.zone, instance=args.instance_name
+        ).execute()
+    except Exception as e:
+        logger.debug(f"Could not fetch VM info: {e}")
+        # VM existence validated during diagnose execution
+
+    if not debug:
+        spinner.stop()
 
     if not results.all_passed():
         results.print_failures()
         return 1
 
+    # Pre-flight checks on VM (rescue mode first, then state, then OS)
+    if vm:
+        # Rescue mode check first — always suggest restoring
+        metadata_items = vm.get('metadata', {}).get('items', [])
+        if any(item.get('key') == 'rescue-mode' for item in metadata_items):
+            print(f"{error_prefix()} Instance [{args.instance_name}] is in rescue mode.", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("Serial console shows the rescue environment, not original boot errors.", file=sys.stderr)
+            print("Restore the VM first, then run diagnose:", file=sys.stderr)
+            print(f"  $ gce-rescue-v2 restore {args.instance_name} --zone={args.zone} --project={project}", file=sys.stderr)
+            return 1
+
+        # Must be RUNNING (serial console has no logs when terminated)
+        vm_status = vm.get('status', 'UNKNOWN')
+        if vm_status != 'RUNNING':
+            print(f"{error_prefix()} Instance [{args.instance_name}] is {vm_status}.", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("Diagnose requires serial console output from a running VM.", file=sys.stderr)
+            if vm_status == 'TERMINATED':
+                print("Start the VM first:", file=sys.stderr)
+                print(f"  $ gcloud compute instances start {args.instance_name} --zone={args.zone} --project={project}", file=sys.stderr)
+            return 1
+
+        # Linux only
+        from .utils.os_detection import detect_os_type
+        os_type = detect_os_type(vm)
+        if os_type == 'windows':
+            print(f"{error_prefix()} Diagnose is only supported for Linux VMs.", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("For Windows VMs, use rescue mode for manual investigation:", file=sys.stderr)
+            print(f"  $ gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --project={project}", file=sys.stderr)
+            return 1
+
     # Create and execute diagnose operation
     try:
         diagnose_op = DiagnoseOperation(compute, project, args.zone, logger)
-        result = diagnose_op.execute(args.instance_name)
+
+        spinner = _Spinner("Analyzing serial console output")
+        if not debug:
+            spinner.start()
+        result = diagnose_op.execute(args.instance_name, tracking_label='diagnose')
+        if not debug:
+            spinner.stop()
 
         if not result.success:
             # Operation failed (e.g., serial console disabled)
@@ -1184,7 +1526,7 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         diagnosis = result.rollback_data
 
         # If format is json/yaml, use structured output
-        if args.format in ('json', 'yaml', 'table', 'value'):
+        if args.format in ('json', 'yaml', 'table'):
             print(OutputFormatter.format_output(diagnosis, args.format))
             return 0
 
@@ -1198,6 +1540,376 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         logger.error(f"Unexpected error during diagnosis: {e}", exc_info=debug)
         print(f"{error_prefix()} Unexpected error: {e}", file=sys.stderr)
         return 1
+
+
+def _show_repair_results(result: Dict[str, Any], vm_name: str,
+                         zone: str = '', project: str = '') -> int:
+    """Display repair results and return exit code."""
+    status = result.get('status', 'unknown')
+    fix_lines = result.get('fix_lines', [])
+    fixed_count = result.get('fixed_count', 0)
+    error = result.get('error')
+    snapshot_name = result.get('snapshot_name')
+    duration = result.get('duration_seconds', 0)
+
+    duration_str = _format_duration(duration) if duration else ''
+
+    if status == 'success':
+        print("")
+        print("Repair results:")
+        for line in fix_lines:
+            print(f"  {line}")
+        issue_word = "issue" if fixed_count == 1 else "issues"
+        print(f"  {fixed_count} {issue_word} fixed.")
+        if any('fstab' in line.lower() for line in fix_lines):
+            print(f"  Original fstab backed up to: /etc/fstab.gce-repair-backup")
+        if snapshot_name:
+            print(f"  Backup snapshot: {snapshot_name}")
+        print("")
+        completion = f"Repair complete. Instance [{vm_name}] is now running."
+        if duration_str:
+            completion += f" ({duration_str})"
+        print(completion)
+        return 0
+
+    elif status == 'no_issues':
+        print("")
+        print("Repair results:")
+        print("  No issues needed fixing (fstab entries were already valid).")
+        if snapshot_name:
+            print(f"  Backup snapshot: {snapshot_name}")
+        print("")
+        completion = f"Repair complete. Instance [{vm_name}] is now running."
+        if duration_str:
+            completion += f" ({duration_str})"
+        print(completion)
+        return 0
+
+    elif status == 'no_fix':
+        print("No automated fix available for the detected issues.")
+        return 0
+
+    elif status == 'failed':
+        print("", file=sys.stderr)
+        print(f"{warning_prefix()} Fix script reported a problem: {error}", file=sys.stderr)
+        if fix_lines:
+            print("Partial results:", file=sys.stderr)
+            for line in fix_lines:
+                print(f"  {line}", file=sys.stderr)
+            if any('fstab' in line.lower() for line in fix_lines):
+                print(f"  Original fstab backed up to: /etc/fstab.gce-repair-backup", file=sys.stderr)
+        print("", file=sys.stderr)
+        print(f"Instance [{vm_name}] has been restored and is running.", file=sys.stderr)
+        if snapshot_name:
+            print(f"Backup snapshot: {snapshot_name}", file=sys.stderr)
+            print("To revert to the pre-repair state:", file=sys.stderr)
+            print(f"  https://console.cloud.google.com/compute/snapshotsDetail"
+                  f"/projects/{project}/global/snapshots/{snapshot_name}",
+                  file=sys.stderr)
+        print("The issue may require manual intervention.", file=sys.stderr)
+        return 1
+
+    elif status == 'mount_failed':
+        print("", file=sys.stderr)
+        print(f"{error_prefix()} {error}", file=sys.stderr)
+        print("", file=sys.stderr)
+        if snapshot_name:
+            print(f"Backup snapshot: {snapshot_name}", file=sys.stderr)
+        print("VM is in rescue mode for manual investigation.", file=sys.stderr)
+        print("Connect via SSH and inspect the disk, then restore:", file=sys.stderr)
+        ssh_cmd = f"  $ gcloud compute ssh {vm_name} --zone={zone}"
+        if project:
+            ssh_cmd += f" --project={project}"
+        print(ssh_cmd, file=sys.stderr)
+        restore_cmd = f"  $ gce-rescue-v2 restore {vm_name}"
+        if zone:
+            restore_cmd += f" --zone={zone}"
+        if project:
+            restore_cmd += f" --project={project}"
+        print(restore_cmd, file=sys.stderr)
+        return 1
+
+    elif status == 'rescue_failed':
+        print("", file=sys.stderr)
+        print(f"{error_prefix()} {error}", file=sys.stderr)
+        if snapshot_name:
+            print(f"Backup snapshot: {snapshot_name}", file=sys.stderr)
+        return 1
+
+    elif status == 'restore_failed':
+        print("", file=sys.stderr)
+        print(f"{error_prefix()} Restore failed after repair.", file=sys.stderr)
+        if fix_lines:
+            print("Repair did complete:", file=sys.stderr)
+            for line in fix_lines:
+                print(f"  {line}", file=sys.stderr)
+        print("", file=sys.stderr)
+        if snapshot_name:
+            print(f"Backup snapshot: {snapshot_name}", file=sys.stderr)
+        print("VM may still be in rescue mode. Try restoring manually:", file=sys.stderr)
+        restore_cmd = f"  $ gce-rescue-v2 restore {vm_name}"
+        if zone:
+            restore_cmd += f" --zone={zone}"
+        if project:
+            restore_cmd += f" --project={project}"
+        print(restore_cmd, file=sys.stderr)
+        return 1
+
+    else:
+        print(f"\n{error_prefix()} Unexpected result: {status}", file=sys.stderr)
+        if error:
+            print(f"  {error}", file=sys.stderr)
+        return 1
+
+
+def handle_repair(args: argparse.Namespace) -> int:
+    """Handle repair command."""
+    from .core.auth import AuthManager
+
+    # Get project from args or gcloud config
+    project = args.project or get_gcloud_config('core/project')
+
+    if not project:
+        print(f"{error_prefix()} No project specified.", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Please specify a project using one of these methods:", file=sys.stderr)
+        print("  1. --project=PROJECT_ID flag", file=sys.stderr)
+        print("  2. gcloud config set project PROJECT_ID", file=sys.stderr)
+        print("  3. Set CLOUDSDK_CORE_PROJECT environment variable", file=sys.stderr)
+        return 1
+
+    # Get compute client
+    try:
+        auth = AuthManager()
+        compute, project = auth.get_client(project)
+    except Exception as e:
+        print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
+        return 1
+
+    # Setup logging
+    import logging
+    debug = args.verbosity == 'debug'
+    log_level = logging.DEBUG if debug else logging.WARNING
+    logging.basicConfig(level=log_level, format='%(levelname)s: %(message)s')
+    logger = logging.getLogger(__name__)
+    logger.console_level = log_level
+
+    # Create repair orchestrator
+    from .orchestration.repair import RepairOrchestrator, SUPPORTED_FIX_CATEGORIES
+    config = args_to_rescue_config(args)
+
+    orchestrator = RepairOrchestrator(
+        compute=compute, project=project, zone=args.zone,
+        vm_name=args.instance_name, config=config, logger=logger
+    )
+
+    # Pre-flight: check VM state (rescue mode, running, etc.)
+    spinner = _Spinner("Checking VM state")
+    if not debug:
+        spinner.start()
+    try:
+        vm = compute.instances().get(
+            project=project, zone=args.zone, instance=args.instance_name
+        ).execute()
+    except Exception as e:
+        if not debug:
+            spinner.stop()
+        logger.debug(f"Could not fetch VM info: {e}")
+        vm = None
+
+    if not debug:
+        spinner.stop()
+
+    if vm:
+        vm_status = vm.get('status', 'UNKNOWN')
+        metadata_items = vm.get('metadata', {}).get('items', [])
+        in_rescue = any(item.get('key') == 'rescue-mode' for item in metadata_items)
+
+        # Check for incomplete rescue checkpoint (from interrupted repair)
+        if not in_rescue and not args.quiet:
+            checkpoint_mgr = CheckpointManager(
+                compute, project, args.zone, args.instance_name, logger
+            )
+            checkpoint = checkpoint_mgr.detect_incomplete(
+                operation_type='rescue'
+            )
+            if checkpoint:
+                print(f"\n{warning_prefix()} An incomplete rescue operation was "
+                      f"detected for instance [{args.instance_name}].")
+                print("")
+                print(f"  Started:    {checkpoint.started_at[:19].replace('T', ' ')} "
+                      f"({checkpoint.get_age_display()})")
+                print(f"  Progress:   {checkpoint.current_step} of "
+                      f"{checkpoint.total_steps} steps completed")
+                last_step = checkpoint.get_last_completed_operation() or "None"
+                print(f"  Last step:  {last_step}")
+                print("")
+                print("This must be resolved before repair can proceed.")
+                print("")
+                print("  [1] Rollback  Undo completed steps and restore original state")
+                print("  [2] Abort     Do nothing and exit")
+                print("")
+
+                while True:
+                    try:
+                        response = input("Enter your choice (1/2): ").strip()
+                        if response == '1':
+                            success = _handle_checkpoint_rollback(
+                                compute, project, args.zone,
+                                args.instance_name, checkpoint, logger
+                            )
+                            if success:
+                                print("")
+                                print("Run repair again to fix boot issues:")
+                                print(
+                                    f"  $ gce-rescue-v2 repair "
+                                    f"{args.instance_name} --zone={args.zone} "
+                                    f"--project={project}"
+                                )
+                            return 0 if success else 1
+                        elif response == '2':
+                            return 0
+                        else:
+                            print("Please enter 1 or 2.")
+                    except (KeyboardInterrupt, EOFError):
+                        print("\nAborted.")
+                        return 0
+
+        # If not in rescue mode, must be RUNNING
+        if not in_rescue and vm_status != 'RUNNING':
+            print(f"{error_prefix()} Instance [{args.instance_name}] is {vm_status}.", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("Repair requires the VM to be running for serial console diagnosis.", file=sys.stderr)
+            if vm_status == 'TERMINATED':
+                print("Start the VM first:", file=sys.stderr)
+                print(f"  $ gcloud compute instances start {args.instance_name} --zone={args.zone} --project={project}", file=sys.stderr)
+            return 1
+
+        if in_rescue:
+            print(f"{warning_prefix()} Instance [{args.instance_name}] is in rescue mode "
+                  f"from a previous operation.")
+            print("")
+            print("  [1] Continue  Check repair results and restore the VM")
+            print("  [2] Abort     Do nothing and exit")
+            print("")
+
+            while True:
+                try:
+                    response = input("Enter your choice (1/2): ").strip()
+                    if response == '1':
+                        break
+                    elif response == '2':
+                        return 0
+                    else:
+                        print("Please enter 1 or 2.")
+                except (KeyboardInterrupt, EOFError):
+                    print("\nAborted.")
+                    return 0
+
+            print("")
+            result = orchestrator.resume()
+            return _show_repair_results(result, args.instance_name,
+                                        zone=args.zone, project=project)
+
+    # Validate (credentials, IAM, Shielded/Confidential, Linux-only)
+    spinner = _Spinner("Validating permissions")
+    if not debug:
+        spinner.start()
+    valid = orchestrator.validate()
+    if not debug:
+        spinner.stop()
+    if not valid:
+        return 1
+
+    # Diagnose
+    spinner = _Spinner("Analyzing serial console output")
+    if not debug:
+        spinner.start()
+    diagnosis = orchestrator.diagnose()
+    if not debug:
+        spinner.stop()
+    if diagnosis is None:
+        return 1
+
+    # Show diagnosis report (skip manual fix steps since repair plan follows)
+    formatter = DiagnosisReportFormatter()
+    print(formatter.format_report(diagnosis, skip_fix_section=True))
+    print("")
+
+    # Check if there are any boot errors
+    boot_errors = diagnosis.get('boot_errors', [])
+    if not boot_errors:
+        print("No boot issues found. Repair not needed.")
+        return 0
+
+    # Check if any errors are fixable
+    fixable = orchestrator.get_fixable_categories(diagnosis)
+    unfixable = orchestrator.get_unfixable_categories(diagnosis)
+
+    if not fixable:
+        for cat in unfixable:
+            print(
+                f"Detected [{cat.upper()}] issue but automated fix is not yet available."
+            )
+        print("")
+        print("Use rescue mode for manual repair:")
+        print(
+            f"  $ gce-rescue-v2 rescue {args.instance_name} "
+            f"--zone={args.zone} --project={project}"
+        )
+        return 0
+
+    # Show unfixable categories as warnings
+    if unfixable:
+        for cat in unfixable:
+            print(
+                f"{warning_prefix()} [{cat.upper()}] issue detected but "
+                f"no automated fix available. Will require manual repair."
+            )
+        print("")
+
+    # Show repair plan
+    snapshot_enabled = getattr(args, 'snapshot', True)
+    print("Repair plan:")
+    step = 1
+    if snapshot_enabled:
+        print(f"  {step}. Create backup snapshot of boot disk")
+        step += 1
+    print(f"  {step}. Enter rescue mode (stop VM, swap boot disk)")
+    step += 1
+    fix_descriptions = {
+        'fstab': 'Fix /etc/fstab (comment out invalid entries)',
+    }
+    for cat in fixable:
+        desc = fix_descriptions.get(cat, f'Fix {cat}')
+        print(f"  {step}. {desc}")
+        step += 1
+    print(f"  {step}. Restore original boot disk and start VM")
+    print("")
+
+    # Confirmation (unless --quiet)
+    if not args.quiet:
+        try:
+            safety_note = ""
+            if snapshot_enabled:
+                safety_note = " A backup snapshot will be created before any changes."
+            response = input(
+                f"This will stop the VM, apply fixes, and restart it.{safety_note} "
+                f"Proceed? [y/N]: "
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 0
+
+        if response not in ('y', 'yes'):
+            print("\nAborted by user.")
+            return 0
+        print("")
+
+    # Execute repair
+    result = orchestrator.execute(diagnosis)
+    return _show_repair_results(result, args.instance_name,
+                                zone=args.zone, project=project)
 
 
 def main():
@@ -1219,15 +1931,17 @@ def main():
             return handle_restore(args)
         elif args.command == 'diagnose':
             return handle_diagnose(args)
+        elif args.command == 'repair':
+            return handle_repair(args)
         else:
-            print(f"{error_prefix()} (gce-rescue) Unknown command: {args.command}", file=sys.stderr)
+            print(f"{error_prefix()} (gce-rescue-v2) Unknown command: {args.command}", file=sys.stderr)
             return 1
 
     except KeyboardInterrupt:
         print("\n\nOperation cancelled by user.", file=sys.stderr)
         return 130  # Standard exit code for SIGINT
     except Exception as e:
-        print(f"{error_prefix()} (gce-rescue) Unexpected error: {str(e)}", file=sys.stderr)
+        print(f"{error_prefix()} (gce-rescue-v2) Unexpected error: {str(e)}", file=sys.stderr)
         if '--verbosity=debug' in sys.argv or '--verbosity debug' in sys.argv:
             import traceback
             traceback.print_exc()

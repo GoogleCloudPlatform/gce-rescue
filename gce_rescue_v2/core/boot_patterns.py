@@ -312,7 +312,7 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         diagnosis_status = "boot_errors_detected"
         recommendations = [
             f"Found {len(detected_errors)} boot error(s) in serial console output",
-            f"Use 'gce-rescue rescue {vm_name} --zone={zone}' to enter rescue mode",
+            f"Use 'gce-rescue-v2 rescue {vm_name} --zone={zone}' to enter rescue mode",
             "Review the suggested fixes above for each detected error"
         ]
     else:

@@ -6,9 +6,14 @@ This operation is read-only and does not modify the VM in any way.
 from typing import Optional
 import logging
 
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
 from googleapiclient.errors import HttpError
 
 from ..core.boot_patterns import analyze_serial_output, DiagnosisResult
+from ..core.config import VERSION
 from ..utils.os_detection import (
     detect_os_type, detect_os_flavor, detect_architecture, detect_license_type,
 )
@@ -25,17 +30,23 @@ class DiagnoseOperation(BaseOperation):
         """Return the operation name."""
         return "Diagnose VM"
 
-    def execute(self, vm_name: str) -> OperationResult:
+    def execute(self, vm_name: str, tracking_label: str = None) -> OperationResult:
         """Execute diagnosis by fetching and analyzing serial console output.
 
         Args:
             vm_name: Name of the VM to diagnose
+            tracking_label: Optional tracking label for usage analytics.
 
         Returns:
             OperationResult with diagnosis data in rollback_data field
         """
         try:
             self._log_info(f"Starting diagnosis for VM: {vm_name}")
+            if tracking_label:
+                self._log_debug(f"  Operation tracking: {tracking_label}")
+
+            # Use tracked client if tracking_label provided
+            compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
 
             # Get VM status and OS info (non-fatal if 403 - user may only
             # have serial console read permission on this project)
@@ -46,7 +57,7 @@ class DiagnoseOperation(BaseOperation):
             license_type = 'unknown'
             try:
                 self._log_debug("Fetching VM instance details")
-                vm_instance = self.compute.instances().get(
+                vm_instance = compute.instances().get(
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name
@@ -86,7 +97,7 @@ class DiagnoseOperation(BaseOperation):
             # Fetch serial console output
             self._log_debug("Fetching serial console output")
             try:
-                serial_response = self.compute.instances().getSerialPortOutput(
+                serial_response = compute.instances().getSerialPortOutput(
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name,
@@ -261,6 +272,31 @@ class DiagnoseOperation(BaseOperation):
                     ]
                 }
             )
+
+    def _create_tracked_client(self, tracking_label: str):
+        """Create a compute client with unique User-Agent for usage tracking.
+
+        Args:
+            tracking_label: Tracking label for the User-Agent header.
+
+        Returns:
+            Compute API client with custom User-Agent header
+        """
+        credentials = self.compute._http.credentials
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
+
+        def _request_builder(http, *args, **kwargs):
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials, http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        return discovery.build(
+            'compute', 'v1', credentials=credentials,
+            cache_discovery=False, requestBuilder=_request_builder
+        )
 
     def rollback(self, rollback_data: dict) -> bool:
         """No rollback needed for read-only diagnosis operation.

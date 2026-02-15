@@ -12,13 +12,16 @@ from .colors import red, yellow, green, bold, dim
 class DiagnosisReportFormatter:
     """Formats DiagnosisResult dicts into human-readable CLI reports."""
 
-    def format_report(self, diagnosis: Dict[str, Any]) -> str:
+    def format_report(self, diagnosis: Dict[str, Any],
+                      skip_fix_section: bool = False) -> str:
         """Format a complete diagnosis report.
 
         Args:
             diagnosis: Diagnosis result dict with keys:
                 vm_name, zone, status, diagnosis_status,
                 boot_errors, recommendations
+            skip_fix_section: If True, omit the "To fix this issue:" section.
+                Used by repair command which shows its own repair plan.
 
         Returns:
             Formatted report string
@@ -26,7 +29,7 @@ class DiagnosisReportFormatter:
         status = diagnosis.get('diagnosis_status', '')
 
         if status == 'boot_errors_detected':
-            return self._format_errors_report(diagnosis)
+            return self._format_errors_report(diagnosis, skip_fix_section)
         elif status == 'healthy':
             return self._format_healthy(diagnosis)
         else:
@@ -98,7 +101,8 @@ class DiagnosisReportFormatter:
 
         return f"Result:    {red(summary)}"
 
-    def _format_errors_report(self, diagnosis: Dict[str, Any]) -> str:
+    def _format_errors_report(self, diagnosis: Dict[str, Any],
+                              skip_fix_section: bool = False) -> str:
         """Format a report with detected errors."""
         lines = []
 
@@ -117,8 +121,9 @@ class DiagnosisReportFormatter:
         for error in errors:
             lines.append(self._format_single_issue(error, diagnosis))
 
-        # Consolidated fix section
-        lines.append(self._format_fix_section(diagnosis))
+        # Consolidated fix section (omitted when repair command handles it)
+        if not skip_fix_section:
+            lines.append(self._format_fix_section(diagnosis))
 
         return "\n".join(lines)
 
@@ -182,7 +187,7 @@ class DiagnosisReportFormatter:
 
         # Step 1: Enter rescue mode
         lines.append("  1. Enter rescue mode:")
-        lines.append(f"     $ gce-rescue rescue {vm_name} --zone={zone}")
+        lines.append(f"     $ gce-rescue-v2 rescue {vm_name} --zone={zone}")
         lines.append("")
 
         # Step 2: Category-aware fix guidance
@@ -214,7 +219,15 @@ class DiagnosisReportFormatter:
 
         # Step 3: Restore
         lines.append("  3. Restore the VM:")
-        lines.append(f"     $ gce-rescue restore {vm_name} --zone={zone}")
+        lines.append(f"     $ gce-rescue-v2 restore {vm_name} --zone={zone}")
+
+        # Show auto-repair alternative if any category supports it
+        from ..orchestration.repair import SUPPORTED_FIX_CATEGORIES
+        auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
+        if auto_fixable:
+            lines.append("")
+            lines.append("Or auto-repair:")
+            lines.append(f"  $ gce-rescue-v2 repair {vm_name} --zone={zone}")
 
         return "\n".join(lines)
 
@@ -257,7 +270,7 @@ class DiagnosisReportFormatter:
 
         lines.append("")
         lines.append("Then run diagnosis again:")
-        lines.append(f"  $ gce-rescue diagnose {vm_name} --zone={zone}")
+        lines.append(f"  $ gce-rescue-v2 diagnose {vm_name} --zone={zone}")
 
         return "\n".join(lines)
 

@@ -20,7 +20,7 @@ from .core.config import RescueConfig, RestoreConfig, OS_TYPE_WINDOWS
 from .core.error_messages import get_error_suggestion
 from .utils.logger import setup_logging
 from .utils.colors import note_prefix
-from .orchestration import RescueOrchestrator, RestoreOrchestrator
+from .orchestration import RescueOrchestrator, RestoreOrchestrator, RepairOrchestrator
 
 
 def rescue_vm(vm_name: str, zone: str, project: str = None,
@@ -281,6 +281,24 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
             logger.error("Restore failed.")
             return False
 
+        # Look up safety snapshot from rescue phase
+        snapshot_name = None
+        if orchestrator.original_disk_name:
+            try:
+                snap_resp = compute.snapshots().list(
+                    project=project,
+                    filter=f'name:pre-rescue-{orchestrator.original_disk_name}-*'
+                ).execute()
+                snap_items = snap_resp.get('items', [])
+                if snap_items:
+                    snap_items.sort(
+                        key=lambda s: s.get('creationTimestamp', ''),
+                        reverse=True
+                    )
+                    snapshot_name = snap_items[0].get('name')
+            except Exception:
+                pass  # Non-critical, skip if lookup fails
+
         # Success! Show OS-appropriate instructions
         # Check metadata for OS type (stored during rescue)
         os_type = None
@@ -333,6 +351,11 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
             logger.info("  b. Using Google Cloud Console:")
             logger.info(f"     https://ssh.cloud.google.com/v2/ssh/projects/{project}/zones/{zone}/instances/{vm_name}?authuser=0&hl=en_US&useAdminProxy=true")
 
+        if snapshot_name:
+            logger.info(f"Safety snapshot still exists: {snapshot_name}")
+            logger.info(f"  Delete when no longer needed:")
+            logger.info(f"  $ gcloud compute snapshots delete {snapshot_name} --project={project}")
+
         logger.info("")
         return True
 
@@ -351,26 +374,122 @@ def restore_vm(vm_name: str, zone: str, project: str = None,
         return False
 
 
+def repair_vm(vm_name: str, zone: str, project: str = None,
+              config: RescueConfig = None, debug: bool = False,
+              log_file: str = None) -> bool:
+    """
+    Repair a VM (diagnose + rescue with fix + restore).
+
+    This will:
+    1. Diagnose boot issues via serial console
+    2. Enter rescue mode with embedded fix script
+    3. Fix detected issues (e.g., invalid fstab entries)
+    4. Restore VM to normal operation
+
+    Linux only. On failure during rescue/restore, automatic rollback applies.
+
+    Args:
+        vm_name: Name of VM to repair
+        zone: GCP zone (e.g., 'us-central1-a')
+        project: GCP project ID (optional, uses default if not provided)
+        config: Optional RescueConfig for advanced settings
+        debug: Enable debug logging (default: False)
+        log_file: Optional log file path
+
+    Returns:
+        True if repair succeeded, False if failed
+    """
+    # Setup logging
+    if not log_file:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        log_file = f"{vm_name}-repair-{timestamp}.log"
+    logger = setup_logging(
+        level='DEBUG' if debug else 'INFO',
+        log_file=log_file,
+        debug=debug
+    )
+
+    logger.debug(f"GCE Rescue V2 - Repair")
+    logger.debug(f"Log file: {log_file}")
+    logger.debug(
+        f"VM: {vm_name}, Zone: {zone}"
+        + (f", Project: {project}" if project else "")
+    )
+
+    try:
+        auth = AuthManager()
+        compute, project = auth.get_client(project)
+        logger.debug(f"Authenticated to project: {project}")
+
+        if config is None:
+            config = RescueConfig()
+
+        orchestrator = RepairOrchestrator(
+            compute=compute, project=project, zone=zone,
+            vm_name=vm_name, config=config, logger=logger,
+            log_file=log_file
+        )
+
+        if not orchestrator.validate():
+            logger.error("Validation failed.")
+            return False
+
+        diagnosis = orchestrator.diagnose()
+        if diagnosis is None:
+            logger.error("Diagnosis failed.")
+            return False
+
+        boot_errors = diagnosis.get('boot_errors', [])
+        if not boot_errors:
+            logger.info("No boot issues found. Repair not needed.")
+            return True
+
+        fixable = orchestrator.get_fixable_categories(diagnosis)
+        if not fixable:
+            logger.info("No automated fix available for detected issues.")
+            return False
+
+        result = orchestrator.execute(diagnosis)
+        return result.get('status') in ('success', 'no_issues')
+
+    except Exception as e:
+        error_msg = str(e)
+        suggestion = get_error_suggestion(error_msg)
+
+        if suggestion:
+            logger.error(
+                suggestion.format(vm_name=vm_name, zone=zone, project=project)
+            )
+        else:
+            logger.error(f"Unexpected error: {error_msg}")
+
+        if debug:
+            logger.exception("Full traceback:")
+        return False
+
+
 if __name__ == '__main__':
     # Quick test - you can run this file directly for testing
     import sys
-    
+
     if len(sys.argv) < 4:
-        print("Usage: python main.py <rescue|restore> <vm_name> <zone> [project]")
+        print("Usage: python main.py <rescue|restore|repair> <vm_name> <zone> [project]")
         print("Example: python main.py rescue my-vm us-central1-a my-project")
         sys.exit(1)
-    
+
     mode = sys.argv[1]
     vm_name = sys.argv[2]
     zone = sys.argv[3]
     project = sys.argv[4] if len(sys.argv) > 4 else None
-    
+
     if mode == 'rescue':
         success = rescue_vm(vm_name, zone, project, debug=True)
     elif mode == 'restore':
         success = restore_vm(vm_name, zone, project, debug=True)
+    elif mode == 'repair':
+        success = repair_vm(vm_name, zone, project, debug=True)
     else:
-        print(f"Unknown mode: {mode}. Use 'rescue' or 'restore'")
+        print(f"Unknown mode: {mode}. Use 'rescue', 'restore', or 'repair'")
         sys.exit(1)
-    
+
     sys.exit(0 if success else 1)

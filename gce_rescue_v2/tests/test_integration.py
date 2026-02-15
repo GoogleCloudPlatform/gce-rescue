@@ -49,6 +49,8 @@ def test_full_rescue_restore_cycle(monkeypatch):
             self.zone = zone
             self.vm_name = vm_name
             self.log_file = log_file
+            # Required attributes for main.py success message
+            self.original_disk_name = 'test-boot-disk'
 
         def validate(self):
             state["calls"].append("restore-validate")

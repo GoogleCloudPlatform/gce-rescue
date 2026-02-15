@@ -43,7 +43,7 @@ dev = [
 ]
 
 [project.scripts]
-gce-rescue = "gce_rescue_v2.cli:main"
+gce-rescue-v2 = "gce_rescue_v2.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/gokulr94/gce-rescue"

@@ -229,13 +229,13 @@ class TestErrorsReport:
     def test_rescue_command_in_fix_section(self, formatter, single_error_diagnosis):
         """Fix section should contain rescue command exactly once."""
         report = formatter.format_report(single_error_diagnosis)
-        rescue_count = report.count('gce-rescue rescue test-vm')
+        rescue_count = report.count('gce-rescue-v2 rescue test-vm')
         assert rescue_count == 1
 
     def test_restore_command_in_fix_section(self, formatter, single_error_diagnosis):
         """Fix section should contain restore command."""
         report = formatter.format_report(single_error_diagnosis)
-        assert 'gce-rescue restore test-vm --zone=us-central1-a' in report
+        assert 'gce-rescue-v2 restore test-vm --zone=us-central1-a' in report
 
     def test_no_borders(self, formatter, single_error_diagnosis):
         """Error report should not contain ===== borders."""
@@ -360,7 +360,7 @@ class TestUnableReport:
     def test_unable_shows_retry_hint(self, formatter, unable_diagnosis):
         """Unable report should show how to retry diagnosis."""
         report = formatter.format_report(unable_diagnosis)
-        assert 'gce-rescue diagnose test-vm' in report
+        assert 'gce-rescue-v2 diagnose test-vm' in report
 
 
 class TestSerialConsoleStyling:
@@ -404,3 +404,122 @@ class TestNoAnsiWhenPiped:
         """No ANSI codes when piped."""
         report = formatter.format_report(unable_diagnosis)
         assert '\033[' not in report
+
+
+class TestSkipFixSection:
+    """Tests for skip_fix_section parameter to skip manual fix guidance."""
+
+    def test_skip_fix_section_true_omits_guidance(
+        self, formatter, single_error_diagnosis
+    ):
+        """When skip_fix_section=True, 'To fix' section should be omitted."""
+        report = formatter.format_report(
+            single_error_diagnosis, skip_fix_section=True
+        )
+        assert 'To fix this issue:' not in report
+        assert 'gce-rescue-v2 rescue' not in report
+        assert 'gce-rescue-v2 restore' not in report
+
+    def test_skip_fix_section_true_keeps_errors(
+        self, formatter, single_error_diagnosis
+    ):
+        """Even with skip_fix_section=True, error details should remain."""
+        report = formatter.format_report(
+            single_error_diagnosis, skip_fix_section=True
+        )
+        # Error details should still be there
+        assert 'UUID=abc123-def456 does not exist' in report
+        assert '[FSTAB]' in report
+        assert 'CRITICAL' in report
+
+    def test_skip_fix_section_false_includes_guidance(
+        self, formatter, single_error_diagnosis
+    ):
+        """When skip_fix_section=False (default), fix section should be present."""
+        report = formatter.format_report(
+            single_error_diagnosis, skip_fix_section=False
+        )
+        assert 'To fix this issue:' in report
+        assert 'gce-rescue-v2 rescue' in report
+
+    def test_skip_fix_section_default_includes_guidance(
+        self, formatter, single_error_diagnosis
+    ):
+        """Default behavior should include fix section."""
+        report = formatter.format_report(single_error_diagnosis)
+        assert 'To fix this issue:' in report
+
+    def test_skip_fix_section_multi_error(
+        self, formatter, multi_error_diagnosis
+    ):
+        """skip_fix_section should work with multiple errors."""
+        report_with = formatter.format_report(
+            multi_error_diagnosis, skip_fix_section=False
+        )
+        report_without = formatter.format_report(
+            multi_error_diagnosis, skip_fix_section=True
+        )
+        assert 'To fix these issues:' in report_with
+        assert 'To fix these issues:' not in report_without
+
+
+class TestAutoRepairSuggestion:
+    """Tests for 'Or auto-repair' suggestion when categories support auto-fix."""
+
+    def test_auto_repair_shown_for_fstab(
+        self, formatter, single_error_diagnosis
+    ):
+        """When fstab error is detected, auto-repair suggestion should appear."""
+        report = formatter.format_report(single_error_diagnosis)
+        assert 'Or auto-repair:' in report
+        assert 'gce-rescue-v2 repair' in report
+
+    def test_auto_repair_shown_for_multi_error_with_fstab(
+        self, formatter, multi_error_diagnosis
+    ):
+        """When any fixable category is present, auto-repair should appear."""
+        report = formatter.format_report(multi_error_diagnosis)
+        assert 'Or auto-repair:' in report
+        assert 'gce-rescue-v2 repair' in report
+
+    def test_no_auto_repair_for_unfixable_only(self, formatter):
+        """When no fixable categories, auto-repair should not appear."""
+        diagnosis = {
+            'vm_name': 'test-vm',
+            'zone': 'us-central1-a',
+            'status': 'TERMINATED',
+            'os_type': 'linux',
+            'os_flavor': 'debian-12',
+            'architecture': 'x86_64',
+            'license_type': 'free',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [
+                {
+                    'category': 'grub',
+                    'severity': 'critical',
+                    'description': 'GRUB missing',
+                    'detected_pattern': 'grub pattern',
+                    'suggested_fixes': ['Fix GRUB'],
+                    'context_lines': ['grub error'],
+                    'matched_line_index': 0,
+                }
+            ],
+            'recommendations': [],
+        }
+        report = formatter.format_report(diagnosis)
+        assert 'Or auto-repair:' not in report
+        assert 'gce-rescue-v2 repair' not in report
+
+    def test_auto_repair_line_has_vm_name(
+        self, formatter, single_error_diagnosis
+    ):
+        """Auto-repair suggestion should include the VM name."""
+        report = formatter.format_report(single_error_diagnosis)
+        assert 'gce-rescue-v2 repair test-vm' in report
+
+    def test_auto_repair_line_has_zone(
+        self, formatter, single_error_diagnosis
+    ):
+        """Auto-repair suggestion should include the zone."""
+        report = formatter.format_report(single_error_diagnosis)
+        assert '--zone=us-central1-a' in report
