@@ -3,11 +3,13 @@
 
 > ### GCE Rescue V2 Beta Now Available!
 >
-> **V2 includes:** Windows VM support, automatic rollback, simplified CLI
+> **V2 includes:** Boot diagnostics (`diagnose`), auto-fix (`repair`), Windows support, automatic rollback, session recovery
 >
 > ```bash
 > pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git@v2-beta
-> gce-rescue-v2 rescue my-vm --zone=us-central1-a
+> gce-rescue-v2 diagnose my-vm --zone=us-central1-a    # What's wrong?
+> gce-rescue-v2 repair my-vm --zone=us-central1-a      # Auto-fix (Linux)
+> gce-rescue-v2 rescue my-vm --zone=us-central1-a      # Manual fix
 > ```
 >
 > **[View V2 Documentation](gce_rescue_v2/README.md)** | V1 documentation continues below
