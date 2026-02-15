@@ -15,6 +15,21 @@ from ..core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS
 ARCH_X86_64 = 'x86_64'
 ARCH_ARM64 = 'arm64'
 
+# License types
+LICENSE_FREE = 'free'
+LICENSE_PAYG = 'payg'
+LICENSE_BYOS = 'byos'
+
+# Projects that charge per-instance license fees
+_PAYG_LICENSE_PROJECTS = frozenset({
+    'rhel-cloud',
+    'rhel-sap-cloud',
+    'suse-cloud',
+    'suse-sap-cloud',
+    'sles-cloud',
+    'windows-cloud',
+    'windows-sql-cloud',
+})
 
 def detect_os_type(vm: Dict[str, Any]) -> str:
     """
@@ -92,6 +107,78 @@ def detect_os_from_compute(compute, project: str, zone: str, vm_name: str) -> st
     ).execute()
 
     return detect_os_type(vm)
+
+
+def detect_os_flavor(vm: Dict[str, Any]) -> str:
+    """Detect specific OS flavor from disk licenses or source image.
+
+    Parses the boot disk's license URLs (e.g.,
+    projects/debian-cloud/global/licenses/debian-12) or falls back
+    to the source image name.
+
+    Args:
+        vm: VM instance response from GCP API
+
+    Returns:
+        OS flavor string like 'debian-12', 'ubuntu-2204-lts',
+        'rhel-9', 'windows-server-2022-dc', or 'unknown'.
+    """
+    for disk in vm.get('disks', []):
+        if not disk.get('boot'):
+            continue
+
+        # Method 1: Parse license URL (most reliable)
+        for license_url in disk.get('licenses', []):
+            # Format: projects/PROJECT/global/licenses/LICENSE_NAME
+            parts = license_url.rstrip('/').split('/')
+            if parts:
+                return parts[-1]
+
+        # Method 2: Parse source image name
+        source = disk.get('source', '')
+        if source:
+            # Format: projects/PROJECT/zones/ZONE/disks/DISK_NAME
+            # The disk name often contains the image family
+            image_name = source.rstrip('/').split('/')[-1]
+            if image_name:
+                return image_name
+
+    return 'unknown'
+
+
+def detect_license_type(vm: Dict[str, Any]) -> str:
+    """Detect boot disk license type from license URL project.
+
+    Parses the license project from the boot disk's license URL
+    to determine if the OS is free, PAYG, or BYOS.
+
+    Args:
+        vm: VM instance response from GCP API
+
+    Returns:
+        'free', 'payg', 'byos', or 'unknown'.
+    """
+    for disk in vm.get('disks', []):
+        if not disk.get('boot'):
+            continue
+
+        for license_url in disk.get('licenses', []):
+            # Check BYOS/BYOL first (in the license name)
+            license_name = license_url.rstrip('/').split('/')[-1].lower()
+            if 'byos' in license_name or 'byol' in license_name:
+                return LICENSE_BYOS
+
+            # Extract project from URL
+            # Format: .../projects/{PROJECT}/global/licenses/{NAME}
+            parts = license_url.split('/')
+            if 'projects' in parts:
+                project = parts[parts.index('projects') + 1]
+                if project in _PAYG_LICENSE_PROJECTS:
+                    return LICENSE_PAYG
+
+        return LICENSE_FREE
+
+    return 'unknown'
 
 
 def detect_architecture(vm: Dict[str, Any]) -> str:

@@ -10,7 +10,11 @@
 |------|----|----|
 | **OS Support** | Linux only | Linux + Windows |
 | **CLI Style** | Short flags (`-n`, `-z`) | gcloud-style (`--zone=`) |
-| **Commands** | Single command (toggles) | Separate `rescue` / `restore` |
+| **Commands** | Single command (toggles) | `diagnose` / `repair` / `rescue` / `restore` |
+| **Boot Diagnostics** | None | Serial console analysis (`diagnose`) |
+| **Auto-Fix** | None | Automated repair for fstab errors (`repair`) |
+| **Rollback** | Manual cleanup | Automatic rollback on failure |
+| **Session Recovery** | None | Resume or rollback interrupted operations |
 | **Architecture** | Task-based | Operation-based with rollback |
 
 ## Prerequisites
@@ -65,8 +69,32 @@ gce-rescue-v2 --version
 
 ## Commands
 
+```
+VM won't boot
+    │
+    ├─ Not sure what's wrong?
+    │   └─ gce-rescue-v2 diagnose   (read-only, safe anytime)
+    │
+    ├─ diagnose found a fixable issue (e.g. fstab)?
+    │   └─ gce-rescue-v2 repair     (auto-fix, Linux only)
+    │
+    ├─ Need manual access to the disk?
+    │   ├─ gce-rescue-v2 rescue     (enter rescue mode)
+    │   ├─ SSH/RDP in and fix
+    │   └─ gce-rescue-v2 restore    (exit rescue mode)
+    │
+    └─ VM stuck from a previous rescue?
+        └─ gce-rescue-v2 restore    (or re-run rescue to resume/rollback)
+```
+
 ```bash
-# Rescue (enter rescue mode)
+# Diagnose boot issues (read-only)
+gce-rescue-v2 diagnose VM_NAME --zone ZONE [--project PROJECT] [--format json]
+
+# Auto-fix diagnosed issues (Linux only)
+gce-rescue-v2 repair VM_NAME --zone ZONE [--project PROJECT] [--no-snapshot] [--quiet]
+
+# Rescue (enter rescue mode for manual fix)
 gce-rescue-v2 rescue VM_NAME --zone ZONE [--project PROJECT] [--no-snapshot] [--quiet]
 
 # Restore (exit rescue mode)
@@ -81,7 +109,65 @@ gce-rescue-v2 restore VM_NAME --zone ZONE [--project PROJECT] [--quiet]
 | `--quiet` | No confirmation prompts (for automation) |
 | `--format` | Output format: `table`, `json`, `yaml` |
 
-## Example: Linux VM
+## Example: Diagnose
+
+```bash
+$ gce-rescue-v2 diagnose web-server --zone=us-central1-a
+
+Diagnosis for instance [web-server]:
+
+  Status: boot_errors_detected
+  OS: Linux (debian-12)
+
+  Boot errors found:
+
+  [CRITICAL] fstab: UUID specified in /etc/fstab cannot be found
+    Context:
+      > [DEPEND] Dependency failed for /mnt/data.
+      > UUID=deadbeef-1234-5678-9abc-def012345678 does not exist.
+
+    To fix this issue:
+      1. Boot into rescue mode:
+         $ gce-rescue-v2 rescue web-server --zone=us-central1-a
+      2. Edit fstab: nano /mnt/sysroot/etc/fstab
+      3. Comment out the invalid entry and save.
+      4. Restore:
+         $ gce-rescue-v2 restore web-server --zone=us-central1-a
+
+    Or auto-fix with: gce-rescue-v2 repair web-server --zone=us-central1-a
+```
+
+## Example: Repair (auto-fix)
+
+```bash
+$ gce-rescue-v2 repair web-server --zone=us-central1-a
+
+Diagnosis for instance [web-server]:
+  [CRITICAL] fstab: UUID specified in /etc/fstab cannot be found
+
+Repair plan:
+  1. Create a backup snapshot of the boot disk.
+  2. Boot into rescue mode with embedded fix script.
+  3. Apply fix: comment out invalid fstab entries.
+  4. Restore original boot disk and start VM.
+
+Do you want to proceed with repair (y/N)? y
+
+Repairing instance [web-server]:
+  Rescue:  Stopping VM -> Creating snapshot -> Creating rescue disk -> Starting rescue VM -> Mounting disk  done.
+  Repair:  Applying fix -> Verifying fix  done.
+  Restore: Stopping VM -> Restoring boot disk -> Starting VM  done.
+
+Repair results:
+  [FIXED] fstab: Commented out invalid UUID entry for /mnt/data (deadbeef-1234...)
+  1 issue fixed.
+  Original fstab backed up to: /etc/fstab.gce-repair-backup
+  Backup snapshot: pre-rescue-web-server-1739600000
+
+Repair complete. Instance [web-server] is now running. (1m 42s)
+```
+
+## Example: Linux VM (manual rescue)
 
 **Rescue:**
 
@@ -229,6 +315,8 @@ Forgot password? Reset it:
 
 | Action | V1 | V2 |
 |--------|----|----|
+| Diagnose boot issues | N/A | `gce-rescue-v2 diagnose VM --zone ZONE` |
+| Auto-fix boot issues | N/A | `gce-rescue-v2 repair VM --zone ZONE` |
 | Enter rescue | `gce-rescue -n VM -z ZONE` | `gce-rescue-v2 rescue VM --zone ZONE` |
 | Exit rescue | `gce-rescue -n VM -z ZONE` (same) | `gce-rescue-v2 restore VM --zone ZONE` |
 | Skip snapshot | `--skip-snapshot` | `--no-snapshot` |

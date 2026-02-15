@@ -63,7 +63,8 @@ class RestoreOrchestrator:
     """
 
     def __init__(self, compute, project: str, zone: str, vm_name: str,
-                 config: RestoreConfig = None, logger=None, log_file: str = None):
+                 config: RestoreConfig = None, logger=None, log_file: str = None,
+                 suppress_progress: bool = False, progress_callback=None):
         """
         Initialize restore orchestrator.
 
@@ -75,6 +76,8 @@ class RestoreOrchestrator:
             config: Optional restore configuration
             logger: Optional logger
             log_file: Log file path (for checkpoint persistence)
+            suppress_progress: Suppress progress spinner (for embedding in repair)
+            progress_callback: Optional callback(phase_label) invoked on each step
         """
         self.compute = compute
         self.project = project
@@ -83,6 +86,8 @@ class RestoreOrchestrator:
         self.config = config or RestoreConfig()
         self.logger = logger
         self.log_file = log_file
+        self._suppress_progress = suppress_progress
+        self._progress_callback = progress_callback
 
         # State tracking
         self.state_tracker = StateTracker()
@@ -96,12 +101,13 @@ class RestoreOrchestrator:
         self.original_device_name = None
 
         # Progress tracking for spinner with phases
+        import threading
         self._spinner_thread = None
         self._spinner_stop = False
         self._is_debug_mode = False
         self._progress_started = False
         self._progress_phases = []
-        self._progress_lock = None
+        self._progress_lock = threading.Lock()
         self._total_steps = 3  # Stopping, Restoring affected disk, Starting
 
         # Checkpoint manager for resumable operations
@@ -118,6 +124,10 @@ class RestoreOrchestrator:
         import sys
         import logging
         import threading
+
+        if self._suppress_progress:
+            self._progress_started = False
+            return
 
         # Check if we're in debug mode (use console_level if available, fallback to logger.level)
         console_level = getattr(self.logger, 'console_level', self.logger.level) if self.logger else logging.INFO
@@ -181,6 +191,8 @@ class RestoreOrchestrator:
         """Add a new phase to the progress display."""
         with self._progress_lock:
             self._progress_phases.append(phase)
+        if self._progress_callback:
+            self._progress_callback(phase)
         self._log_debug(f"Phase: {phase}")
 
     def _finish_progress(self, success: bool = True):
@@ -597,6 +609,15 @@ class RestoreOrchestrator:
             self._finish_progress(True)
             return True
 
+        except KeyboardInterrupt:
+            self._finish_progress(False)
+            self._log_error(
+                "\nOperation interrupted. Progress has been saved."
+            )
+            self._log_error(
+                "Run the same command again to resume or rollback."
+            )
+            raise
         except Exception as e:
             self._finish_progress(False)
             self._log_error(f"Unexpected error during restore: {str(e)}")
