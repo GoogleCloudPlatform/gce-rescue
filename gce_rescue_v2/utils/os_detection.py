@@ -31,7 +31,6 @@ _PAYG_LICENSE_PROJECTS = frozenset({
     'windows-sql-cloud',
 })
 
-
 def detect_os_type(vm: Dict[str, Any]) -> str:
     """
     Detect the operating system type of a VM.
