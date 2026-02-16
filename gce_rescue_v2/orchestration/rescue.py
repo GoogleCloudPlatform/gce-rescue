@@ -193,28 +193,28 @@ class RescueOrchestrator:
         import sys
         import time
 
-        spinner_chars = ['|', '/', '-', '\\']
+        dots = ['.  ', '.. ', '...']
         idx = 0
 
         while not self._spinner_stop:
             with self._progress_lock:
                 current_step = len(self._progress_phases)
                 if self._progress_phases:
-                    # Show completed phases, then current phase with dots and spinner
+                    # Show completed phases, then current phase with dots
                     completed = self._progress_phases[:-1]
                     current = self._progress_phases[-1]
                     if completed:
-                        phases_str = " -> ".join(completed) + " -> " + current + ".." + spinner_chars[idx]
+                        phases_str = " -> ".join(completed) + " -> " + current + dots[idx]
                     else:
-                        phases_str = current + ".." + spinner_chars[idx]
+                        phases_str = current + dots[idx]
                 else:
-                    phases_str = spinner_chars[idx]
+                    phases_str = dots[idx]
 
             line = f"\r ({current_step}/{self._total_steps}) [{phases_str}"
             sys.stdout.write(line)
             sys.stdout.flush()
-            idx = (idx + 1) % len(spinner_chars)
-            time.sleep(0.1)
+            idx = (idx + 1) % len(dots)
+            time.sleep(0.4)
 
     def _update_progress(self, phase: str):
         """Add a new phase to the progress display."""

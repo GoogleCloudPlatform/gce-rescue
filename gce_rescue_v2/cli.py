@@ -614,13 +614,13 @@ class _Spinner:
             sys.stdout.flush()
 
     def _spin(self):
-        chars = ['|', '/', '-', '\\']
+        dots = ['.  ', '.. ', '...']
         idx = 0
         while not self._stop:
-            sys.stdout.write(f"\r{self._message}..{chars[idx]}")
+            sys.stdout.write(f"\r{self._message}{dots[idx]}")
             sys.stdout.flush()
-            idx = (idx + 1) % len(chars)
-            time.sleep(0.1)
+            idx = (idx + 1) % len(dots)
+            time.sleep(0.4)
 
 
 def _format_duration(seconds: float) -> str:

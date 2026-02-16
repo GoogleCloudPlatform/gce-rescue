@@ -673,7 +673,7 @@ class RepairOrchestrator:
         When phase completes:
           Rescue:  Stopping VM -> Creating snapshot -> Creating rescue disk  done.
         """
-        spinner_chars = ['|', '/', '-', '\\']
+        dots = ['.  ', '.. ', '...']
         idx = 0
 
         while not self._spinner_stop:
@@ -683,7 +683,7 @@ class RepairOrchestrator:
                 substeps = list(self._current_line_substeps)
 
             if not phase:
-                time.sleep(0.1)
+                time.sleep(0.4)
                 continue
 
             # Build the substep trail for the current phase line
@@ -696,14 +696,14 @@ class RepairOrchestrator:
 
             prefix = f"  {phase + ':':<9}"
             if trail:
-                line = f"\r{prefix} {trail}..{spinner_chars[idx]}"
+                line = f"\r{prefix} {trail}{dots[idx]}"
             else:
-                line = f"\r{prefix} {spinner_chars[idx]}"
+                line = f"\r{prefix} {dots[idx]}"
 
             sys.stdout.write(f"{line:<120}")
             sys.stdout.flush()
-            idx = (idx + 1) % len(spinner_chars)
-            time.sleep(0.1)
+            idx = (idx + 1) % len(dots)
+            time.sleep(0.4)
 
     def _update_progress(self, phase: str):
         """Start a new phase, finalizing the previous phase line."""
