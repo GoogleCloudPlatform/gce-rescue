@@ -694,7 +694,8 @@ class RepairOrchestrator:
                 else:
                     trail = substep
 
-            prefix = f"  {phase + ':':<9}"
+            phase_num = len(self._progress_phases)
+            prefix = f"  ({phase_num}/3) {phase + ':':<9}"
             if trail:
                 line = f"\r{prefix} {trail}{dots[idx]}"
             else:
@@ -725,7 +726,8 @@ class RepairOrchestrator:
         # Finalize previous phase line (if any) as "done."
         if prev_phase and not self._is_debug_mode:
             trail = " -> ".join(prev_substeps) if prev_substeps else ""
-            prefix = f"  {prev_phase + ':':<9}"
+            prev_num = len(self._progress_phases) - 1
+            prefix = f"  ({prev_num}/3) {prev_phase + ':':<9}"
             if trail:
                 final = f"\r{prefix} {trail}  done."
             else:
@@ -755,7 +757,8 @@ class RepairOrchestrator:
                 substeps.append(substep)
 
             trail = " -> ".join(substeps) if substeps else ""
-            prefix = f"  {phase + ':':<9}" if phase else "  "
+            phase_num = len(self._progress_phases)
+            prefix = f"  ({phase_num}/3) {phase + ':':<9}" if phase else "  "
             status_label = "done." if success else "FAILED."
 
             if trail:
