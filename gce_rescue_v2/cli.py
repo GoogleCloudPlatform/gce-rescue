@@ -19,7 +19,7 @@ import json
 import threading
 import time
 import yaml
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from .core.config import RescueConfig, RestoreConfig, VERSION
 from .main import rescue_vm, restore_vm, repair_vm
 from .utils.colors import error_prefix, warning_prefix, clear_lines
@@ -1589,6 +1589,23 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         return 1
 
 
+def _show_boot_verification(boot_verified: Optional[bool],
+                            boot_errors: List[str],
+                            vm_name: str, zone: str) -> None:
+    """Display boot verification result after repair."""
+    if boot_verified is True:
+        print("Boot verification: VM is booting normally.")
+    elif boot_verified is False:
+        print("")
+        print(f"{warning_prefix()} VM may still have boot issues:")
+        for err in boot_errors:
+            print(f"  - {err}")
+        print("")
+        print("Consider using rescue mode for manual investigation:")
+        print(f"  $ gce-rescue-v2 rescue {vm_name} --zone={zone}")
+    # If None, skip silently (couldn't verify)
+
+
 def _show_repair_results(result: Dict[str, Any], vm_name: str,
                          zone: str = '', project: str = '') -> int:
     """Display repair results and return exit code."""
@@ -1600,6 +1617,9 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
     duration = result.get('duration_seconds', 0)
 
     duration_str = _format_duration(duration) if duration else ''
+
+    boot_verified = result.get('boot_verified')
+    boot_errors_after = result.get('boot_errors_after', [])
 
     if status == 'success':
         print("")
@@ -1617,6 +1637,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if duration_str:
             completion += f" ({duration_str})"
         print(completion)
+        _show_boot_verification(boot_verified, boot_errors_after, vm_name, zone)
         return 0
 
     elif status == 'no_issues':
@@ -1630,6 +1651,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if duration_str:
             completion += f" ({duration_str})"
         print(completion)
+        _show_boot_verification(boot_verified, boot_errors_after, vm_name, zone)
         return 0
 
     elif status == 'no_fix':
@@ -1714,9 +1736,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         print(completion)
         if snapshot_name:
             print(f"Backup snapshot: {snapshot_name}")
-        print("")
-        print("Verify the fix manually:")
-        print(f"  $ gcloud compute ssh {vm_name} --zone={zone}")
+        _show_boot_verification(boot_verified, boot_errors_after, vm_name, zone)
         return 0
 
     else:

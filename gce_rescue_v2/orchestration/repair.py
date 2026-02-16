@@ -321,8 +321,13 @@ class RepairOrchestrator:
                 }
 
             self._finish_progress(True)
+
+            # Post-restore boot verification
+            boot_check = self._verify_boot_after_repair()
             repair_results['snapshot_name'] = snapshot_name
             repair_results['duration_seconds'] = time.time() - start_time
+            repair_results['boot_verified'] = boot_check.get('verified')
+            repair_results['boot_errors_after'] = boot_check.get('errors', [])
             return repair_results
 
         except Exception as e:
@@ -442,8 +447,13 @@ class RepairOrchestrator:
                 }
 
             self._finish_progress(True)
+
+            # Post-restore boot verification
+            boot_check = self._verify_boot_after_repair()
             repair_results['snapshot_name'] = snapshot_name
             repair_results['duration_seconds'] = time.time() - start_time
+            repair_results['boot_verified'] = boot_check.get('verified')
+            repair_results['boot_errors_after'] = boot_check.get('errors', [])
             return repair_results
 
         except Exception as e:
@@ -616,6 +626,70 @@ class RepairOrchestrator:
             'status': status, 'fixed_count': fixed_count,
             'fix_lines': fix_lines, 'error': error
         }
+
+    def _verify_boot_after_repair(self) -> Dict[str, Any]:
+        """Check if the VM boots successfully after repair.
+
+        Waits for the VM to generate new serial console output after restore,
+        then analyzes it for boot errors.
+
+        Returns:
+            Dict with: verified (bool/None), errors (list of error descriptions)
+        """
+        from ..core.boot_patterns import analyze_serial_output
+
+        BOOT_WAIT_SECONDS = 45
+        self._log_debug(
+            f"Waiting {BOOT_WAIT_SECONDS}s for VM to boot before verification"
+        )
+        sys.stdout.write("Verifying boot...")
+        sys.stdout.flush()
+        time.sleep(BOOT_WAIT_SECONDS)
+
+        try:
+            compute = self._create_tracked_client('repair-boot-verify')
+            serial_response = compute.instances().getSerialPortOutput(
+                project=self.project, zone=self.zone,
+                instance=self.vm_name
+            ).execute()
+            serial_output = serial_response.get('contents', '')
+
+            if not serial_output or len(serial_output.strip()) < 50:
+                sys.stdout.write("\r" + " " * 40 + "\r")
+                sys.stdout.flush()
+                self._log_debug("Serial output too short for boot verification")
+                return {'verified': None, 'errors': []}
+
+            diagnosis = analyze_serial_output(
+                serial_output=serial_output,
+                vm_name=self.vm_name,
+                zone=self.zone,
+                vm_status='RUNNING'
+            )
+
+            sys.stdout.write("\r" + " " * 40 + "\r")
+            sys.stdout.flush()
+
+            if diagnosis.diagnosis_status == 'healthy':
+                self._log_debug("Boot verification: VM is booting normally")
+                return {'verified': True, 'errors': []}
+            elif diagnosis.diagnosis_status == 'boot_errors_detected':
+                error_descs = [
+                    f"{e.category}: {e.description}"
+                    for e in diagnosis.boot_errors
+                ]
+                self._log_debug(
+                    f"Boot verification: {len(error_descs)} error(s) still detected"
+                )
+                return {'verified': False, 'errors': error_descs}
+            else:
+                return {'verified': None, 'errors': []}
+
+        except Exception as e:
+            sys.stdout.write("\r" + " " * 40 + "\r")
+            sys.stdout.flush()
+            self._log_debug(f"Boot verification failed: {e}")
+            return {'verified': None, 'errors': []}
 
     # --- Progress display ---
 
