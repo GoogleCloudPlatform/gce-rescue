@@ -29,6 +29,7 @@ import httplib2
 
 from ..core.config import RescueConfig, RestoreConfig, VERSION
 from ..operations import DiagnoseOperation
+from ..utils.colors import green, red
 from .rescue import RescueOrchestrator
 from .restore import RestoreOrchestrator
 
@@ -83,6 +84,10 @@ class RepairOrchestrator:
         self._current_phase = ''
         self._current_substep = ''
         self._current_line_substeps: List[str] = []
+
+        # When True, _init_progress() skips the "Repairing instance" header
+        # (caller prints its own concise header before execute())
+        self._suppress_header = False
 
     def _log_info(self, message: str):
         if self.logger:
@@ -642,9 +647,12 @@ class RepairOrchestrator:
         self._log_debug(
             f"Waiting {BOOT_WAIT_SECONDS}s for VM to boot before verification"
         )
-        sys.stdout.write("Verifying boot...")
-        sys.stdout.flush()
-        time.sleep(BOOT_WAIT_SECONDS)
+        for remaining in range(BOOT_WAIT_SECONDS, 0, -1):
+            sys.stdout.write(
+                f"\rVerifying boot (waiting {remaining}s for serial output)..."
+            )
+            sys.stdout.flush()
+            time.sleep(1)
 
         try:
             compute = self._create_tracked_client('repair-boot-verify')
@@ -655,7 +663,7 @@ class RepairOrchestrator:
             serial_output = serial_response.get('contents', '')
 
             if not serial_output or len(serial_output.strip()) < 50:
-                sys.stdout.write("\r" + " " * 40 + "\r")
+                sys.stdout.write("\r" + " " * 60 + "\r")
                 sys.stdout.flush()
                 self._log_debug("Serial output too short for boot verification")
                 return {'verified': None, 'errors': []}
@@ -667,7 +675,7 @@ class RepairOrchestrator:
                 vm_status='RUNNING'
             )
 
-            sys.stdout.write("\r" + " " * 40 + "\r")
+            sys.stdout.write("\r" + " " * 60 + "\r")
             sys.stdout.flush()
 
             if diagnosis.diagnosis_status == 'healthy':
@@ -686,7 +694,7 @@ class RepairOrchestrator:
                 return {'verified': None, 'errors': []}
 
         except Exception as e:
-            sys.stdout.write("\r" + " " * 40 + "\r")
+            sys.stdout.write("\r" + " " * 60 + "\r")
             sys.stdout.flush()
             self._log_debug(f"Boot verification failed: {e}")
             return {'verified': None, 'errors': []}
@@ -729,8 +737,9 @@ class RepairOrchestrator:
         self._current_line_substeps: List[str] = []
 
         if not self._is_debug_mode:
-            sys.stdout.write(f"Repairing instance [{self.vm_name}]:\n")
-            sys.stdout.flush()
+            if not self._suppress_header:
+                sys.stdout.write(f"Repairing instance [{self.vm_name}]:\n")
+                sys.stdout.flush()
             self._spinner_stop = False
             self._spinner_thread = threading.Thread(
                 target=self._run_spinner, daemon=True
@@ -769,7 +778,7 @@ class RepairOrchestrator:
                     trail = substep
 
             phase_num = len(self._progress_phases)
-            prefix = f"  ({phase_num}/3) {phase + ':':<9}"
+            prefix = f"  ({phase_num}/{self._total_steps}) {phase + ':':<9}"
             if trail:
                 line = f"\r{prefix} {trail}{dots[idx]}"
             else:
@@ -801,11 +810,12 @@ class RepairOrchestrator:
         if prev_phase and not self._is_debug_mode:
             trail = " -> ".join(prev_substeps) if prev_substeps else ""
             prev_num = len(self._progress_phases) - 1
-            prefix = f"  ({prev_num}/3) {prev_phase + ':':<9}"
+            prefix = f"  ({prev_num}/{self._total_steps}) {prev_phase + ':':<9}"
+            done = green("done.")
             if trail:
-                final = f"\r{prefix} {trail}  done."
+                final = f"\r{prefix} {trail}  {done}"
             else:
-                final = f"\r{prefix} done."
+                final = f"\r{prefix} {done}"
             sys.stdout.write(f"{final:<120}\n")
             sys.stdout.flush()
 
@@ -832,8 +842,8 @@ class RepairOrchestrator:
 
             trail = " -> ".join(substeps) if substeps else ""
             phase_num = len(self._progress_phases)
-            prefix = f"  ({phase_num}/3) {phase + ':':<9}" if phase else "  "
-            status_label = "done." if success else "FAILED."
+            prefix = f"  ({phase_num}/{self._total_steps}) {phase + ':':<9}" if phase else "  "
+            status_label = green("done.") if success else red("FAILED.")
 
             if trail:
                 final = f"\r{prefix} {trail}  {status_label}"
