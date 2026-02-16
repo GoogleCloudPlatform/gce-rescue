@@ -116,13 +116,25 @@ class RepairOrchestrator:
 
     def validate(self) -> bool:
         """Run pre-flight validation (credentials, IAM, VM state) + Linux-only check."""
-        # Create a temporary rescue orchestrator to reuse its validation
-        rescue = RescueOrchestrator(
-            compute=self.compute, project=self.project, zone=self.zone,
-            vm_name=self.vm_name, config=self.config, logger=self.logger,
-            suppress_progress=True
+        from ..validators import (
+            ValidationRunner, CredentialsValidator,
+            IAMPermissionsValidator, VMStateValidator,
         )
-        if not rescue.validate():
+
+        runner = ValidationRunner()
+        runner.add(CredentialsValidator(self.compute, self.project, self.zone))
+        runner.add(IAMPermissionsValidator(
+            self.compute, self.project, self.zone, self.vm_name,
+            tracking_label='repair-val-iam'
+        ))
+        runner.add(VMStateValidator(
+            self.compute, self.project, self.zone, self.vm_name,
+            tracking_label='repair-val-vm-state'
+        ))
+
+        results = runner.run_all(self.logger)
+        if not results.all_passed():
+            results.print_failures()
             return False
 
         # Check Linux-only
@@ -134,11 +146,12 @@ class RepairOrchestrator:
         os_type = detect_os_type(vm_info)
         if os_type == 'windows':
             self._log_error("Repair is only supported for Linux VMs.")
-            self._log_error("")
-            self._log_error("For Windows VMs, use rescue mode for manual repair:")
-            self._log_error(
+            print("", file=sys.stderr)
+            print("For Windows VMs, use rescue mode for manual repair:", file=sys.stderr)
+            print(
                 f"  $ gce-rescue-v2 rescue {self.vm_name} "
-                f"--zone={self.zone} --project={self.project}"
+                f"--zone={self.zone} --project={self.project}",
+                file=sys.stderr
             )
             return False
 
