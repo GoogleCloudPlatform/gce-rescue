@@ -541,23 +541,40 @@ class RepairOrchestrator:
         """Parse repair results from serial console output.
 
         Looks for GCE-REPAIR-LINE: and GCE-REPAIR-RESULT: markers.
+        Checks both default port and port 2 as fallback.
 
         Returns:
             Dict with: status, fixed_count, fix_lines, error
         """
+        serial_output = ''
         try:
             compute = self._create_tracked_client('repair-serial-parse')
+            # Try default port first (matches verify_startup behavior)
             serial_response = compute.instances().getSerialPortOutput(
                 project=self.project, zone=self.zone,
-                instance=self.vm_name, port=1
+                instance=self.vm_name
             ).execute()
             serial_output = serial_response.get('contents', '')
+
+            # If no repair markers found, try port 2 as fallback
+            if REPAIR_RESULT_MARKER not in serial_output:
+                self._log_debug("No repair markers on default port, trying port 2")
+                serial_response = compute.instances().getSerialPortOutput(
+                    project=self.project, zone=self.zone,
+                    instance=self.vm_name, port=2
+                ).execute()
+                port2_output = serial_response.get('contents', '')
+                if REPAIR_RESULT_MARKER in port2_output:
+                    serial_output = port2_output
         except Exception as e:
             self._log_debug(f"Could not fetch serial console: {e}")
             return {
                 'status': 'unknown', 'fixed_count': 0,
                 'fix_lines': [], 'error': f'Could not read serial console: {e}'
             }
+
+        # Strip control characters that may interfere with marker detection
+        serial_output = serial_output.replace('\r', '')
 
         # Extract repair lines
         fix_lines = []
@@ -588,6 +605,12 @@ class RepairOrchestrator:
                 elif result_str.startswith('FAILED:'):
                     status = 'failed'
                     error = result_str.split(':', 1)[1] if ':' in result_str else 'Unknown'
+
+        if status == 'unknown':
+            self._log_debug(
+                f"No repair markers found in serial output "
+                f"({len(serial_output)} bytes)"
+            )
 
         return {
             'status': status, 'fixed_count': fixed_count,

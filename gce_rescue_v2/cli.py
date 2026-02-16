@@ -1702,6 +1702,23 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         print(restore_cmd, file=sys.stderr)
         return 1
 
+    elif status == 'unknown':
+        # All phases completed but repair markers not found in serial output.
+        # The fix likely applied but we couldn't parse confirmation.
+        print("")
+        print(f"{warning_prefix()} Repair completed but could not confirm fix results from serial console.")
+        print("")
+        completion = f"Instance [{vm_name}] has been restored and is running."
+        if duration_str:
+            completion += f" ({duration_str})"
+        print(completion)
+        if snapshot_name:
+            print(f"Backup snapshot: {snapshot_name}")
+        print("")
+        print("Verify the fix manually:")
+        print(f"  $ gcloud compute ssh {vm_name} --zone={zone}")
+        return 0
+
     else:
         print(f"\n{error_prefix()} Unexpected result: {status}", file=sys.stderr)
         if error:
