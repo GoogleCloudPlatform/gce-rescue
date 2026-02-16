@@ -233,19 +233,34 @@ class DiagnosisReportFormatter:
 
     def _format_healthy(self, diagnosis: Dict[str, Any]) -> str:
         """Format a healthy VM report."""
+        vm_name = diagnosis['vm_name']
+        zone = diagnosis['zone']
+        project = diagnosis.get('project', '')
+
         lines = []
         lines.append(self._format_header(diagnosis))
         lines.append(f"Result:    {green('No boot issues detected')}")
 
         vm_status = diagnosis.get('status', '')
         if vm_status == 'TERMINATED':
-            vm_name = diagnosis['vm_name']
-            zone = diagnosis['zone']
             lines.append("")
             lines.append("Note: VM is currently stopped. Start it with:")
             lines.append(
                 f"  $ gcloud compute instances start {vm_name} --zone={zone}"
             )
+
+        lines.append("")
+        lines.append(dim("Note: Currently checks fstab errors only. "
+                         "If the VM still won't boot, check the serial console:"))
+        gcloud_cmd = f"  $ gcloud compute instances get-serial-port-output {vm_name} --zone={zone}"
+        if project:
+            gcloud_cmd += f" --project={project}"
+        lines.append(dim(gcloud_cmd))
+        if project:
+            lines.append(dim(
+                f"  Console: https://console.cloud.google.com/compute/instancesDetail"
+                f"/zones/{zone}/instances/{vm_name}/console?project={project}&port=1"
+            ))
 
         return "\n".join(lines)
 

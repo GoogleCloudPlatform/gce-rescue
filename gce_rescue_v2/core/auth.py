@@ -19,8 +19,9 @@ import httplib2
 from .exceptions import AuthenticationError
 from .config import VERSION
 
-# Suppress httplib2 timeout warnings (they're harmless and noisy)
+# Suppress noisy warnings from auth libraries
 warnings.filterwarnings('ignore', message='.*httplib2 transport does not support per-request timeout.*')
+warnings.filterwarnings('ignore', message='.*Your application has authenticated using end user credentials.*')
 logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 
 # OAuth scopes required for Google Compute Engine API
