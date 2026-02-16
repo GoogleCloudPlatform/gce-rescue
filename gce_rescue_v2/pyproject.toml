@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gce-rescue"
-version = "2.0.0-beta.1"
+version = "2.0.0-beta.5"
 description = "Rescue unbootable Google Compute Engine VMs"
 readme = "README.md"
 license = {text = "Apache-2.0"}

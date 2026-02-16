@@ -155,10 +155,10 @@ class TestHealthyReport:
     """Tests for healthy VM reports."""
 
     def test_healthy_running_is_compact(self, formatter, healthy_diagnosis):
-        """Healthy running VM should be 4 lines."""
+        """Healthy running VM should have header + result + note."""
         report = formatter.format_report(healthy_diagnosis)
         lines = [l for l in report.split('\n') if l.strip()]
-        assert len(lines) == 4
+        assert len(lines) == 6
 
     def test_healthy_contains_header(self, formatter, healthy_diagnosis):
         """Healthy report should have Diagnosis/Status/OS/Result header."""

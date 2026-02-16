@@ -27,6 +27,45 @@ from .utils.report_formatter import DiagnosisReportFormatter
 from .orchestration.checkpoint import CheckpointManager, CheckpointData
 
 
+def _create_tracked_client(compute, tracking_label: str):
+    """Create a compute client with a tracking User-Agent header.
+
+    Args:
+        compute: Base compute client (used to extract credentials)
+        tracking_label: Label appended to User-Agent (e.g., 'diagnose-vm-state')
+
+    Returns:
+        Compute API client with User-Agent: gce-rescue-{VERSION}-{tracking_label}
+    """
+    try:
+        from googleapiclient import discovery
+        import googleapiclient.http
+        import google_auth_httplib2
+        import httplib2
+
+        # Verify compute client has real credentials (not a test mock)
+        if not isinstance(getattr(compute, '_http', None), google_auth_httplib2.AuthorizedHttp):
+            return compute
+
+        credentials = compute._http.credentials
+        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
+
+        def _request_builder(http, *args, **kwargs):
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials, http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        return discovery.build(
+            'compute', 'v1', credentials=credentials,
+            cache_discovery=False, requestBuilder=_request_builder
+        )
+    except Exception:
+        return compute
+
+
 class OutputFormatter:
     """
     Handle output formatting similar to gcloud.
@@ -661,7 +700,8 @@ def _validate_vm_exists(compute, project: str, zone: str, vm_name: str) -> tuple
         (success: bool, vm_info: dict or None, error_message: str or None)
     """
     try:
-        vm = compute.instances().get(
+        tracked = _create_tracked_client(compute, 'rescue-vm-preflight')
+        vm = tracked.instances().get(
             project=project,
             zone=zone,
             instance=vm_name
@@ -721,7 +761,8 @@ def _validate_vm_for_restore(compute, project: str, zone: str, vm_name: str) -> 
         (success: bool, vm_info: dict or None, error_message: str or None)
     """
     try:
-        vm = compute.instances().get(
+        tracked = _create_tracked_client(compute, 'restore-vm-preflight')
+        vm = tracked.instances().get(
             project=project,
             zone=zone,
             instance=vm_name
@@ -922,7 +963,8 @@ def _reconcile_rescue_state(compute, project: str, zone: str, vm_name: str,
 
     # Get actual VM state
     try:
-        vm = compute.instances().get(
+        tracked = _create_tracked_client(compute, 'rescue-reconcile')
+        vm = tracked.instances().get(
             project=project, zone=zone, instance=vm_name
         ).execute()
     except Exception as e:
@@ -988,7 +1030,8 @@ def _reconcile_rescue_state(compute, project: str, zone: str, vm_name: str,
     if rescue_disk_name and "Create Rescue Disk" not in checkpointed_op_names:
         if rescue_disk_name not in attached_disk_names:
             try:
-                compute.disks().get(
+                tracked_disk = _create_tracked_client(compute, 'rescue-reconcile')
+                tracked_disk.disks().get(
                     project=project, zone=zone, disk=rescue_disk_name
                 ).execute()
                 _log(f"Rescue disk '{rescue_disk_name}' exists but not in checkpoint - adding to rollback")
@@ -1452,7 +1495,8 @@ def handle_diagnose(args: argparse.Namespace) -> int:
     # Also fetch VM info for state/rescue/OS checks under the same spinner
     vm = None
     try:
-        vm = compute.instances().get(
+        tracked = _create_tracked_client(compute, 'diagnose-vm-state')
+        vm = tracked.instances().get(
             project=project, zone=args.zone, instance=args.instance_name
         ).execute()
     except Exception as e:
@@ -1495,8 +1539,10 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         if os_type == 'windows':
             print(f"{error_prefix()} Diagnose is only supported for Linux VMs.", file=sys.stderr)
             print("", file=sys.stderr)
-            print("For Windows VMs, use rescue mode for manual investigation:", file=sys.stderr)
-            print(f"  $ gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --project={project}", file=sys.stderr)
+            print("For Windows VMs, check the serial console output manually:", file=sys.stderr)
+            print(f"  $ gcloud compute instances get-serial-port-output {args.instance_name} --zone={args.zone} --project={project}", file=sys.stderr)
+            print("", file=sys.stderr)
+            print(f"  Console: https://console.cloud.google.com/compute/instancesDetail/zones/{args.zone}/instances/{args.instance_name}/console?project={project}&port=1", file=sys.stderr)
             return 1
 
     # Create and execute diagnose operation
@@ -1531,6 +1577,7 @@ def handle_diagnose(args: argparse.Namespace) -> int:
             return 0
 
         # Otherwise, print human-readable output
+        diagnosis['project'] = project
         formatter = DiagnosisReportFormatter()
         print(formatter.format_report(diagnosis))
 
@@ -1708,7 +1755,8 @@ def handle_repair(args: argparse.Namespace) -> int:
     if not debug:
         spinner.start()
     try:
-        vm = compute.instances().get(
+        tracked = _create_tracked_client(compute, 'repair-vm-state')
+        vm = tracked.instances().get(
             project=project, zone=args.zone, instance=args.instance_name
         ).execute()
     except Exception as e:
@@ -1721,6 +1769,21 @@ def handle_repair(args: argparse.Namespace) -> int:
         spinner.stop()
 
     if vm:
+        # Linux-only check (before any spinners or prompts)
+        from .utils.os_detection import detect_os_type
+        os_type = detect_os_type(vm)
+        if os_type == 'windows':
+            print(f"{error_prefix()} Repair is only supported for Linux VMs.", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("For Windows VMs, use rescue mode for manual repair:", file=sys.stderr)
+            print(f"  $ gce-rescue-v2 rescue {args.instance_name} --zone={args.zone} --project={project}", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("Or check the serial console output manually:", file=sys.stderr)
+            print(f"  $ gcloud compute instances get-serial-port-output {args.instance_name} --zone={args.zone} --project={project}", file=sys.stderr)
+            print("", file=sys.stderr)
+            print(f"  Console: https://console.cloud.google.com/compute/instancesDetail/zones/{args.zone}/instances/{args.instance_name}/console?project={project}&port=1", file=sys.stderr)
+            return 1
+
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])
         in_rescue = any(item.get('key') == 'rescue-mode' for item in metadata_items)
@@ -1832,6 +1895,7 @@ def handle_repair(args: argparse.Namespace) -> int:
         return 1
 
     # Show diagnosis report (skip manual fix steps since repair plan follows)
+    diagnosis['project'] = project
     formatter = DiagnosisReportFormatter()
     print(formatter.format_report(diagnosis, skip_fix_section=True))
     print("")
