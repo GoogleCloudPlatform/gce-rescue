@@ -9,7 +9,8 @@
 #   - UUID= entries: verified against blkid output
 #   - LABEL= entries: verified against blkid output
 #   - PARTUUID= entries: verified against blkid output
-#   - /dev/ entries: mapped to target disk, checked existence + fstype match
+#   - /dev/ entries: boot disk partitions mapped + validated; secondary disk
+#                    entries flagged (not present on rescue VM)
 #   - Malformed entries: fewer than 3 fields
 #   - Virtual filesystems (proc, tmpfs, etc.): always skipped
 
@@ -101,7 +102,34 @@ if [ -n "$TARGET_DISK_BASE" ]; then
     done < <(lsblk -rno NAME,FSTYPE "$TARGET_DISK_BASE" 2>/dev/null | grep -v "^${TARGET_DISK_SHORT} ")
 fi
 
-# Function to check /dev/ device entries by mapping to target disk
+# --- Determine original boot disk device base from fstab root entry ---
+# On GCE: boot disk is typically /dev/sda, secondary disks are /dev/sdb, sdc, etc.
+# On rescue VM: rescue disk = /dev/sda, original boot disk = /dev/sdb.
+# We need to know the original boot base to distinguish boot disk partitions
+# from secondary disk entries that may reference detached disks.
+ORIGINAL_BOOT_BASE=""
+while IFS= read -r fline; do
+    echo "$fline" | grep -qE '^\s*$|^\s*#' && continue
+    fmountpoint=$(echo "$fline" | awk '{print $2}')
+    fdevice=$(echo "$fline" | awk '{print $1}')
+    if [ "$fmountpoint" = "/" ]; then
+        if echo "$fdevice" | grep -q '^/dev/'; then
+            ORIGINAL_BOOT_BASE=$(basename "$fdevice" | sed 's/[0-9]*$//')
+        fi
+        break
+    fi
+done < "$FSTAB"
+
+# Default: GCE boot disk is almost always /dev/sda
+if [ -z "$ORIGINAL_BOOT_BASE" ]; then
+    ORIGINAL_BOOT_BASE="sda"
+    log "Root uses UUID/PARTUUID, assuming original boot device base: sda"
+else
+    log "Original boot device base from fstab: $ORIGINAL_BOOT_BASE"
+fi
+
+# Function to check /dev/ device entries
+# Return codes: 0=valid, 1=missing device, 2=fstype mismatch, 3=secondary disk not present
 check_dev_entry() {
     local device="$1"
     local fstab_fstype="$2"
@@ -128,7 +156,16 @@ check_dev_entry() {
         return 0  # never comment out root
     fi
 
-    # If we have target disk info, do a mapped check
+    # Check if this is a boot disk partition or a secondary disk
+    if [ -n "$ORIGINAL_BOOT_BASE" ] && [ "$dev_base" != "$ORIGINAL_BOOT_BASE" ]; then
+        # Different device base than boot disk — this is a secondary disk.
+        # Secondary disks are not attached to the rescue VM, so we can't
+        # validate them. Flag as missing.
+        log "Device $device: secondary disk (base $dev_base != boot base $ORIGINAL_BOOT_BASE)"
+        return 3  # secondary disk not present
+    fi
+
+    # This is a boot disk partition — map to target disk and validate
     if [ -n "$TARGET_DISK_BASE" ] && [ -n "$dev_partnum" ]; then
         # Check if this partition exists on the target disk
         local mapped_dev="${TARGET_DISK_BASE}${dev_partnum}"
@@ -232,7 +269,13 @@ while IFS= read -r line; do
     if echo "$device" | grep -q '^/dev/'; then
         check_dev_entry "$device" "$fstype" "$mountpoint"
         check_result=$?
-        if [ $check_result -eq 1 ]; then
+        if [ $check_result -eq 3 ]; then
+            echo "# GCE-REPAIR: commented out secondary disk entry (disk not attached)" >> "$tmpfile"
+            echo "#$line" >> "$tmpfile"
+            fixes=$((fixes + 1))
+            repair_line "[FIXED] fstab: Commented out secondary disk entry for $mountpoint ($device)"
+            continue
+        elif [ $check_result -eq 1 ]; then
             echo "# GCE-REPAIR: commented out missing device entry" >> "$tmpfile"
             echo "#$line" >> "$tmpfile"
             fixes=$((fixes + 1))

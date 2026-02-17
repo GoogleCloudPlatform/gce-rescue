@@ -29,6 +29,7 @@ import httplib2
 
 from ..core.config import RescueConfig, RestoreConfig, VERSION
 from ..operations import DiagnoseOperation
+from ..utils.colors import green, red
 from .rescue import RescueOrchestrator
 from .restore import RestoreOrchestrator
 
@@ -83,6 +84,10 @@ class RepairOrchestrator:
         self._current_phase = ''
         self._current_substep = ''
         self._current_line_substeps: List[str] = []
+
+        # When True, _init_progress() skips the "Repairing instance" header
+        # (caller prints its own concise header before execute())
+        self._suppress_header = False
 
     def _log_info(self, message: str):
         if self.logger:
@@ -154,6 +159,18 @@ class RepairOrchestrator:
                 file=sys.stderr
             )
             return False
+
+        # Verify fix scripts exist for all supported categories
+        fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
+        for cat in SUPPORTED_FIX_CATEGORIES:
+            script_path = fixes_dir / f'{cat}_fix.sh'
+            if not script_path.exists():
+                self._log_error(
+                    f"Fix script missing for category '{cat}': {script_path}\n"
+                    f"The repair tool may not be installed correctly. "
+                    f"Try reinstalling: pip install --force-reinstall ."
+                )
+                return False
 
         self._log_debug("Validation passed")
         return True
@@ -321,8 +338,13 @@ class RepairOrchestrator:
                 }
 
             self._finish_progress(True)
+
+            # Post-restore boot verification
+            boot_check = self._verify_boot_after_repair()
             repair_results['snapshot_name'] = snapshot_name
             repair_results['duration_seconds'] = time.time() - start_time
+            repair_results['boot_verified'] = boot_check.get('verified')
+            repair_results['boot_errors_after'] = boot_check.get('errors', [])
             return repair_results
 
         except Exception as e:
@@ -442,8 +464,13 @@ class RepairOrchestrator:
                 }
 
             self._finish_progress(True)
+
+            # Post-restore boot verification
+            boot_check = self._verify_boot_after_repair()
             repair_results['snapshot_name'] = snapshot_name
             repair_results['duration_seconds'] = time.time() - start_time
+            repair_results['boot_verified'] = boot_check.get('verified')
+            repair_results['boot_errors_after'] = boot_check.get('errors', [])
             return repair_results
 
         except Exception as e:
@@ -502,8 +529,13 @@ class RepairOrchestrator:
         fix_scripts = []
         for category in fixable:
             fix_script = self._get_fix_script(category)
-            if fix_script:
-                fix_scripts.append(fix_script)
+            fix_scripts.append(fix_script)
+
+        if not fix_scripts:
+            raise ValueError(
+                f"No fix scripts were loaded for categories {fixable}. "
+                f"Cannot proceed with repair."
+            )
 
         # Combine: base script + fix scripts + completion marker
         combined = base_script + '\n'
@@ -519,17 +551,30 @@ class RepairOrchestrator:
 
         return combined
 
-    def _get_fix_script(self, category: str) -> Optional[str]:
-        """Load fix script template for a category."""
+    def _get_fix_script(self, category: str) -> str:
+        """Load fix script template for a category.
+
+        Raises:
+            FileNotFoundError: If the fix script file does not exist.
+            ValueError: If the fix script file is empty.
+        """
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
         script_path = fixes_dir / f'{category}_fix.sh'
 
         if not script_path.exists():
-            self._log_debug(f"No fix script found for category: {category}")
-            return None
+            raise FileNotFoundError(
+                f"Fix script missing for category '{category}': {script_path}. "
+                f"Cannot proceed with repair — the fix would not be applied."
+            )
 
         with open(script_path, 'r') as f:
             content = f.read()
+
+        if not content.strip():
+            raise ValueError(
+                f"Fix script for category '{category}' is empty: {script_path}. "
+                f"Cannot proceed with repair — the fix would not be applied."
+            )
 
         # Remove shebang line if present (already in base script)
         if content.startswith('#!/bin/bash'):
@@ -541,23 +586,40 @@ class RepairOrchestrator:
         """Parse repair results from serial console output.
 
         Looks for GCE-REPAIR-LINE: and GCE-REPAIR-RESULT: markers.
+        Checks both default port and port 2 as fallback.
 
         Returns:
             Dict with: status, fixed_count, fix_lines, error
         """
+        serial_output = ''
         try:
             compute = self._create_tracked_client('repair-serial-parse')
+            # Try default port first (matches verify_startup behavior)
             serial_response = compute.instances().getSerialPortOutput(
                 project=self.project, zone=self.zone,
-                instance=self.vm_name, port=1
+                instance=self.vm_name
             ).execute()
             serial_output = serial_response.get('contents', '')
+
+            # If no repair markers found, try port 2 as fallback
+            if REPAIR_RESULT_MARKER not in serial_output:
+                self._log_debug("No repair markers on default port, trying port 2")
+                serial_response = compute.instances().getSerialPortOutput(
+                    project=self.project, zone=self.zone,
+                    instance=self.vm_name, port=2
+                ).execute()
+                port2_output = serial_response.get('contents', '')
+                if REPAIR_RESULT_MARKER in port2_output:
+                    serial_output = port2_output
         except Exception as e:
             self._log_debug(f"Could not fetch serial console: {e}")
             return {
                 'status': 'unknown', 'fixed_count': 0,
                 'fix_lines': [], 'error': f'Could not read serial console: {e}'
             }
+
+        # Strip control characters that may interfere with marker detection
+        serial_output = serial_output.replace('\r', '')
 
         # Extract repair lines
         fix_lines = []
@@ -589,10 +651,83 @@ class RepairOrchestrator:
                     status = 'failed'
                     error = result_str.split(':', 1)[1] if ':' in result_str else 'Unknown'
 
+        if status == 'unknown':
+            self._log_debug(
+                f"No repair markers found in serial output "
+                f"({len(serial_output)} bytes)"
+            )
+
         return {
             'status': status, 'fixed_count': fixed_count,
             'fix_lines': fix_lines, 'error': error
         }
+
+    def _verify_boot_after_repair(self) -> Dict[str, Any]:
+        """Check if the VM boots successfully after repair.
+
+        Waits for the VM to generate new serial console output after restore,
+        then analyzes it for boot errors.
+
+        Returns:
+            Dict with: verified (bool/None), errors (list of error descriptions)
+        """
+        from ..core.boot_patterns import analyze_serial_output
+
+        BOOT_WAIT_SECONDS = 45
+        self._log_debug(
+            f"Waiting {BOOT_WAIT_SECONDS}s for VM to boot before verification"
+        )
+        for remaining in range(BOOT_WAIT_SECONDS, 0, -1):
+            sys.stdout.write(
+                f"\rVerifying boot (waiting {remaining}s for serial output)..."
+            )
+            sys.stdout.flush()
+            time.sleep(1)
+
+        try:
+            compute = self._create_tracked_client('repair-boot-verify')
+            serial_response = compute.instances().getSerialPortOutput(
+                project=self.project, zone=self.zone,
+                instance=self.vm_name
+            ).execute()
+            serial_output = serial_response.get('contents', '')
+
+            if not serial_output or len(serial_output.strip()) < 50:
+                sys.stdout.write("\r" + " " * 60 + "\r")
+                sys.stdout.flush()
+                self._log_debug("Serial output too short for boot verification")
+                return {'verified': None, 'errors': []}
+
+            diagnosis = analyze_serial_output(
+                serial_output=serial_output,
+                vm_name=self.vm_name,
+                zone=self.zone,
+                vm_status='RUNNING'
+            )
+
+            sys.stdout.write("\r" + " " * 60 + "\r")
+            sys.stdout.flush()
+
+            if diagnosis.diagnosis_status == 'healthy':
+                self._log_debug("Boot verification: VM is booting normally")
+                return {'verified': True, 'errors': []}
+            elif diagnosis.diagnosis_status == 'boot_errors_detected':
+                error_descs = [
+                    f"{e.category}: {e.description}"
+                    for e in diagnosis.boot_errors
+                ]
+                self._log_debug(
+                    f"Boot verification: {len(error_descs)} error(s) still detected"
+                )
+                return {'verified': False, 'errors': error_descs}
+            else:
+                return {'verified': None, 'errors': []}
+
+        except Exception as e:
+            sys.stdout.write("\r" + " " * 60 + "\r")
+            sys.stdout.flush()
+            self._log_debug(f"Boot verification failed: {e}")
+            return {'verified': None, 'errors': []}
 
     # --- Progress display ---
 
@@ -632,8 +767,9 @@ class RepairOrchestrator:
         self._current_line_substeps: List[str] = []
 
         if not self._is_debug_mode:
-            sys.stdout.write(f"Repairing instance [{self.vm_name}]:\n")
-            sys.stdout.flush()
+            if not self._suppress_header:
+                sys.stdout.write(f"Repairing instance [{self.vm_name}]:\n")
+                sys.stdout.flush()
             self._spinner_stop = False
             self._spinner_thread = threading.Thread(
                 target=self._run_spinner, daemon=True
@@ -650,7 +786,7 @@ class RepairOrchestrator:
         When phase completes:
           Rescue:  Stopping VM -> Creating snapshot -> Creating rescue disk  done.
         """
-        spinner_chars = ['|', '/', '-', '\\']
+        dots = ['.  ', '.. ', '...']
         idx = 0
 
         while not self._spinner_stop:
@@ -660,7 +796,7 @@ class RepairOrchestrator:
                 substeps = list(self._current_line_substeps)
 
             if not phase:
-                time.sleep(0.1)
+                time.sleep(0.4)
                 continue
 
             # Build the substep trail for the current phase line
@@ -671,16 +807,17 @@ class RepairOrchestrator:
                 else:
                     trail = substep
 
-            prefix = f"  {phase + ':':<9}"
+            phase_num = len(self._progress_phases)
+            prefix = f"  ({phase_num}/{self._total_steps}) {phase + ':':<9}"
             if trail:
-                line = f"\r{prefix} {trail}..{spinner_chars[idx]}"
+                line = f"\r{prefix} {trail}{dots[idx]}"
             else:
-                line = f"\r{prefix} {spinner_chars[idx]}"
+                line = f"\r{prefix} {dots[idx]}"
 
             sys.stdout.write(f"{line:<120}")
             sys.stdout.flush()
-            idx = (idx + 1) % len(spinner_chars)
-            time.sleep(0.1)
+            idx = (idx + 1) % len(dots)
+            time.sleep(0.4)
 
     def _update_progress(self, phase: str):
         """Start a new phase, finalizing the previous phase line."""
@@ -702,11 +839,13 @@ class RepairOrchestrator:
         # Finalize previous phase line (if any) as "done."
         if prev_phase and not self._is_debug_mode:
             trail = " -> ".join(prev_substeps) if prev_substeps else ""
-            prefix = f"  {prev_phase + ':':<9}"
+            prev_num = len(self._progress_phases) - 1
+            prefix = f"  ({prev_num}/{self._total_steps}) {prev_phase + ':':<9}"
+            done = green("done.")
             if trail:
-                final = f"\r{prefix} {trail}  done."
+                final = f"\r{prefix} {trail}  {done}"
             else:
-                final = f"\r{prefix} done."
+                final = f"\r{prefix} {done}"
             sys.stdout.write(f"{final:<120}\n")
             sys.stdout.flush()
 
@@ -732,8 +871,9 @@ class RepairOrchestrator:
                 substeps.append(substep)
 
             trail = " -> ".join(substeps) if substeps else ""
-            prefix = f"  {phase + ':':<9}" if phase else "  "
-            status_label = "done." if success else "FAILED."
+            phase_num = len(self._progress_phases)
+            prefix = f"  ({phase_num}/{self._total_steps}) {phase + ':':<9}" if phase else "  "
+            status_label = green("done.") if success else red("FAILED.")
 
             if trail:
                 final = f"\r{prefix} {trail}  {status_label}"

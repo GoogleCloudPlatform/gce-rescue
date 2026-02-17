@@ -138,13 +138,8 @@ class DiagnosisReportFormatter:
         matched_idx = error.get('matched_line_index', -1)
         fixes = error.get('suggested_fixes', [])
 
-        # Color the severity label
-        if severity == 'CRITICAL':
-            sev_label = red(f"{'CRITICAL':<9}")
-        elif severity == 'ERROR':
-            sev_label = red(f"{'ERROR':<9}")
-        else:
-            sev_label = yellow(f"{'WARNING':<9}")
+        # Style the severity label (bold, no color)
+        sev_label = bold(f"{severity:<9}")
 
         lines = []
 
@@ -158,11 +153,15 @@ class DiagnosisReportFormatter:
         # Serial console log lines
         if context:
             lines.append(f"{indent}Serial console:")
+            max_width = 100
             for i, ctx_line in enumerate(context):
                 if not ctx_line.strip():
                     continue
+                ctx_line = _decode_systemd_escapes(ctx_line)
+                if len(ctx_line) > max_width:
+                    ctx_line = ctx_line[:max_width] + "..."
                 if i == matched_idx:
-                    lines.append(f"{indent}  {dim(ctx_line)}  <--")
+                    lines.append(f"{indent}  {dim(ctx_line)}  {red('<--')}")
                 else:
                     lines.append(f"{indent}  {dim(ctx_line)}")
 
@@ -185,12 +184,7 @@ class DiagnosisReportFormatter:
         issue_word = "this issue" if len(errors) == 1 else "these issues"
         lines = [f"To fix {issue_word}:", ""]
 
-        # Step 1: Enter rescue mode
-        lines.append("  1. Enter rescue mode:")
-        lines.append(f"     $ gce-rescue-v2 rescue {vm_name} --zone={zone}")
-        lines.append("")
-
-        # Step 2: Category-aware fix guidance
+        # Collect unique categories
         categories = []
         seen = set()
         for err in errors:
@@ -199,35 +193,38 @@ class DiagnosisReportFormatter:
                 seen.add(cat)
                 categories.append(cat)
 
+        # Check if auto-repair is available
+        from ..orchestration.repair import SUPPORTED_FIX_CATEGORIES
+        auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
+
+        # Lead with auto-repair when available
+        if auto_fixable:
+            lines.append("  Auto-repair (recommended):")
+            lines.append(f"    $ gce-rescue-v2 repair {vm_name} --zone={zone}")
+            lines.append("")
+            lines.append("  Or fix manually:")
+
+        # Manual steps
+        lines.append("    1. Enter rescue mode:")
+        lines.append(f"       $ gce-rescue-v2 rescue {vm_name} --zone={zone}")
+
+        # Category-aware fix guidance
         if len(categories) == 1:
-            # Single category - use specific guidance
             cat = categories[0]
             guidance = CATEGORY_FIX_GUIDANCE.get(cat)
             if guidance:
                 label = _category_label(cat)
-                lines.append(f"  2. {label}:")
-                lines.append(f"     $ {guidance}")
+                lines.append(f"    2. {label}:")
+                lines.append(f"       $ {guidance}")
         else:
-            # Multiple categories - list each
-            lines.append("  2. Repair boot configuration:")
+            lines.append("    2. Repair boot configuration:")
             for cat in categories:
                 guidance = CATEGORY_FIX_GUIDANCE.get(cat)
                 if guidance:
-                    lines.append(f"     - {guidance}")
+                    lines.append(f"       - {guidance}")
 
-        lines.append("")
-
-        # Step 3: Restore
-        lines.append("  3. Restore the VM:")
-        lines.append(f"     $ gce-rescue-v2 restore {vm_name} --zone={zone}")
-
-        # Show auto-repair alternative if any category supports it
-        from ..orchestration.repair import SUPPORTED_FIX_CATEGORIES
-        auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
-        if auto_fixable:
-            lines.append("")
-            lines.append("Or auto-repair:")
-            lines.append(f"  $ gce-rescue-v2 repair {vm_name} --zone={zone}")
+        lines.append("    3. Restore the VM:")
+        lines.append(f"       $ gce-rescue-v2 restore {vm_name} --zone={zone}")
 
         return "\n".join(lines)
 
@@ -288,6 +285,12 @@ class DiagnosisReportFormatter:
         lines.append(f"  $ gce-rescue-v2 diagnose {vm_name} --zone={zone}")
 
         return "\n".join(lines)
+
+
+def _decode_systemd_escapes(text: str) -> str:
+    """Decode systemd hex escape sequences (e.g. \\x2d -> '-') for readability."""
+    import re
+    return re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), text)
 
 
 def _category_label(category: str) -> str:

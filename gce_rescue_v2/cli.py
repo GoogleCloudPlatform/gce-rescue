@@ -19,10 +19,10 @@ import json
 import threading
 import time
 import yaml
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from .core.config import RescueConfig, RestoreConfig, VERSION
 from .main import rescue_vm, restore_vm, repair_vm
-from .utils.colors import error_prefix, warning_prefix, clear_lines
+from .utils.colors import error_prefix, warning_prefix, clear_lines, green
 from .utils.report_formatter import DiagnosisReportFormatter
 from .orchestration.checkpoint import CheckpointManager, CheckpointData
 
@@ -614,13 +614,13 @@ class _Spinner:
             sys.stdout.flush()
 
     def _spin(self):
-        chars = ['|', '/', '-', '\\']
+        dots = ['.  ', '.. ', '...']
         idx = 0
         while not self._stop:
-            sys.stdout.write(f"\r{self._message}..{chars[idx]}")
+            sys.stdout.write(f"\r{self._message}{dots[idx]}")
             sys.stdout.flush()
-            idx = (idx + 1) % len(chars)
-            time.sleep(0.1)
+            idx = (idx + 1) % len(dots)
+            time.sleep(0.4)
 
 
 def _format_duration(seconds: float) -> str:
@@ -1589,6 +1589,23 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         return 1
 
 
+def _show_boot_verification(boot_verified: Optional[bool],
+                            boot_errors: List[str],
+                            vm_name: str, zone: str) -> None:
+    """Display boot verification result after repair."""
+    if boot_verified is True:
+        print(green("Boot verification: VM is booting normally."))
+    elif boot_verified is False:
+        print("")
+        print(f"{warning_prefix()} VM may still have boot issues:")
+        for err in boot_errors:
+            print(f"  - {err}")
+        print("")
+        print("Consider using rescue mode for manual investigation:")
+        print(f"  $ gce-rescue-v2 rescue {vm_name} --zone={zone}")
+    # If None, skip silently (couldn't verify)
+
+
 def _show_repair_results(result: Dict[str, Any], vm_name: str,
                          zone: str = '', project: str = '') -> int:
     """Display repair results and return exit code."""
@@ -1601,11 +1618,15 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
 
     duration_str = _format_duration(duration) if duration else ''
 
+    boot_verified = result.get('boot_verified')
+    boot_errors_after = result.get('boot_errors_after', [])
+
     if status == 'success':
         print("")
         print("Repair results:")
         for line in fix_lines:
-            print(f"  {line}")
+            colored_line = line.replace('[FIXED]', green('[FIXED]'), 1)
+            print(f"  {colored_line}")
         issue_word = "issue" if fixed_count == 1 else "issues"
         print(f"  {fixed_count} {issue_word} fixed.")
         if any('fstab' in line.lower() for line in fix_lines):
@@ -1617,6 +1638,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if duration_str:
             completion += f" ({duration_str})"
         print(completion)
+        _show_boot_verification(boot_verified, boot_errors_after, vm_name, zone)
         return 0
 
     elif status == 'no_issues':
@@ -1630,6 +1652,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if duration_str:
             completion += f" ({duration_str})"
         print(completion)
+        _show_boot_verification(boot_verified, boot_errors_after, vm_name, zone)
         return 0
 
     elif status == 'no_fix':
@@ -1701,6 +1724,21 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
             restore_cmd += f" --project={project}"
         print(restore_cmd, file=sys.stderr)
         return 1
+
+    elif status == 'unknown':
+        # All phases completed but repair markers not found in serial output.
+        # The fix likely applied but we couldn't parse confirmation.
+        print("")
+        print(f"{warning_prefix()} Repair completed but could not confirm fix results from serial console.")
+        print("")
+        completion = f"Instance [{vm_name}] has been restored and is running."
+        if duration_str:
+            completion += f" ({duration_str})"
+        print(completion)
+        if snapshot_name:
+            print(f"Backup snapshot: {snapshot_name}")
+        _show_boot_verification(boot_verified, boot_errors_after, vm_name, zone)
+        return 0
 
     else:
         print(f"\n{error_prefix()} Unexpected result: {status}", file=sys.stderr)
@@ -1894,72 +1932,111 @@ def handle_repair(args: argparse.Namespace) -> int:
     if diagnosis is None:
         return 1
 
-    # Show diagnosis report (skip manual fix steps since repair plan follows)
+    # Analyze diagnosis results
     diagnosis['project'] = project
-    formatter = DiagnosisReportFormatter()
-    print(formatter.format_report(diagnosis, skip_fix_section=True))
-    print("")
-
-    # Check if there are any boot errors
     boot_errors = diagnosis.get('boot_errors', [])
-    if not boot_errors:
-        print("No boot issues found. Repair not needed.")
-        return 0
-
-    # Check if any errors are fixable
     fixable = orchestrator.get_fixable_categories(diagnosis)
     unfixable = orchestrator.get_unfixable_categories(diagnosis)
+    snapshot_enabled = getattr(args, 'snapshot', True)
+
+    # Non-repair paths: compact message and return
+    if not boot_errors:
+        print(f"Repair: {args.instance_name} ({args.zone})")
+        print("")
+        print("  No boot issues found. Nothing to repair.")
+        print("  Run 'diagnose' for details.")
+        return 0
 
     if not fixable:
+        print(f"Repair: {args.instance_name} ({args.zone})")
+        print("")
         for cat in unfixable:
             print(
-                f"Detected [{cat.upper()}] issue but automated fix is not yet available."
+                f"  Detected [{cat.upper()}] issue but automated fix is not yet available."
             )
+        print("  Run 'diagnose' for details.")
         print("")
-        print("Use rescue mode for manual repair:")
+        print("  Use rescue mode for manual repair:")
         print(
-            f"  $ gce-rescue-v2 rescue {args.instance_name} "
+            f"    $ gce-rescue-v2 rescue {args.instance_name} "
             f"--zone={args.zone} --project={project}"
         )
         return 0
 
-    # Show unfixable categories as warnings
-    if unfixable:
-        for cat in unfixable:
-            print(
-                f"{warning_prefix()} [{cat.upper()}] issue detected but "
-                f"no automated fix available. Will require manual repair."
-            )
-        print("")
-
-    # Show repair plan
-    snapshot_enabled = getattr(args, 'snapshot', True)
-    print("Repair plan:")
-    step = 1
-    if snapshot_enabled:
-        print(f"  {step}. Create backup snapshot of boot disk")
-        step += 1
-    print(f"  {step}. Enter rescue mode (stop VM, swap boot disk)")
-    step += 1
-    fix_descriptions = {
-        'fstab': 'Fix /etc/fstab (comment out invalid entries)',
-    }
-    for cat in fixable:
-        desc = fix_descriptions.get(cat, f'Fix {cat}')
-        print(f"  {step}. {desc}")
-        step += 1
-    print(f"  {step}. Restore original boot disk and start VM")
-    print("")
-
-    # Confirmation (unless --quiet)
+    # Repair path: show compact summary + plan, get confirmation, then clear
     if not args.quiet:
+        lines_to_clear = 0
+
+        # Header
+        print(f"Repair: {args.instance_name} ({args.zone})")
+        lines_to_clear += 1
+        print("")
+        lines_to_clear += 1
+
+        # Compact issue summary grouped by category
+        from collections import Counter
+        category_counts: Dict[str, int] = Counter(
+            err['category'] for err in boot_errors
+        )
+        severity_counts: Dict[str, Dict[str, int]] = {}
+        for err in boot_errors:
+            cat = err['category']
+            sev = err.get('severity', 'error')
+            if cat not in severity_counts:
+                severity_counts[cat] = Counter()
+            severity_counts[cat][sev] += 1
+
+        for cat, count in category_counts.items():
+            sev_parts = []
+            for sev in ('critical', 'error', 'warning'):
+                if severity_counts[cat].get(sev, 0) > 0:
+                    sev_parts.append(f"{severity_counts[cat][sev]} {sev}")
+            sev_str = ', '.join(sev_parts)
+            issue_word = 'issue' if count == 1 else 'issues'
+            print(f"  Found {count} {cat} {issue_word} ({sev_str})")
+            lines_to_clear += 1
+
+        # Unfixable warnings
+        if unfixable:
+            for cat in unfixable:
+                print(
+                    f"  {warning_prefix()} [{cat.upper()}] requires manual repair"
+                )
+                lines_to_clear += 1
+
+        print("  Run 'diagnose' for details.")
+        lines_to_clear += 1
+        print("")
+        lines_to_clear += 1
+
+        # Repair plan
+        print("  Repair plan:")
+        lines_to_clear += 1
+        step = 1
+        if snapshot_enabled:
+            print(f"    {step}. Create backup snapshot of boot disk")
+            lines_to_clear += 1
+            step += 1
+        print(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
+        lines_to_clear += 1
+        step += 1
+        fix_descriptions = {
+            'fstab': 'Fix /etc/fstab (comment out invalid entries)',
+        }
+        for cat in fixable:
+            desc = fix_descriptions.get(cat, f'Fix {cat}')
+            print(f"    {step}. {desc}")
+            lines_to_clear += 1
+            step += 1
+        print(f"    {step}. Restore original boot disk and start VM")
+        lines_to_clear += 1
+        print("")
+        lines_to_clear += 1
+
+        # Confirmation
         try:
-            safety_note = ""
-            if snapshot_enabled:
-                safety_note = " A backup snapshot will be created before any changes."
             response = input(
-                f"This will stop the VM, apply fixes, and restart it.{safety_note} "
-                f"Proceed? [y/N]: "
+                "  Proceed? [y/N]: "
             ).strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
@@ -1968,9 +2045,37 @@ def handle_repair(args: argparse.Namespace) -> int:
         if response not in ('y', 'yes'):
             print("\nAborted by user.")
             return 0
-        print("")
 
-    # Execute repair
+        lines_to_clear += 1  # input line
+
+        # Clear diagnosis + plan + confirmation
+        clear_lines(lines_to_clear)
+
+    # Print concise repair header
+    print(f"Repairing instance [{args.instance_name}]:")
+    if len(boot_errors) == 1:
+        err = boot_errors[0]
+        print(f"  Issue:  [{err['category'].upper()}] {err['description']}")
+    else:
+        for i, err in enumerate(boot_errors[:3]):
+            label = "  Issues:" if i == 0 else "         "
+            print(f"{label} [{err['category'].upper()}] {err['description']}")
+        if len(boot_errors) > 3:
+            print(f"          ... and {len(boot_errors) - 3} more")
+
+    plan_parts = []
+    if snapshot_enabled:
+        plan_parts.append("Snapshot")
+    plan_parts.append("Rescue")
+    fix_labels = {'fstab': 'Fix fstab'}
+    for cat in fixable:
+        plan_parts.append(fix_labels.get(cat, f'Fix {cat}'))
+    plan_parts.append("Restore")
+    print(f"  Plan:   {' -> '.join(plan_parts)}")
+    print("")
+
+    # Execute repair (concise header already printed)
+    orchestrator._suppress_header = True
     result = orchestrator.execute(diagnosis)
     return _show_repair_results(result, args.instance_name,
                                 zone=args.zone, project=project)
