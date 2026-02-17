@@ -1963,38 +1963,61 @@ def handle_repair(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # Repair path: show full diagnosis + plan, get confirmation, then clear
+    # Repair path: show compact summary + plan, get confirmation, then clear
     if not args.quiet:
         lines_to_clear = 0
 
-        # Full diagnosis report
-        formatter = DiagnosisReportFormatter()
-        report = formatter.format_report(diagnosis, skip_fix_section=True)
-        print(report)
-        lines_to_clear = len(report.split('\n'))
+        # Header
+        print(f"Repair: {args.instance_name} ({args.zone})")
+        lines_to_clear += 1
         print("")
         lines_to_clear += 1
+
+        # Compact issue summary grouped by category
+        from collections import Counter
+        category_counts: Dict[str, int] = Counter(
+            err['category'] for err in boot_errors
+        )
+        severity_counts: Dict[str, Dict[str, int]] = {}
+        for err in boot_errors:
+            cat = err['category']
+            sev = err.get('severity', 'error')
+            if cat not in severity_counts:
+                severity_counts[cat] = Counter()
+            severity_counts[cat][sev] += 1
+
+        for cat, count in category_counts.items():
+            sev_parts = []
+            for sev in ('critical', 'error', 'warning'):
+                if severity_counts[cat].get(sev, 0) > 0:
+                    sev_parts.append(f"{severity_counts[cat][sev]} {sev}")
+            sev_str = ', '.join(sev_parts)
+            issue_word = 'issue' if count == 1 else 'issues'
+            print(f"  Found {count} {cat} {issue_word} ({sev_str})")
+            lines_to_clear += 1
 
         # Unfixable warnings
         if unfixable:
             for cat in unfixable:
                 print(
-                    f"{warning_prefix()} [{cat.upper()}] issue detected but "
-                    f"no automated fix available. Will require manual repair."
+                    f"  {warning_prefix()} [{cat.upper()}] requires manual repair"
                 )
                 lines_to_clear += 1
-            print("")
-            lines_to_clear += 1
+
+        print("  Run 'diagnose' for details.")
+        lines_to_clear += 1
+        print("")
+        lines_to_clear += 1
 
         # Repair plan
-        print("Repair plan:")
+        print("  Repair plan:")
         lines_to_clear += 1
         step = 1
         if snapshot_enabled:
-            print(f"  {step}. Create backup snapshot of boot disk")
+            print(f"    {step}. Create backup snapshot of boot disk")
             lines_to_clear += 1
             step += 1
-        print(f"  {step}. Enter rescue mode (stop VM, swap boot disk)")
+        print(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
         lines_to_clear += 1
         step += 1
         fix_descriptions = {
@@ -2002,22 +2025,18 @@ def handle_repair(args: argparse.Namespace) -> int:
         }
         for cat in fixable:
             desc = fix_descriptions.get(cat, f'Fix {cat}')
-            print(f"  {step}. {desc}")
+            print(f"    {step}. {desc}")
             lines_to_clear += 1
             step += 1
-        print(f"  {step}. Restore original boot disk and start VM")
+        print(f"    {step}. Restore original boot disk and start VM")
         lines_to_clear += 1
         print("")
         lines_to_clear += 1
 
         # Confirmation
         try:
-            safety_note = ""
-            if snapshot_enabled:
-                safety_note = " A backup snapshot will be created before any changes."
             response = input(
-                f"This will stop the VM, apply fixes, and restart it.{safety_note} "
-                f"Proceed? [y/N]: "
+                "  Proceed? [y/N]: "
             ).strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")

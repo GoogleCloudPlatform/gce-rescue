@@ -227,10 +227,9 @@ class TestErrorsReport:
                 assert '<--' not in line
 
     def test_rescue_command_in_fix_section(self, formatter, single_error_diagnosis):
-        """Fix section should contain rescue command exactly once."""
+        """Fix section should contain rescue command in manual steps."""
         report = formatter.format_report(single_error_diagnosis)
-        rescue_count = report.count('gce-rescue-v2 rescue test-vm')
-        assert rescue_count == 1
+        assert 'gce-rescue-v2 rescue test-vm' in report
 
     def test_restore_command_in_fix_section(self, formatter, single_error_diagnosis):
         """Fix section should contain restore command."""
@@ -469,17 +468,26 @@ class TestAutoRepairSuggestion:
     def test_auto_repair_shown_for_fstab(
         self, formatter, single_error_diagnosis
     ):
-        """When fstab error is detected, auto-repair suggestion should appear."""
+        """When fstab error is detected, auto-repair should lead the fix section."""
         report = formatter.format_report(single_error_diagnosis)
-        assert 'Or auto-repair:' in report
+        assert 'Auto-repair (recommended):' in report
         assert 'gce-rescue-v2 repair' in report
+
+    def test_auto_repair_before_manual(
+        self, formatter, single_error_diagnosis
+    ):
+        """Auto-repair should appear before manual steps."""
+        report = formatter.format_report(single_error_diagnosis)
+        repair_pos = report.find('Auto-repair')
+        manual_pos = report.find('Or fix manually:')
+        assert repair_pos < manual_pos
 
     def test_auto_repair_shown_for_multi_error_with_fstab(
         self, formatter, multi_error_diagnosis
     ):
         """When any fixable category is present, auto-repair should appear."""
         report = formatter.format_report(multi_error_diagnosis)
-        assert 'Or auto-repair:' in report
+        assert 'Auto-repair (recommended):' in report
         assert 'gce-rescue-v2 repair' in report
 
     def test_no_auto_repair_for_unfixable_only(self, formatter):
@@ -507,7 +515,8 @@ class TestAutoRepairSuggestion:
             'recommendations': [],
         }
         report = formatter.format_report(diagnosis)
-        assert 'Or auto-repair:' not in report
+        assert 'Auto-repair' not in report
+        assert 'Or fix manually:' not in report
         assert 'gce-rescue-v2 repair' not in report
 
     def test_auto_repair_line_has_vm_name(
