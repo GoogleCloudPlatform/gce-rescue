@@ -2047,7 +2047,6 @@ def handle_repair(args: argparse.Namespace) -> int:
             return 0
 
         lines_to_clear += 1  # input line
-        lines_to_clear += 1  # buffer for ANSI padding / print trailing newline
 
         # Clear diagnosis + plan + confirmation
         clear_lines(lines_to_clear)
