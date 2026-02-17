@@ -36,16 +36,6 @@ from .restore import RestoreOrchestrator
 # Categories that have automated fix scripts
 SUPPORTED_FIX_CATEGORIES: Set[str] = {'fstab'}
 
-# Validate fix scripts exist at import time (fail fast, not during a repair)
-_FIXES_DIR = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
-for _cat in SUPPORTED_FIX_CATEGORIES:
-    _script = _FIXES_DIR / f'{_cat}_fix.sh'
-    if not _script.exists():
-        raise ImportError(
-            f"Fix script missing for supported category '{_cat}': {_script}. "
-            f"SUPPORTED_FIX_CATEGORIES is out of sync with available fix scripts."
-        )
-
 # Marker prefixes emitted by fix scripts to serial console
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
 REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
@@ -169,6 +159,18 @@ class RepairOrchestrator:
                 file=sys.stderr
             )
             return False
+
+        # Verify fix scripts exist for all supported categories
+        fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
+        for cat in SUPPORTED_FIX_CATEGORIES:
+            script_path = fixes_dir / f'{cat}_fix.sh'
+            if not script_path.exists():
+                self._log_error(
+                    f"Fix script missing for category '{cat}': {script_path}\n"
+                    f"The repair tool may not be installed correctly. "
+                    f"Try reinstalling: pip install --force-reinstall ."
+                )
+                return False
 
         self._log_debug("Validation passed")
         return True

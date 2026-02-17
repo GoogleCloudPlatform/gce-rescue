@@ -62,6 +62,7 @@ setup(
       'gce_rescue_v2': [
           'startup_scripts/*.sh',
           'startup_scripts/*.ps1',
+          'startup_scripts/fixes/*.sh',
           'core/patterns/*.yaml',
           'core/patterns/README.md',
       ],
