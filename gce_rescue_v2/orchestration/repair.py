@@ -36,6 +36,16 @@ from .restore import RestoreOrchestrator
 # Categories that have automated fix scripts
 SUPPORTED_FIX_CATEGORIES: Set[str] = {'fstab'}
 
+# Validate fix scripts exist at import time (fail fast, not during a repair)
+_FIXES_DIR = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
+for _cat in SUPPORTED_FIX_CATEGORIES:
+    _script = _FIXES_DIR / f'{_cat}_fix.sh'
+    if not _script.exists():
+        raise ImportError(
+            f"Fix script missing for supported category '{_cat}': {_script}. "
+            f"SUPPORTED_FIX_CATEGORIES is out of sync with available fix scripts."
+        )
+
 # Marker prefixes emitted by fix scripts to serial console
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
 REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
@@ -517,8 +527,13 @@ class RepairOrchestrator:
         fix_scripts = []
         for category in fixable:
             fix_script = self._get_fix_script(category)
-            if fix_script:
-                fix_scripts.append(fix_script)
+            fix_scripts.append(fix_script)
+
+        if not fix_scripts:
+            raise ValueError(
+                f"No fix scripts were loaded for categories {fixable}. "
+                f"Cannot proceed with repair."
+            )
 
         # Combine: base script + fix scripts + completion marker
         combined = base_script + '\n'
@@ -534,17 +549,30 @@ class RepairOrchestrator:
 
         return combined
 
-    def _get_fix_script(self, category: str) -> Optional[str]:
-        """Load fix script template for a category."""
+    def _get_fix_script(self, category: str) -> str:
+        """Load fix script template for a category.
+
+        Raises:
+            FileNotFoundError: If the fix script file does not exist.
+            ValueError: If the fix script file is empty.
+        """
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
         script_path = fixes_dir / f'{category}_fix.sh'
 
         if not script_path.exists():
-            self._log_debug(f"No fix script found for category: {category}")
-            return None
+            raise FileNotFoundError(
+                f"Fix script missing for category '{category}': {script_path}. "
+                f"Cannot proceed with repair — the fix would not be applied."
+            )
 
         with open(script_path, 'r') as f:
             content = f.read()
+
+        if not content.strip():
+            raise ValueError(
+                f"Fix script for category '{category}' is empty: {script_path}. "
+                f"Cannot proceed with repair — the fix would not be applied."
+            )
 
         # Remove shebang line if present (already in base script)
         if content.startswith('#!/bin/bash'):
