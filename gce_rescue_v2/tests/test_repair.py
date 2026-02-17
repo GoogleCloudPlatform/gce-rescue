@@ -329,15 +329,11 @@ class TestRepairScript:
         script = orch._generate_repair_script(diagnosis)
         assert 'marker moved to end' in script
 
-    def test_unsupported_category_not_included(self):
-        """Fix script for unsupported category should not be injected."""
+    def test_missing_fix_script_raises_error(self):
+        """Fix script for category without a .sh file should raise, not silently skip."""
         orch = self._make_orchestrator()
-        diagnosis = {
-            'boot_errors': [{'category': 'grub', 'severity': 'error'}]
-        }
-        # No fixable categories, _generate_repair_script won't be called normally
-        # but let's test _get_fix_script directly
-        assert orch._get_fix_script('grub') is None
+        with pytest.raises(FileNotFoundError, match="Fix script missing for category 'grub'"):
+            orch._get_fix_script('grub')
 
 
 # ---------------------------------------------------------------------------

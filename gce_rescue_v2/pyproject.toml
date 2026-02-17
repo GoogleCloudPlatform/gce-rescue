@@ -55,7 +55,13 @@ where = ["."]
 include = ["gce_rescue_v2*"]
 
 [tool.setuptools.package-data]
-gce_rescue_v2 = ["startup_scripts/*.sh", "startup_scripts/*.ps1"]
+gce_rescue_v2 = [
+    "startup_scripts/*.sh",
+    "startup_scripts/*.ps1",
+    "startup_scripts/fixes/*.sh",
+    "core/patterns/*.yaml",
+    "core/patterns/README.md",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

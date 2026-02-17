@@ -260,7 +260,8 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                               for err in detected_errors):
                         # Extract context around the error
                         context, match_idx = _extract_context_lines(
-                            serial_output, match.group(0)
+                            serial_output, match.group(0),
+                            context_lines=1
                         )
 
                         detected_errors.append(BootError(
