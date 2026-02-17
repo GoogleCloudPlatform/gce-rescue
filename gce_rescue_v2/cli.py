@@ -1939,26 +1939,26 @@ def handle_repair(args: argparse.Namespace) -> int:
     unfixable = orchestrator.get_unfixable_categories(diagnosis)
     snapshot_enabled = getattr(args, 'snapshot', True)
 
-    # Non-repair paths: show full diagnosis and return
+    # Non-repair paths: compact message and return
     if not boot_errors:
-        formatter = DiagnosisReportFormatter()
-        print(formatter.format_report(diagnosis, skip_fix_section=True))
+        print(f"Repair: {args.instance_name} ({args.zone})")
         print("")
-        print("No boot issues found. Repair not needed.")
+        print("  No boot issues found. Nothing to repair.")
+        print("  Run 'diagnose' for details.")
         return 0
 
     if not fixable:
-        formatter = DiagnosisReportFormatter()
-        print(formatter.format_report(diagnosis, skip_fix_section=True))
+        print(f"Repair: {args.instance_name} ({args.zone})")
         print("")
         for cat in unfixable:
             print(
-                f"Detected [{cat.upper()}] issue but automated fix is not yet available."
+                f"  Detected [{cat.upper()}] issue but automated fix is not yet available."
             )
+        print("  Run 'diagnose' for details.")
         print("")
-        print("Use rescue mode for manual repair:")
+        print("  Use rescue mode for manual repair:")
         print(
-            f"  $ gce-rescue-v2 rescue {args.instance_name} "
+            f"    $ gce-rescue-v2 rescue {args.instance_name} "
             f"--zone={args.zone} --project={project}"
         )
         return 0
