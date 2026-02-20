@@ -5,6 +5,7 @@ Tests:
 - Argument parsing
 - Input validation
 - Output formatting
+- Command handlers (diagnose, rescue, restore, repair)
 """
 
 import time
@@ -13,6 +14,7 @@ from unittest.mock import Mock
 import pytest
 
 from gce_rescue_v2 import cli
+from gce_rescue_v2.operations.base import OperationResult
 
 
 class TestCLIArguments:
@@ -411,3 +413,359 @@ class TestShowRepairResults:
         captured = capsys.readouterr()
         assert '3 issues fixed' in captured.out
 
+
+# ---------------------------------------------------------------------------
+# CLI Handler Tests
+# ---------------------------------------------------------------------------
+
+def _mock_auth(monkeypatch, project="test-proj"):
+    """Set up auth mocks that return a mock compute client."""
+    mock_auth = Mock()
+    mock_compute = Mock()
+    mock_auth.get_client.return_value = (mock_compute, project)
+    monkeypatch.setattr("gce_rescue_v2.core.auth.AuthManager", lambda: mock_auth)
+    return mock_compute
+
+
+def _parse_args(command, vm="vm-1", zone="us-central1-a", extra=None):
+    """Parse CLI args for a given command with common defaults."""
+    parser = cli.create_parser()
+    cmd = [command, vm, "--zone", zone, "--project", "test-proj", "--quiet", "--format", "disable"]
+    if extra:
+        cmd.extend(extra)
+    return parser.parse_args(cmd)
+
+
+class TestHandleDiagnose:
+    """Tests for handle_diagnose CLI handler."""
+
+    def _setup_diagnose(self, monkeypatch, boot_errors=None, boot_status="healthy"):
+        """Common setup for diagnose handler tests."""
+        from gce_rescue_v2.cli import preflight, diagnose as diagnose_mod
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+
+        mock_compute = _mock_auth(monkeypatch)
+        monkeypatch.setattr(preflight, "_create_tracked_client", lambda c, label: mock_compute)
+
+        mock_compute.instances.return_value.get.return_value.execute.return_value = {
+            "status": "RUNNING",
+            "disks": [{"boot": True, "source": "disk", "deviceName": "sda"}],
+            "metadata": {"items": []},
+        }
+
+        # Mock ValidationRunner at source module (it's a late import in handle_diagnose)
+        import gce_rescue_v2.validators as validators_mod
+        _OrigRunner = validators_mod.ValidationRunner
+
+        class FakeValidationRunner:
+            def __init__(self):
+                self._validators = []
+
+            def add(self, v):
+                self._validators.append(v)
+
+            def run_all(self, logger=None):
+                return Mock(all_passed=Mock(return_value=True))
+
+        monkeypatch.setattr(validators_mod, "ValidationRunner", FakeValidationRunner)
+
+        # Mock DiagnoseOperation at source module (also late import)
+        errors = boot_errors if boot_errors is not None else []
+        import gce_rescue_v2.operations as ops_mod
+        import gce_rescue_v2.operations.diagnose as diagnose_op_mod
+
+        class FakeDiagnose:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def execute(self, vm_name, tracking_label=None, stabilize=False):
+                diag_status = "healthy" if not errors else "boot_errors_detected"
+                return OperationResult(
+                    operation_name="Diagnose", success=True, message="OK",
+                    rollback_data={
+                        "vm_name": vm_name, "instance_name": vm_name,
+                        "zone": "us-central1-a", "status": "RUNNING",
+                        "boot_errors": errors, "boot_status": boot_status,
+                        "diagnosis_status": diag_status,
+                        "serial_console_enabled": True,
+                        "os_type": "linux", "os_flavor": "debian",
+                        "architecture": "x86_64",
+                        "recommendations": [],
+                    },
+                )
+
+        monkeypatch.setattr(ops_mod, "DiagnoseOperation", FakeDiagnose)
+        monkeypatch.setattr(diagnose_op_mod, "DiagnoseOperation", FakeDiagnose)
+
+    def test_handle_diagnose_success(self, monkeypatch):
+        """Diagnose runs, shows results, returns 0."""
+        self._setup_diagnose(monkeypatch, boot_errors=[
+            {"category": "fstab", "severity": "error",
+             "description": "Bad UUID", "detected_pattern": "UUID=xxx"}
+        ], boot_status="error")
+
+        args = _parse_args("diagnose")
+        exit_code = cli.handle_diagnose(args)
+        assert exit_code == 0
+
+    def test_handle_diagnose_no_errors(self, monkeypatch):
+        """Healthy VM with no boot errors returns 0."""
+        self._setup_diagnose(monkeypatch, boot_errors=[], boot_status="healthy")
+
+        args = _parse_args("diagnose")
+        exit_code = cli.handle_diagnose(args)
+        assert exit_code == 0
+
+    def test_handle_diagnose_auth_error(self, monkeypatch):
+        """Auth failure returns 1."""
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+
+        monkeypatch.setattr(
+            "gce_rescue_v2.core.auth.AuthManager",
+            lambda: Mock(get_client=Mock(side_effect=Exception("bad creds"))),
+        )
+
+        args = _parse_args("diagnose")
+        exit_code = cli.handle_diagnose(args)
+        assert exit_code == 1
+
+
+class TestHandleRescue:
+    """Tests for handle_rescue CLI handler."""
+
+    def _setup_rescue(self, monkeypatch, validate=True, execute=True):
+        """Common setup for rescue handler tests."""
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+
+        mock_compute = _mock_auth(monkeypatch)
+
+        # Mock preflight._validate_vm_exists
+        monkeypatch.setattr(
+            preflight, "_validate_vm_exists",
+            lambda c, p, z, vm: (True, {"disks": [], "status": "RUNNING", "metadata": {"items": []}}, None),
+        )
+        monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: [])
+
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                self.os_type = 'linux'
+                self.snapshot_name = None
+                self.verification_succeeded = True
+
+            def validate(self):
+                return validate
+
+            def execute(self):
+                return execute
+
+        monkeypatch.setattr("gce_rescue_v2.cli.rescue.RescueOrchestrator", FakeOrchestrator)
+
+    def test_handle_rescue_success(self, monkeypatch):
+        """Rescue runs, shows instructions, returns 0."""
+        self._setup_rescue(monkeypatch)
+        args = _parse_args("rescue")
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 0
+
+    def test_handle_rescue_validation_fails(self, monkeypatch):
+        """Validation failure returns 1."""
+        self._setup_rescue(monkeypatch, validate=False)
+        args = _parse_args("rescue")
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 1
+
+    def test_handle_rescue_execute_fails(self, monkeypatch):
+        """Orchestrator execute failure returns 1."""
+        self._setup_rescue(monkeypatch, execute=False)
+        args = _parse_args("rescue")
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 1
+
+
+class TestHandleRestore:
+    """Tests for handle_restore CLI handler."""
+
+    def _setup_restore(self, monkeypatch, validate=True, execute=True):
+        """Common setup for restore handler tests."""
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+
+        mock_compute = _mock_auth(monkeypatch)
+
+        monkeypatch.setattr(
+            preflight, "_validate_vm_for_restore",
+            lambda c, p, z, vm: (True, {"disks": [], "metadata": {"items": [{"key": "rescue-mode", "value": "1"}]}}, None),
+        )
+
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                self.original_disk_name = "orig-disk"
+
+            def validate(self):
+                return validate
+
+            def execute(self):
+                return execute
+
+        monkeypatch.setattr("gce_rescue_v2.cli.restore.RestoreOrchestrator", FakeOrchestrator)
+
+        # Mock snapshot lookup after restore
+        mock_compute.snapshots.return_value.list.return_value.execute.return_value = {"items": []}
+        # Mock os detection after restore
+        mock_compute.instances.return_value.get.return_value.execute.return_value = {
+            "disks": [{"boot": True, "source": "disk", "deviceName": "sda"}],
+            "networkInterfaces": [],
+        }
+
+    def test_handle_restore_success(self, monkeypatch):
+        """Restore runs, shows confirmation, returns 0."""
+        self._setup_restore(monkeypatch)
+        args = _parse_args("restore")
+        exit_code = cli.handle_restore(args)
+        assert exit_code == 0
+
+    def test_handle_restore_validation_fails(self, monkeypatch):
+        """Validation failure returns 1."""
+        self._setup_restore(monkeypatch, validate=False)
+        args = _parse_args("restore")
+        exit_code = cli.handle_restore(args)
+        assert exit_code == 1
+
+    def test_handle_restore_execute_fails(self, monkeypatch):
+        """Orchestrator execute failure returns 1."""
+        self._setup_restore(monkeypatch, execute=False)
+        args = _parse_args("restore")
+        exit_code = cli.handle_restore(args)
+        assert exit_code == 1
+
+
+class TestHandleRepair:
+    """Tests for handle_repair CLI handler."""
+
+    def _setup_repair_base(self, monkeypatch):
+        """Base setup for repair: auth + preflight."""
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+
+        mock_compute = _mock_auth(monkeypatch)
+        monkeypatch.setattr(preflight, "_create_tracked_client", lambda c, label: mock_compute)
+
+        # VM is Linux, RUNNING, not in rescue mode
+        mock_compute.instances.return_value.get.return_value.execute.return_value = {
+            "status": "RUNNING",
+            "disks": [{"boot": True, "source": "disk", "deviceName": "sda"}],
+            "metadata": {"items": []},
+        }
+
+        return mock_compute
+
+    def _make_fake_repair_orch(self, boot_errors=None, fixable=None,
+                              unfixable=None, fstab_targets=None,
+                              execute_result=None):
+        """Create a FakeRepairOrchestrator class with given behaviour."""
+        errors = boot_errors or []
+        fix_cats = fixable or []
+        unfix_cats = unfixable or []
+        targets = fstab_targets or []
+        exec_res = execute_result or {
+            "status": "success", "fixed_count": 1,
+            "fix_lines": ["[FIXED] Commented out UUID=bad-uuid"],
+            "error": None, "snapshot_name": "snap-123", "duration_seconds": 30,
+        }
+
+        class FakeRepairOrchestrator:
+            _suppress_header = False
+
+            def __init__(self, **kwargs):
+                pass
+
+            def validate(self):
+                return True
+
+            def diagnose(self):
+                return {
+                    "instance_name": "vm-1", "zone": "us-central1-a",
+                    "boot_errors": errors,
+                    "boot_status": "error" if errors else "healthy",
+                }
+
+            def get_fixable_categories(self, diag):
+                return fix_cats
+
+            def get_unfixable_categories(self, diag):
+                return unfix_cats
+
+            def _extract_fstab_targets(self, diag):
+                return targets
+
+            def execute(self, diagnosis):
+                return exec_res
+
+        return FakeRepairOrchestrator
+
+    def test_handle_repair_success(self, monkeypatch):
+        """Repair runs, shows results, returns 0."""
+        self._setup_repair_base(monkeypatch)
+
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "fstab", "severity": "error",
+                          "description": "Bad UUID in /etc/fstab",
+                          "detected_pattern": "UUID=bad-uuid"}],
+            fixable=["fstab"],
+            fstab_targets=["UUID=bad-uuid"],
+        )
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        args = _parse_args("repair")
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 0
+
+    def test_handle_repair_no_issues(self, monkeypatch):
+        """No boot errors exits cleanly with message."""
+        self._setup_repair_base(monkeypatch)
+
+        Fake = self._make_fake_repair_orch(boot_errors=[])
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        args = _parse_args("repair")
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 0
+
+    def test_handle_repair_no_fix_available(self, monkeypatch, capsys):
+        """Unfixable issues suggests rescue mode, returns 0."""
+        self._setup_repair_base(monkeypatch)
+
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "kernel", "severity": "critical",
+                          "description": "Missing kernel"}],
+            unfixable=["kernel"],
+        )
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        args = _parse_args("repair")
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert "rescue" in captured.out.lower()
+
+    def test_handle_repair_auth_error(self, monkeypatch):
+        """Auth failure returns 1."""
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+
+        monkeypatch.setattr(
+            "gce_rescue_v2.core.auth.AuthManager",
+            lambda: Mock(get_client=Mock(side_effect=Exception("bad creds"))),
+        )
+
+        args = _parse_args("repair")
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 1
