@@ -1,5 +1,5 @@
 """
-Integration test for full rescue → restore cycle.
+Integration test for full rescue -> restore cycle.
 
 Tests the complete workflow with mocked orchestrators:
 1. Rescue VM (validate + execute)
@@ -8,24 +8,38 @@ Tests the complete workflow with mocked orchestrators:
 
 from unittest.mock import Mock
 
-from gce_rescue_v2 import main
+from gce_rescue_v2 import cli
 
 
 def test_full_rescue_restore_cycle(monkeypatch):
-    """Mock end-to-end rescue then restore path."""
+    """Mock end-to-end rescue then restore path via CLI handlers."""
     state = {"calls": [], "rescued": False, "restored": False}
 
-    def fake_get_client(self, project=None):
-        return Mock(), project or "default-project"
+    # Mock AuthManager with dynamic VM state:
+    # Before rescue: no rescue-mode metadata
+    # After rescue: rescue-mode metadata present (so restore preflight passes)
+    mock_auth = Mock()
+    mock_compute = Mock()
+
+    def _get_vm_info():
+        if state["rescued"]:
+            return {
+                "disks": [],
+                "metadata": {"items": [{"key": "rescue-mode", "value": "true"}]},
+            }
+        return {"disks": []}
+
+    mock_compute.instances.return_value.get.return_value.execute.side_effect = _get_vm_info
+    mock_compute.snapshots.return_value.list.return_value.execute.return_value = {"items": []}
+    mock_auth.get_client.return_value = (mock_compute, "test-project")
+    monkeypatch.setattr("gce_rescue_v2.core.auth.AuthManager", lambda: mock_auth)
+
+    # Mock gcloud config
+    from gce_rescue_v2.cli import preflight
+    monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-project")
 
     class FakeRescueOrchestrator:
-        def __init__(self, compute, project, zone, vm_name, config, logger, log_file=None):
-            self.compute = compute
-            self.project = project
-            self.zone = zone
-            self.vm_name = vm_name
-            self.log_file = log_file
-            # Required attributes for main.py success message
+        def __init__(self, **kwargs):
             self.os_type = 'linux'
             self.windows_rescue_password = None
             self.verification_succeeded = True
@@ -43,13 +57,7 @@ def test_full_rescue_restore_cycle(monkeypatch):
             return True
 
     class FakeRestoreOrchestrator:
-        def __init__(self, compute, project, zone, vm_name, config, logger, log_file=None):
-            self.compute = compute
-            self.project = project
-            self.zone = zone
-            self.vm_name = vm_name
-            self.log_file = log_file
-            # Required attributes for main.py success message
+        def __init__(self, **kwargs):
             self.original_disk_name = 'test-boot-disk'
 
         def validate(self):
@@ -61,15 +69,29 @@ def test_full_rescue_restore_cycle(monkeypatch):
             state["restored"] = True
             return True
 
-    monkeypatch.setattr(main.AuthManager, "get_client", fake_get_client, raising=False)
-    monkeypatch.setattr(main, "RescueOrchestrator", FakeRescueOrchestrator)
-    monkeypatch.setattr(main, "RestoreOrchestrator", FakeRestoreOrchestrator)
+    monkeypatch.setattr(
+        "gce_rescue_v2.cli.rescue.RescueOrchestrator", FakeRescueOrchestrator
+    )
+    monkeypatch.setattr(
+        "gce_rescue_v2.cli.restore.RestoreOrchestrator", FakeRestoreOrchestrator
+    )
 
-    rescue_ok = main.rescue_vm("vm-1", "us-central1-a", project="test-project")
-    restore_ok = main.restore_vm("vm-1", "us-central1-a", project="test-project")
+    parser = cli.create_parser()
 
-    assert rescue_ok is True
-    assert restore_ok is True
+    # Rescue
+    rescue_args = parser.parse_args([
+        "rescue", "vm-1", "--zone", "us-central1-a", "--quiet", "--format", "disable"
+    ])
+    rescue_code = cli.handle_rescue(rescue_args)
+
+    # Restore
+    restore_args = parser.parse_args([
+        "restore", "vm-1", "--zone", "us-central1-a", "--quiet", "--format", "disable"
+    ])
+    restore_code = cli.handle_restore(restore_args)
+
+    assert rescue_code == 0
+    assert restore_code == 0
     assert state["calls"] == [
         "rescue-validate",
         "rescue-execute",
@@ -78,4 +100,3 @@ def test_full_rescue_restore_cycle(monkeypatch):
     ]
     assert state["rescued"] is True
     assert state["restored"] is True
-

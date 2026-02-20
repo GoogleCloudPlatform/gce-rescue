@@ -9,13 +9,13 @@ import pytest
 
 from gce_rescue_v2.orchestration.repair import (
     RepairOrchestrator,
-    SUPPORTED_FIX_CATEGORIES,
     REPAIR_LINE_MARKER,
     REPAIR_RESULT_MARKER,
     RESCUE_COMPLETE_MARKER,
     RESCUE_SUBSTEP_LABELS,
     RESTORE_SUBSTEP_LABELS,
 )
+from gce_rescue_v2.core.fix_catalog import SUPPORTED_FIX_CATEGORIES
 from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
 from gce_rescue_v2.orchestration.restore import RestoreOrchestrator
 from gce_rescue_v2.core.config import RescueConfig
@@ -463,30 +463,22 @@ class TestFstabFixScript:
         assert 'tmpfs' in content
         assert 'sysfs' in content
 
-    def test_fix_script_checks_uuid(self):
-        """Script should check UUID= entries against blkid."""
+    def test_fix_script_uses_repair_targets(self):
+        """Script should use REPAIR_TARGETS for targeted matching."""
         fix_path = (
             Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'fstab_fix.sh'
         )
         content = fix_path.read_text()
-        assert 'UUID=' in content
-        assert 'blkid' in content
+        assert 'REPAIR_TARGETS' in content
+        assert 'matches_target' in content
 
-    def test_fix_script_handles_device_paths(self):
-        """Script should check /dev/ entries."""
+    def test_fix_script_handles_empty_targets(self):
+        """Script should exit with NO_ISSUES when REPAIR_TARGETS is empty."""
         fix_path = (
             Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'fstab_fix.sh'
         )
         content = fix_path.read_text()
-        assert '/dev/' in content
-
-    def test_fix_script_handles_labels(self):
-        """Script should check LABEL= entries."""
-        fix_path = (
-            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'fstab_fix.sh'
-        )
-        content = fix_path.read_text()
-        assert 'LABEL=' in content
+        assert 'NO_ISSUES:0' in content
 
     def test_fix_script_detects_malformed_entries(self):
         """Script should detect entries with fewer than 3 fields."""
@@ -495,6 +487,313 @@ class TestFstabFixScript:
         )
         content = fix_path.read_text()
         assert 'malformed' in content.lower()
+
+    def test_fix_script_protects_root_mount(self):
+        """Script should never comment out the root mount point."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'fstab_fix.sh'
+        )
+        content = fix_path.read_text()
+        assert 'mountpoint" = "/"' in content or "mountpoint\" = \"/\"" in content
+
+
+# ---------------------------------------------------------------------------
+# TestExtractFstabTargets
+# ---------------------------------------------------------------------------
+
+class TestExtractFstabTargets:
+    """Tests for _extract_fstab_targets() method."""
+
+    def _make_orchestrator(self):
+        compute = _make_compute()
+        return RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+
+    def test_extract_uuid_from_not_found(self):
+        """Should extract UUID from 'UUID=xxx does not exist' pattern."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'UUID=bad-uuid-12345 does not exist',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'bad-uuid-12345' in targets
+
+    def test_extract_uuid_from_cant_find(self):
+        """Should extract UUID from "can't find UUID=xxx" pattern."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': "can't find UUID=abc123-def456-789",
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'abc123-def456-789' in targets
+
+    def test_extract_uuid_from_by_uuid_path(self):
+        """Should extract UUID from /dev/disk/by-uuid/xxx path."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern':
+                    'Timed out waiting for device /dev/disk/by-uuid/aaa-bbb-ccc',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'aaa-bbb-ccc' in targets
+
+    def test_extract_device_path(self):
+        """Should extract raw device like /dev/sdb1."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Device /dev/sdb1 does not exist',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'sdb1' in targets
+
+    def test_extract_mount_from_systemd_unit(self):
+        """Should extract mount point from systemd unit name."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Dependency failed for mnt-data.mount',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert '/mnt/data' in targets
+
+    def test_extract_uuid_from_systemd_escaped_device(self):
+        """Should extract UUID from systemd escaped device path."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern':
+                    'Expecting device dev-disk-by\\x2duuid-bad-uuid-11111-22222.device',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'bad-uuid-11111-22222' in targets
+
+    def test_extract_uuid_from_systemd_unescaped_device(self):
+        """Should extract UUID from systemd device path (already unescaped)."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern':
+                    'Expecting device dev-disk-by-uuid-bad-uuid-11111-22222.device'
+                    ' - /dev/disk/by-uuid/bad-uuid-11111-22222',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'bad-uuid-11111-22222' in targets
+
+    def test_extract_partuuid_from_systemd_device(self):
+        """Should extract PARTUUID from systemd escaped device path."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern':
+                    'Expecting device dev-disk-by-partuuid-66813b81-9688-4fce.device',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert '66813b81-9688-4fce' in targets
+
+    def test_extract_label_from_by_label_path(self):
+        """Should extract label from /dev/disk/by-label/xxx path."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern':
+                    'Expecting device /dev/disk/by-label/DATA-DISK',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'DATA-DISK' in targets
+
+    def test_extract_deduplicates(self):
+        """Should not return duplicate targets."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': 'UUID=same-uuid does not exist',
+                },
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': "can't find UUID=same-uuid",
+                },
+            ]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert targets.count('same-uuid') == 1
+
+    def test_extract_empty_for_no_fstab_errors(self):
+        """Should return empty list when no fstab errors."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'grub',
+                'severity': 'error',
+                'detected_pattern': 'error: file not found',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert targets == []
+
+    def test_extract_empty_for_no_boot_errors(self):
+        """Should return empty list when no boot errors at all."""
+        orch = self._make_orchestrator()
+        diagnosis = {'boot_errors': []}
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert targets == []
+
+    def test_extract_multiple_different_targets(self):
+        """Should extract different target types from multiple errors."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': 'UUID=bad-uuid-111 does not exist',
+                },
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': 'Device /dev/sdc1 does not exist',
+                },
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': 'Dependency failed for opt-data.mount',
+                },
+            ]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'bad-uuid-111' in targets
+        assert 'sdc1' in targets
+        assert '/opt/data' in targets
+
+    def test_extract_skips_non_fstab_errors(self):
+        """Should ignore errors with non-fstab category."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': 'UUID=fstab-uuid does not exist',
+                },
+                {
+                    'category': 'kernel',
+                    'severity': 'error',
+                    'detected_pattern': 'UUID=kernel-uuid something',
+                },
+            ]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'fstab-uuid' in targets
+        assert 'kernel-uuid' not in targets
+
+
+# ---------------------------------------------------------------------------
+# TestGenerateRepairScriptTargets
+# ---------------------------------------------------------------------------
+
+class TestGenerateRepairScriptTargets:
+    """Tests for REPAIR_TARGETS injection in generated repair scripts."""
+
+    def _make_orchestrator(self):
+        vm_info = {
+            'status': 'TERMINATED',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/test-boot-disk',
+                'deviceName': 'test-boot-disk',
+                'licenses': ['projects/debian-cloud/global/licenses/debian-12'],
+            }],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info)
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        return orch
+
+    def test_script_includes_repair_targets(self):
+        """Generated script should include REPAIR_TARGETS variable."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'UUID=bad-uuid-12345 does not exist',
+            }]
+        }
+        script = orch._generate_repair_script(diagnosis)
+        assert 'REPAIR_TARGETS=' in script
+        assert 'bad-uuid-12345' in script
+
+    def test_script_targets_multiple_uuids(self):
+        """Generated script should include all extracted targets."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': 'UUID=uuid-aaa does not exist',
+                },
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': 'Device /dev/sdb1 does not exist',
+                },
+            ]
+        }
+        script = orch._generate_repair_script(diagnosis)
+        assert 'uuid-aaa' in script
+        assert 'sdb1' in script
+
+    def test_script_empty_targets_when_no_fstab(self):
+        """Script should set empty REPAIR_TARGETS when no fstab targets extracted."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'You are in emergency mode',
+            }]
+        }
+        script = orch._generate_repair_script(diagnosis)
+        assert 'REPAIR_TARGETS=""' in script
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +963,7 @@ class TestRepairResumeMethod:
         orch._progress_started = False
         orch._find_rescue_snapshot = lambda: snapshot_name
         orch._create_tracked_client = lambda label: compute
+        orch._verify_boot_after_repair = lambda: {'verified': None, 'errors': []}
         return orch
 
     def test_resume_sets_total_steps_to_2(self):
