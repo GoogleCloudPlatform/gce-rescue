@@ -28,13 +28,11 @@ import google_auth_httplib2
 import httplib2
 
 from ..core.config import RescueConfig, RestoreConfig, VERSION
+from ..core.fix_catalog import SUPPORTED_FIX_CATEGORIES
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
 from .rescue import RescueOrchestrator
 from .restore import RestoreOrchestrator
-
-# Categories that have automated fix scripts
-SUPPORTED_FIX_CATEGORIES: Set[str] = {'fstab'}
 
 # Marker prefixes emitted by fix scripts to serial console
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
@@ -180,7 +178,9 @@ class RepairOrchestrator:
         diagnose_op = DiagnoseOperation(
             self.compute, self.project, self.zone, self.logger
         )
-        result = diagnose_op.execute(self.vm_name, tracking_label='repair-diagnose')
+        result = diagnose_op.execute(
+            self.vm_name, tracking_label='repair-diagnose', stabilize=True
+        )
 
         if not result.success:
             self._log_error(f"Diagnosis failed: {result.message}")
@@ -483,6 +483,78 @@ class RepairOrchestrator:
                 'duration_seconds': time.time() - start_time
             }
 
+    def _extract_fstab_targets(self, diagnosis: Dict[str, Any]) -> List[str]:
+        """Extract specific identifiers from fstab error patterns for targeted fixing.
+
+        Parses detected_pattern strings from diagnosis boot_errors to extract
+        UUIDs, device paths, and mount points that the fix script should target.
+        This prevents false-positive commenting of legitimate secondary disk entries.
+
+        Returns:
+            Deduplicated list of identifier strings (UUIDs, device names, mount paths).
+        """
+        targets = []
+        seen = set()
+
+        extraction_patterns = [
+            # UUID from "UUID=xxx" or "can't find UUID=xxx"
+            (r'UUID=([\w-]+)', 1),
+            # UUID from /dev/disk/by-uuid/xxx paths
+            (r'/by-uuid/([\w-]+)', 1),
+            # Systemd escaped device path: dev-disk-by\x2duuid-UUID.device
+            # systemd replaces / with - and escapes special chars
+            (r'dev-disk-by\\x2duuid-([\w-]+)\.device', 1),
+            # Systemd escaped device path (already unescaped): dev-disk-by-uuid-UUID.device
+            (r'dev-disk-by-uuid-([\w-]+)\.device', 1),
+            # PARTUUID from "PARTUUID=xxx"
+            (r'PARTUUID=([\w-]+)', 1),
+            # Systemd escaped PARTUUID: dev-disk-by\x2dpartuuid-UUID.device
+            (r'dev-disk-by\\x2dpartuuid-([\w-]+)\.device', 1),
+            (r'dev-disk-by-partuuid-([\w-]+)\.device', 1),
+            # Raw device like /dev/sdb1
+            (r'/dev/(sd[a-z]+\d*)', 1),
+            # Systemd unit name -> mount point (e.g., "mnt-data.mount" -> /mnt/data)
+            (r'for ([\w.-]+)\.mount', 1),
+            # Disk label from /dev/disk/by-label/xxx
+            (r'/by-label/([\w-]+)', 1),
+            # LABEL= entries
+            (r'LABEL=([\w-]+)', 1),
+        ]
+
+        for err in diagnosis.get('boot_errors', []):
+            if err.get('category') != 'fstab':
+                continue
+            pattern_text = err.get('detected_pattern', '')
+            if not pattern_text:
+                continue
+
+            # Decode systemd hex escapes (e.g. \x2d -> '-') before matching
+            pattern_text = re.sub(
+                r'\\x([0-9a-fA-F]{2})',
+                lambda m: chr(int(m.group(1), 16)),
+                pattern_text
+            )
+
+            for regex, group in extraction_patterns:
+                match = re.search(regex, pattern_text, re.IGNORECASE)
+                if match:
+                    value = match.group(group)
+                    # Convert systemd unit name to mount path: mnt-data -> /mnt/data
+                    if regex.startswith(r'for '):
+                        value = '/' + value.replace('-', '/')
+                    if value not in seen:
+                        seen.add(value)
+                        targets.append(value)
+
+        if not targets:
+            self._log_debug(
+                "No fstab repair targets extracted from diagnosis patterns"
+            )
+        else:
+            self._log_debug(f"Extracted fstab repair targets: {targets}")
+
+        return targets
+
     def _generate_repair_script(self, diagnosis: Dict[str, Any]) -> str:
         """Generate combined startup script: rescue_mount.sh + fix script(s).
 
@@ -537,10 +609,22 @@ class RepairOrchestrator:
                 f"Cannot proceed with repair."
             )
 
-        # Combine: base script + fix scripts + completion marker
+        # Extract repair targets from diagnosis for targeted fixing
+        targets = self._extract_fstab_targets(diagnosis)
+
+        # Combine: base script + targets + fix scripts + completion marker
         combined = base_script + '\n'
         combined += '\n# === GCE Repair Fix Scripts ===\n'
         combined += 'log "=== Starting repair fixes ==="\n\n'
+
+        # Inject REPAIR_TARGETS variable for targeted fstab fixing
+        if targets:
+            targets_str = '\n'.join(targets)
+            combined += '# Repair targets extracted from diagnosis\n'
+            combined += f'REPAIR_TARGETS="{targets_str}"\n\n'
+        else:
+            combined += '# No specific repair targets extracted from diagnosis\n'
+            combined += 'REPAIR_TARGETS=""\n\n'
 
         for fix_script in fix_scripts:
             combined += fix_script + '\n\n'
@@ -671,7 +755,7 @@ class RepairOrchestrator:
         Returns:
             Dict with: verified (bool/None), errors (list of error descriptions)
         """
-        from ..core.boot_patterns import analyze_serial_output
+        from ..core.diagnosis import analyze_serial_output
 
         BOOT_WAIT_SECONDS = 45
         self._log_debug(

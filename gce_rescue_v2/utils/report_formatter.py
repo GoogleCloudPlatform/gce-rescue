@@ -4,8 +4,10 @@ Formats diagnosis results into clean, professional CLI output
 following gcloud conventions and trivy/kubectl-style design.
 """
 
-from typing import Dict, Any, List
-from ..core.boot_patterns import SEVERITY_ORDER, CATEGORY_FIX_GUIDANCE
+import re
+from typing import Dict, Any, List, Optional
+from ..core.diagnosis import SEVERITY_ORDER
+from ..core.fix_catalog import CATEGORY_FIX_GUIDANCE
 from .colors import red, yellow, green, bold, dim
 
 
@@ -150,6 +152,11 @@ class DiagnosisReportFormatter:
         vm_name = diagnosis['vm_name']
         zone = diagnosis['zone']
 
+        # Show extracted identifier (UUID, device, etc.) when available
+        identifier = _extract_identifier(error.get('detected_pattern', ''))
+        if identifier:
+            lines.append(f"{indent}Identifier: {bold(identifier)}")
+
         # Serial console log lines
         if context:
             lines.append(f"{indent}Serial console:")
@@ -165,12 +172,7 @@ class DiagnosisReportFormatter:
                 else:
                     lines.append(f"{indent}  {dim(ctx_line)}")
 
-        # Per-issue fixes
-        if fixes:
-            lines.append(f"{indent}Fix:")
-            for fix in fixes:
-                fix = fix.replace('VM_NAME', vm_name).replace('ZONE', zone)
-                lines.append(f"{indent}  - {fix}")
+        # Per-issue fixes moved to _format_fix_section (manual step 2)
 
         lines.append("")
         return "\n".join(lines)
@@ -193,9 +195,20 @@ class DiagnosisReportFormatter:
                 seen.add(cat)
                 categories.append(cat)
 
-        # Check if auto-repair is available
-        from ..orchestration.repair import SUPPORTED_FIX_CATEGORIES
+        # Check if auto-repair is available AND can identify targets
+        from ..core.fix_catalog import SUPPORTED_FIX_CATEGORIES
         auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
+
+        # Auto-repair needs extractable identifiers to target specific entries.
+        # If no error has an extractable identifier, repair would bail out.
+        if auto_fixable:
+            has_targets = any(
+                _extract_identifier(err.get('detected_pattern', ''))
+                for err in errors
+                if err['category'] in SUPPORTED_FIX_CATEGORIES
+            )
+            if not has_targets:
+                auto_fixable = []
 
         # Lead with auto-repair when available
         if auto_fixable:
@@ -208,7 +221,7 @@ class DiagnosisReportFormatter:
         lines.append("    1. Enter rescue mode:")
         lines.append(f"       $ gce-rescue-v2 rescue {vm_name} --zone={zone}")
 
-        # Category-aware fix guidance
+        # Category-aware fix guidance + per-issue fix suggestions
         if len(categories) == 1:
             cat = categories[0]
             guidance = CATEGORY_FIX_GUIDANCE.get(cat)
@@ -222,6 +235,19 @@ class DiagnosisReportFormatter:
                 guidance = CATEGORY_FIX_GUIDANCE.get(cat)
                 if guidance:
                     lines.append(f"       - {guidance}")
+
+        # Add per-issue fix suggestions under step 2
+        all_fixes = []
+        seen_fixes = set()
+        for err in errors:
+            for fix in err.get('suggested_fixes', []):
+                fix = fix.replace('VM_NAME', vm_name).replace('ZONE', zone)
+                if fix not in seen_fixes:
+                    seen_fixes.add(fix)
+                    all_fixes.append(fix)
+        if all_fixes:
+            for fix in all_fixes:
+                lines.append(f"       - {fix}")
 
         lines.append("    3. Restore the VM:")
         lines.append(f"       $ gce-rescue-v2 restore {vm_name} --zone={zone}")
@@ -291,6 +317,49 @@ def _decode_systemd_escapes(text: str) -> str:
     """Decode systemd hex escape sequences (e.g. \\x2d -> '-') for readability."""
     import re
     return re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), text)
+
+
+def _extract_identifier(detected_pattern: str) -> Optional[str]:
+    """Extract a human-readable identifier (UUID, device, mount) from a detected pattern.
+
+    Returns the first match with a descriptive prefix, or None if nothing found.
+    """
+    if not detected_pattern:
+        return None
+
+    # Decode systemd escapes first (e.g. \x2d -> -)
+    decoded = _decode_systemd_escapes(detected_pattern)
+
+    patterns = [
+        # UUID= style
+        (r'UUID=([\w-]+)', 'UUID={}'),
+        # /dev/disk/by-uuid/ style
+        (r'/by-uuid/([\w-]+)', 'UUID={}'),
+        # systemd escaped: dev-disk-by-uuid-UUID.device
+        (r'dev-disk-by-uuid-([\w-]+)\.device', 'UUID={}'),
+        # PARTUUID= style
+        (r'PARTUUID=([\w-]+)', 'PARTUUID={}'),
+        # systemd escaped: dev-disk-by-partuuid-UUID.device
+        (r'dev-disk-by-partuuid-([\w-]+)\.device', 'PARTUUID={}'),
+        # /dev/sdXN device
+        (r'/dev/(sd[a-z]+\d*)', '/dev/{}'),
+        # LABEL= style
+        (r'LABEL=([\w-]+)', 'LABEL={}'),
+        # /dev/disk/by-label/ style
+        (r'/by-label/([\w-]+)', 'LABEL={}'),
+        # systemd mount unit: xxx.mount -> /xxx
+        (r'for ([\w.-]+)\.mount', '/{}'),
+    ]
+
+    for regex, fmt in patterns:
+        match = re.search(regex, decoded, re.IGNORECASE)
+        if match:
+            value = match.group(1)
+            if fmt == '/{}':
+                value = value.replace('-', '/')
+            return fmt.format(value)
+
+    return None
 
 
 def _category_label(category: str) -> str:

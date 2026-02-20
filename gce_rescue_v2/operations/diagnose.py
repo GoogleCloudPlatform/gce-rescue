@@ -3,6 +3,7 @@
 This operation is read-only and does not modify the VM in any way.
 """
 
+import time
 from typing import Optional
 import logging
 
@@ -12,7 +13,7 @@ import google_auth_httplib2
 import httplib2
 from googleapiclient.errors import HttpError
 
-from ..core.boot_patterns import analyze_serial_output, DiagnosisResult
+from ..core.diagnosis import analyze_serial_output, DiagnosisResult
 from ..core.config import VERSION
 from ..utils.os_detection import (
     detect_os_type, detect_os_flavor, detect_architecture, detect_license_type,
@@ -30,12 +31,15 @@ class DiagnoseOperation(BaseOperation):
         """Return the operation name."""
         return "Diagnose VM"
 
-    def execute(self, vm_name: str, tracking_label: str = None) -> OperationResult:
+    def execute(self, vm_name: str, tracking_label: str = None,
+                stabilize: bool = False) -> OperationResult:
         """Execute diagnosis by fetching and analyzing serial console output.
 
         Args:
             vm_name: Name of the VM to diagnose
             tracking_label: Optional tracking label for usage analytics.
+            stabilize: When True and VM is RUNNING, poll until diagnosis
+                stabilizes (2 consecutive identical results) before returning.
 
         Returns:
             OperationResult with diagnosis data in rollback_data field
@@ -94,113 +98,31 @@ class DiagnoseOperation(BaseOperation):
                     "VM is still starting, serial output may be incomplete"
                 )
 
-            # Fetch serial console output
-            self._log_debug("Fetching serial console output")
-            try:
-                serial_response = compute.instances().getSerialPortOutput(
-                    project=self.project,
-                    zone=self.zone,
-                    instance=vm_name,
-                    port=1
-                ).execute()
+            # Use stabilization polling for RUNNING VMs when requested
+            if stabilize and vm_status == 'RUNNING':
+                diagnosis_dict = self._stabilize_diagnosis(
+                    compute, vm_name, vm_status,
+                    os_type=os_type, os_flavor=os_flavor,
+                    architecture=architecture, license_type=license_type
+                )
+            else:
+                # Single-pass: fetch and analyze once
+                diagnosis_dict = self._single_pass_diagnosis(
+                    compute, vm_name, vm_status,
+                    os_type=os_type, os_flavor=os_flavor,
+                    architecture=architecture, license_type=license_type
+                )
 
-                serial_output = serial_response.get('contents', '')
-                self._log_debug(f"Retrieved {len(serial_output)} bytes of serial output")
-
-            except HttpError as e:
-                error_msg = extract_error_message(e)
-                self._log_error(f"Failed to fetch serial console: {error_msg}")
-
-                # Handle specific error cases
-                if e.resp.status == 403:
-                    # Pre-flight validation already checked IAM permissions,
-                    # so a 403 here means serial console access is disabled
-                    # at the project or VM level.
-                    return OperationResult(
-                        operation_name=self.name,
-                        success=False,
-                        message="Serial console access is disabled",
-                        rollback_data={
-                            'vm_name': vm_name,
-                            'zone': self.zone,
-                            'status': vm_status,
-                            'os_type': os_type,
-                            'os_flavor': os_flavor,
-                            'architecture': architecture,
-                            'license_type': license_type,
-                            'diagnosis_status': 'unable_to_diagnose',
-                            'boot_errors': [],
-                            'recommendations': [
-                                "Serial console access is disabled for this VM or project",
-                                "Enable on VM: gcloud compute instances add-metadata "
-                                f"{vm_name} --zone={self.zone} --metadata serial-port-enable=TRUE",
-                                "Enable on project: gcloud compute project-info add-metadata "
-                                "--metadata serial-port-enable=TRUE",
-                                "Then wait a few minutes for logs to accumulate and try again"
-                            ]
-                        }
-                    )
-                else:
-                    return OperationResult(
-                        operation_name=self.name,
-                        success=False,
-                        message=f"Failed to fetch serial console: {error_msg}",
-                        rollback_data={
-                            'vm_name': vm_name,
-                            'zone': self.zone,
-                            'status': vm_status,
-                            'os_type': os_type,
-                            'os_flavor': os_flavor,
-                            'architecture': architecture,
-                            'license_type': license_type,
-                            'diagnosis_status': 'unable_to_diagnose',
-                            'boot_errors': [],
-                            'recommendations': [
-                                f"Unable to fetch serial console output: {error_msg}",
-                                "Check VM permissions and try again"
-                            ]
-                        }
-                    )
-
-            # Analyze serial output
-            self._log_info("Analyzing serial console output for boot errors")
-            diagnosis: DiagnosisResult = analyze_serial_output(
-                serial_output=serial_output,
-                vm_name=vm_name,
-                zone=self.zone,
-                vm_status=vm_status
-            )
-
-            # Convert diagnosis to dict for rollback_data
-            diagnosis_dict = {
-                'vm_name': diagnosis.vm_name,
-                'zone': diagnosis.zone,
-                'status': diagnosis.status,
-                'os_type': os_type,
-                'os_flavor': os_flavor,
-                'architecture': architecture,
-                'license_type': license_type,
-                'diagnosis_status': diagnosis.diagnosis_status,
-                'boot_errors': [
-                    {
-                        'category': err.category,
-                        'severity': err.severity,
-                        'description': err.description,
-                        'detected_pattern': err.detected_pattern,
-                        'suggested_fixes': err.suggested_fixes,
-                        'context_lines': err.context_lines,
-                        'matched_line_index': err.matched_line_index
-                    }
-                    for err in diagnosis.boot_errors
-                ],
-                'recommendations': diagnosis.recommendations
-            }
+            # _single_pass_diagnosis returns None on serial fetch failure
+            # (it returns an OperationResult directly in that case)
+            if isinstance(diagnosis_dict, OperationResult):
+                return diagnosis_dict
 
             # Determine success based on diagnosis status
-            if diagnosis.diagnosis_status == "boot_errors_detected":
-                message = f"Found {len(diagnosis.boot_errors)} boot error(s)"
+            if diagnosis_dict['diagnosis_status'] == "boot_errors_detected":
+                message = f"Found {len(diagnosis_dict['boot_errors'])} boot error(s)"
                 success = True  # Operation succeeded, even though errors were found
-            elif diagnosis.diagnosis_status == "healthy":
+            elif diagnosis_dict['diagnosis_status'] == "healthy":
                 message = "No boot errors detected"
                 success = True
             else:  # unable_to_diagnose
@@ -272,6 +194,239 @@ class DiagnoseOperation(BaseOperation):
                     ]
                 }
             )
+
+    def _fetch_serial_output(self, compute, vm_name: str) -> str:
+        """Fetch raw serial console output from the VM.
+
+        Args:
+            compute: Compute API client to use.
+            vm_name: Name of the VM.
+
+        Returns:
+            Raw serial output string.
+
+        Raises:
+            HttpError: On API failure (caller handles).
+        """
+        self._log_debug("Fetching serial console output")
+        serial_response = compute.instances().getSerialPortOutput(
+            project=self.project,
+            zone=self.zone,
+            instance=vm_name,
+            port=1
+        ).execute()
+
+        serial_output = serial_response.get('contents', '')
+        self._log_debug(f"Retrieved {len(serial_output)} bytes of serial output")
+        return serial_output
+
+    def _analyze_serial(self, serial_output: str, vm_name: str,
+                        vm_status: str, os_type: str, os_flavor: str,
+                        architecture: str, license_type: str) -> dict:
+        """Analyze serial output and return diagnosis dict.
+
+        Args:
+            serial_output: Raw serial console text.
+            vm_name: VM name.
+            vm_status: Current VM status string.
+            os_type: Detected OS type.
+            os_flavor: Detected OS flavor.
+            architecture: Detected architecture.
+            license_type: Detected license type.
+
+        Returns:
+            Diagnosis dict with all standard fields.
+        """
+        diagnosis: DiagnosisResult = analyze_serial_output(
+            serial_output=serial_output,
+            vm_name=vm_name,
+            zone=self.zone,
+            vm_status=vm_status
+        )
+
+        return {
+            'vm_name': diagnosis.vm_name,
+            'zone': diagnosis.zone,
+            'status': diagnosis.status,
+            'os_type': os_type,
+            'os_flavor': os_flavor,
+            'architecture': architecture,
+            'license_type': license_type,
+            'diagnosis_status': diagnosis.diagnosis_status,
+            'boot_errors': [
+                {
+                    'name': err.name,
+                    'category': err.category,
+                    'severity': err.severity,
+                    'description': err.description,
+                    'detected_pattern': err.detected_pattern,
+                    'suggested_fixes': err.suggested_fixes,
+                    'context_lines': err.context_lines,
+                    'matched_line_index': err.matched_line_index
+                }
+                for err in diagnosis.boot_errors
+            ],
+            'recommendations': diagnosis.recommendations
+        }
+
+    def _diagnosis_signature(self, diagnosis_dict: dict) -> tuple:
+        """Extract a comparable signature from a diagnosis dict.
+
+        Two diagnoses are "the same" when the status and set of error
+        names match — we intentionally ignore detected_pattern text and
+        context_lines which can shift as the serial buffer grows.
+
+        Returns:
+            (diagnosis_status, frozenset of error names)
+        """
+        error_names = frozenset(
+            err['name'] for err in diagnosis_dict.get('boot_errors', [])
+        )
+        return (diagnosis_dict.get('diagnosis_status'), error_names)
+
+    def _single_pass_diagnosis(self, compute, vm_name: str, vm_status: str,
+                               os_type: str = 'unknown',
+                               os_flavor: str = 'unknown',
+                               architecture: str = 'unknown',
+                               license_type: str = 'unknown'):
+        """Fetch serial output once and analyze it.
+
+        Returns:
+            Diagnosis dict on success, or OperationResult on serial fetch failure.
+        """
+        try:
+            serial_output = self._fetch_serial_output(compute, vm_name)
+        except HttpError as e:
+            error_msg = extract_error_message(e)
+            self._log_error(f"Failed to fetch serial console: {error_msg}")
+
+            if e.resp.status == 403:
+                return OperationResult(
+                    operation_name=self.name,
+                    success=False,
+                    message="Serial console access is disabled",
+                    rollback_data={
+                        'vm_name': vm_name,
+                        'zone': self.zone,
+                        'status': vm_status,
+                        'os_type': os_type,
+                        'os_flavor': os_flavor,
+                        'architecture': architecture,
+                        'license_type': license_type,
+                        'diagnosis_status': 'unable_to_diagnose',
+                        'boot_errors': [],
+                        'recommendations': [
+                            "Serial console access is disabled for this VM or project",
+                            "Enable on VM: gcloud compute instances add-metadata "
+                            f"{vm_name} --zone={self.zone} "
+                            "--metadata serial-port-enable=TRUE",
+                            "Enable on project: gcloud compute project-info "
+                            "add-metadata --metadata serial-port-enable=TRUE",
+                            "Then wait a few minutes for logs to accumulate "
+                            "and try again"
+                        ]
+                    }
+                )
+            else:
+                return OperationResult(
+                    operation_name=self.name,
+                    success=False,
+                    message=f"Failed to fetch serial console: {error_msg}",
+                    rollback_data={
+                        'vm_name': vm_name,
+                        'zone': self.zone,
+                        'status': vm_status,
+                        'os_type': os_type,
+                        'os_flavor': os_flavor,
+                        'architecture': architecture,
+                        'license_type': license_type,
+                        'diagnosis_status': 'unable_to_diagnose',
+                        'boot_errors': [],
+                        'recommendations': [
+                            "Unable to fetch serial console output: "
+                            f"{error_msg}",
+                            "Check VM permissions and try again"
+                        ]
+                    }
+                )
+
+        self._log_info("Analyzing serial console output for boot errors")
+        return self._analyze_serial(
+            serial_output, vm_name, vm_status,
+            os_type, os_flavor, architecture, license_type
+        )
+
+    def _stabilize_diagnosis(
+        self, compute, vm_name: str, vm_status: str,
+        max_seconds: int = 30, poll_interval: int = 5,
+        required_stable: int = 2,
+        os_type: str = 'unknown', os_flavor: str = 'unknown',
+        architecture: str = 'unknown', license_type: str = 'unknown'
+    ) -> dict:
+        """Poll serial console until the diagnosis result stabilizes.
+
+        Only meaningful for RUNNING VMs where new serial output may appear.
+        Returns as soon as ``required_stable`` consecutive polls produce the
+        same diagnosis signature (status + set of error names).
+
+        Args:
+            compute: Compute API client.
+            vm_name: VM name.
+            vm_status: Current VM status.
+            max_seconds: Hard timeout in seconds (default 30).
+            poll_interval: Seconds between polls (default 5).
+            required_stable: Consecutive identical results needed (default 2).
+            os_type: Detected OS type.
+            os_flavor: Detected OS flavor.
+            architecture: Detected architecture.
+            license_type: Detected license type.
+
+        Returns:
+            Diagnosis dict from the last poll.
+        """
+        self._log_debug(
+            f"Stabilization polling: max {max_seconds}s, "
+            f"interval {poll_interval}s, require {required_stable} stable"
+        )
+
+        deadline = time.monotonic() + max_seconds
+        prev_signature = None
+        stable_count = 0
+        last_result = None
+
+        while True:
+            serial_output = self._fetch_serial_output(compute, vm_name)
+            diagnosis_dict = self._analyze_serial(
+                serial_output, vm_name, vm_status,
+                os_type, os_flavor, architecture, license_type
+            )
+            last_result = diagnosis_dict
+
+            current_sig = self._diagnosis_signature(diagnosis_dict)
+            if current_sig == prev_signature:
+                stable_count += 1
+            else:
+                stable_count = 1
+                prev_signature = current_sig
+
+            self._log_debug(
+                f"Poll: status={current_sig[0]}, "
+                f"errors={set(current_sig[1])}, "
+                f"stable={stable_count}/{required_stable}"
+            )
+
+            if stable_count >= required_stable:
+                self._log_debug("Diagnosis stabilized")
+                return last_result
+
+            if time.monotonic() >= deadline:
+                self._log_debug(
+                    f"Stabilization timeout ({max_seconds}s), "
+                    "returning last result"
+                )
+                return last_result
+
+            time.sleep(poll_interval)
 
     def _create_tracked_client(self, tracking_label: str):
         """Create a compute client with unique User-Agent for usage tracking.

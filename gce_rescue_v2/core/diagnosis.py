@@ -1,8 +1,8 @@
-"""Boot error pattern library and analysis engine for VM diagnostics.
+"""Analysis engine for VM boot diagnostics.
 
-This module provides pattern matching and analysis for common boot failures
-detected in VM serial console output. Patterns are loaded from YAML files
-in the patterns/ directory.
+Loads detection patterns and fix suggestions from YAML files in the
+diagnose_rules/ directory, then analyzes serial console output for
+common boot failures.
 """
 
 from dataclasses import dataclass, field
@@ -26,12 +26,13 @@ class BootErrorPattern:
     patterns: List[str]  # Regex patterns to match
     severity: str  # critical, error, warning
     description: str
-    suggested_fixes: List[str]
+    fixes: List[str] = field(default_factory=list)  # Suggested fixes
 
 
 @dataclass
-class BootError:
+class DetectedError:
     """Represents a detected boot error."""
+    name: str  # Pattern name (e.g. fstab_uuid_not_found) for fix lookup
     category: str
     severity: str
     description: str
@@ -57,7 +58,7 @@ class DiagnosisResult:
     zone: str
     status: str  # VM status (RUNNING, TERMINATED, etc.)
     diagnosis_status: str  # healthy, boot_errors_detected, unable_to_diagnose
-    boot_errors: List[BootError] = field(default_factory=list)
+    boot_errors: List[DetectedError] = field(default_factory=list)
     recommendations: List[str] = field(default_factory=list)
 
 
@@ -75,7 +76,7 @@ def _validate_pattern_file(data: dict, filename: str) -> None:
     Raises:
         ValueError: If the YAML structure is invalid
     """
-    required_top_level = ['category', 'fix_guidance', 'patterns']
+    required_top_level = ['category', 'patterns']
     for key in required_top_level:
         if key not in data:
             raise ValueError(f"{filename}: missing required field '{key}'")
@@ -83,7 +84,7 @@ def _validate_pattern_file(data: dict, filename: str) -> None:
     if not isinstance(data['patterns'], list) or len(data['patterns']) == 0:
         raise ValueError(f"{filename}: 'patterns' must be a non-empty list")
 
-    required_pattern_fields = ['name', 'severity', 'description', 'regex', 'fixes']
+    required_pattern_fields = ['name', 'severity', 'description', 'regex']
     for i, pattern in enumerate(data['patterns']):
         for pf in required_pattern_fields:
             if pf not in pattern:
@@ -114,35 +115,33 @@ def _validate_pattern_file(data: dict, filename: str) -> None:
 
 def _load_patterns_from_yaml(
     patterns_dir: Path = None,
-) -> Tuple[List[BootErrorPattern], Dict[str, str]]:
-    """Load patterns from YAML files in the patterns/ directory.
+) -> List[BootErrorPattern]:
+    """Load patterns from YAML files in the diagnose_rules/ directory.
 
     Args:
         patterns_dir: Directory containing YAML pattern files.
-            Defaults to the patterns/ directory next to this module.
+            Defaults to the diagnose_rules/ directory next to this module.
 
     Returns:
-        Tuple of (list of BootErrorPattern, dict of category -> fix_guidance)
+        List of BootErrorPattern objects.
 
     Raises:
         ValueError: If no YAML files found or validation fails
     """
     if patterns_dir is None:
-        patterns_dir = Path(__file__).parent / 'patterns'
+        patterns_dir = Path(__file__).parent / 'diagnose_rules'
 
     yaml_files = sorted(patterns_dir.glob('*.yaml'))
     if not yaml_files:
         raise ValueError(f"No pattern YAML files found in {patterns_dir}")
 
     all_patterns: List[BootErrorPattern] = []
-    fix_guidance: Dict[str, str] = {}
 
     for yaml_file in yaml_files:
         data = yaml.safe_load(yaml_file.read_text(encoding='utf-8'))
         _validate_pattern_file(data, yaml_file.name)
 
         category = data['category']
-        fix_guidance[category] = data['fix_guidance']
 
         for p in data['patterns']:
             all_patterns.append(BootErrorPattern(
@@ -151,14 +150,14 @@ def _load_patterns_from_yaml(
                 patterns=p['regex'],
                 severity=p['severity'],
                 description=p['description'],
-                suggested_fixes=p['fixes'],
+                fixes=list(p.get('fixes', [])),
             ))
 
-    return all_patterns, fix_guidance
+    return all_patterns
 
 
 # Load patterns at module level (fail fast if patterns are broken)
-BOOT_ERROR_PATTERNS, CATEGORY_FIX_GUIDANCE = _load_patterns_from_yaml()
+BOOT_ERROR_PATTERNS = _load_patterns_from_yaml()
 
 
 def _extract_context_lines(
@@ -230,6 +229,13 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
     """
     logger.debug(f"Analyzing serial output for {vm_name} (status: {vm_status})")
 
+    # Strip ANSI escape codes that interfere with pattern matching.
+    # Serial console output from systemd often contains color/formatting
+    # codes like \x1b[0;31m that break regex matches.
+    if serial_output:
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])|\r')
+        serial_output = ansi_escape.sub('', serial_output)
+
     # Check if serial output is empty or too short
     if not serial_output or len(serial_output.strip()) < 50:
         logger.warning("Serial output is empty or too short")
@@ -245,13 +251,17 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
             ]
         )
 
-    detected_errors: List[BootError] = []
+    detected_errors: List[DetectedError] = []
 
-    # Check each pattern
+    # Check each pattern — use the LAST match in the serial output.
+    # Serial console buffers accumulate across reboots, so the first
+    # match may be from an old boot.  We want the most recent occurrence.
     for pattern_def in BOOT_ERROR_PATTERNS:
         for regex_pattern in pattern_def.patterns:
             try:
-                match = re.search(regex_pattern, serial_output, re.MULTILINE | re.IGNORECASE)
+                match = None
+                for m in re.finditer(regex_pattern, serial_output, re.MULTILINE | re.IGNORECASE):
+                    match = m
                 if match:
                     logger.info(f"Detected pattern: {pattern_def.name} - {match.group(0)}")
 
@@ -264,12 +274,16 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                             context_lines=1
                         )
 
-                        detected_errors.append(BootError(
+                        # Use inline fixes from the pattern definition
+                        fixes = list(pattern_def.fixes)
+
+                        detected_errors.append(DetectedError(
+                            name=pattern_def.name,
                             category=pattern_def.category,
                             severity=pattern_def.severity,
                             description=pattern_def.description,
                             detected_pattern=match.group(0),
-                            suggested_fixes=pattern_def.suggested_fixes,
+                            suggested_fixes=fixes,
                             context_lines=context,
                             matched_line_index=match_idx
                         ))
@@ -307,6 +321,53 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                 e for e in detected_errors
                 if e.description not in _GENERIC_SYMPTOM
             ]
+
+    # Boot success detection: if VM is RUNNING and the LATEST boot completed
+    # successfully, clear non-emergency errors entirely.
+    # The tool's purpose is diagnosing boot failures — if the VM booted,
+    # nofail/timeout errors are not actionable and just add noise.
+    #
+    # Key: we check ordering — the boot success marker must appear AFTER
+    # the last detected error. If errors appear after the last "Startup
+    # finished", the VM failed on the most recent boot.
+    _BOOT_SUCCESS_MARKERS = [
+        r'Startup finished in',
+        r'Reached target .*multi-user\.target',
+        r'Started .*OpenBSD Secure Shell server',
+        r'Started .*Google Compute Engine Startup Scripts',
+    ]
+    if vm_status == 'RUNNING' and detected_errors:
+        # Find the position of the last boot success marker
+        last_success_pos = -1
+        for marker in _BOOT_SUCCESS_MARKERS:
+            for match in re.finditer(marker, serial_output, re.IGNORECASE):
+                last_success_pos = max(last_success_pos, match.end())
+
+        # Find the position of the last detected error
+        last_error_pos = -1
+        for err in detected_errors:
+            for match in re.finditer(
+                re.escape(err.detected_pattern), serial_output, re.IGNORECASE
+            ):
+                last_error_pos = max(last_error_pos, match.end())
+
+        # Boot succeeded only if success marker appears AFTER all errors
+        boot_completed = (
+            last_success_pos > 0 and last_success_pos > last_error_pos
+        )
+
+        if boot_completed:
+            has_emergency = any(
+                'emergency mode' in e.description.lower()
+                for e in detected_errors
+            )
+            if not has_emergency:
+                logger.debug(
+                    f"VM booted successfully (success at pos {last_success_pos}, "
+                    f"last error at pos {last_error_pos}) — clearing "
+                    f"{len(detected_errors)} non-blocking error(s)"
+                )
+                detected_errors = []
 
     # Determine diagnosis status and recommendations
     if detected_errors:

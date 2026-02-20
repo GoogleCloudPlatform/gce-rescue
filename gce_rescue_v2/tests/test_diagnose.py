@@ -325,9 +325,156 @@ class TestDiagnoseResultStructure:
         assert len(errors) > 0
 
         error_fields = [
-            'category', 'severity', 'description', 'detected_pattern',
+            'name', 'category', 'severity', 'description', 'detected_pattern',
             'suggested_fixes', 'context_lines', 'matched_line_index'
         ]
         for err in errors:
             for field in error_fields:
                 assert field in err, f"Missing field in boot error: {field}"
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseStabilization
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseStabilization:
+    """Stability-based polling for RUNNING VMs."""
+
+    def test_stabilize_returns_immediately_for_terminated_vm(self):
+        """TERMINATED VMs skip polling entirely (single pass)."""
+        vm_info = {
+            'status': 'TERMINATED',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/boot-disk',
+                'licenses': ['projects/debian-cloud/global/licenses/debian-12'],
+            }],
+            'machineType': 'zones/z/machineTypes/e2-micro',
+            'metadata': {'items': []},
+        }
+        serial = "Linux version 5.15.0-100-generic (builder@server)\n[    0.000000] Booting Linux on physical CPU\nlogin: "
+        compute = _make_compute(vm_info=vm_info, serial_output=serial)
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        with patch.object(op, '_stabilize_diagnosis') as mock_stab:
+            result = op.execute('test-vm', stabilize=True)
+            # _stabilize_diagnosis should NOT be called for TERMINATED
+            mock_stab.assert_not_called()
+        assert result.success is True
+
+    def test_stabilize_waits_for_stable_result(self):
+        """Should poll until 2 consecutive identical results."""
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/boot-disk',
+                'licenses': ['projects/debian-cloud/global/licenses/debian-12'],
+            }],
+            'machineType': 'zones/z/machineTypes/e2-micro',
+            'metadata': {'items': []},
+        }
+
+        # Simulate serial output growing over time:
+        # Poll 1: healthy (no errors)
+        # Poll 2: fstab error appears
+        # Poll 3: same fstab error (stable)
+        serial_outputs = [
+            "Linux version 5.15.0\nlogin: ",
+            (
+                "Linux version 5.15.0\n"
+                "Timed out waiting for device "
+                "/dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+                "emergency mode\n"
+            ),
+            (
+                "Linux version 5.15.0\n"
+                "Timed out waiting for device "
+                "/dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+                "emergency mode\n"
+            ),
+        ]
+        call_count = [0]
+
+        def _side_effect(**kwargs):
+            idx = min(call_count[0], len(serial_outputs) - 1)
+            call_count[0] += 1
+            result = Mock()
+            result.execute.return_value = {'contents': serial_outputs[idx]}
+            return result
+
+        compute = _make_compute(vm_info=vm_info)
+        compute.instances.return_value.getSerialPortOutput.side_effect = (
+            _side_effect
+        )
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        with patch('gce_rescue_v2.operations.diagnose.time.sleep'):
+            result = op.execute('test-vm', stabilize=True)
+
+        assert result.success is True
+        assert result.rollback_data['diagnosis_status'] == 'boot_errors_detected'
+        # 3 polls: healthy, error, error (stable)
+        assert call_count[0] == 3
+
+    def test_stabilize_times_out_returns_last(self):
+        """When diagnosis never stabilizes, return last result at timeout."""
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/boot-disk',
+                'licenses': ['projects/debian-cloud/global/licenses/debian-12'],
+            }],
+            'machineType': 'zones/z/machineTypes/e2-micro',
+            'metadata': {'items': []},
+        }
+
+        # Each poll returns different serial output (never stabilizes)
+        call_count = [0]
+
+        def _side_effect(**kwargs):
+            call_count[0] += 1
+            # Alternate between healthy and error to prevent stabilization
+            if call_count[0] % 2 == 1:
+                serial = "Linux version 5.15.0\nlogin: "
+            else:
+                serial = (
+                    "Linux version 5.15.0\n"
+                    "Timed out waiting for device "
+                    "/dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+                    "emergency mode\n"
+                )
+            result = Mock()
+            result.execute.return_value = {'contents': serial}
+            return result
+
+        compute = _make_compute(vm_info=vm_info)
+        compute.instances.return_value.getSerialPortOutput.side_effect = (
+            _side_effect
+        )
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        # Use very short timeout to avoid slow test
+        with patch('gce_rescue_v2.operations.diagnose.time.sleep'):
+            with patch('gce_rescue_v2.operations.diagnose.time.monotonic') as mock_mono:
+                # Simulate time progressing past the deadline
+                # First call sets deadline, then each subsequent call is past it
+                mock_mono.side_effect = [0.0, 0.0, 31.0]
+                result = op.execute('test-vm', stabilize=True)
+
+        # Should have returned a result (not hung)
+        assert result.rollback_data['diagnosis_status'] in (
+            'healthy', 'boot_errors_detected', 'unable_to_diagnose'
+        )
+
+    def test_stabilize_false_skips_polling(self):
+        """stabilize=False (default) should do single pass, no polling."""
+        serial = "Linux version 5.15.0-100-generic (builder@server)\n[    0.000000] Booting Linux on physical CPU\nlogin: "
+        compute = _make_compute(serial_output=serial)
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        with patch.object(op, '_stabilize_diagnosis') as mock_stab:
+            result = op.execute('test-vm', stabilize=False)
+            mock_stab.assert_not_called()
+        assert result.success is True
