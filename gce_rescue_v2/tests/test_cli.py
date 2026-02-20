@@ -45,15 +45,31 @@ class TestCLIExecution:
         parser = cli.create_parser()
         args = parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a", "--quiet", "--format", "disable"])
 
-        monkeypatch.setattr(cli, "get_gcloud_config", lambda key: "cfg-project")
-        monkeypatch.setattr(cli, "rescue_vm", lambda **kwargs: True)
+        from gce_rescue_v2.cli import preflight
 
-        # Mock AuthManager for Local SSD check
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "cfg-project")
+
+        # Mock AuthManager
         mock_auth = Mock()
         mock_compute = Mock()
         mock_compute.instances.return_value.get.return_value.execute.return_value = {"disks": []}
         mock_auth.get_client.return_value = (mock_compute, "cfg-project")
         monkeypatch.setattr("gce_rescue_v2.core.auth.AuthManager", lambda: mock_auth)
+
+        # Mock RescueOrchestrator so no real API calls happen
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                self.os_type = 'linux'
+                self.snapshot_name = None
+                self.verification_succeeded = True
+            def validate(self):
+                return True
+            def execute(self):
+                return True
+
+        monkeypatch.setattr(
+            "gce_rescue_v2.cli.rescue.RescueOrchestrator", FakeOrchestrator
+        )
 
         exit_code = cli.handle_rescue(args)
 
@@ -64,8 +80,28 @@ class TestCLIExecution:
         parser = cli.create_parser()
         args = parser.parse_args(["restore", "vm-1", "--zone", "us-central1-a", "--quiet", "--format", "disable"])
 
-        monkeypatch.setattr(cli, "get_gcloud_config", lambda key: "cfg-project")
-        monkeypatch.setattr(cli, "restore_vm", lambda **kwargs: False)
+        from gce_rescue_v2.cli import preflight
+
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "cfg-project")
+
+        # Mock AuthManager
+        mock_auth = Mock()
+        mock_compute = Mock()
+        mock_auth.get_client.return_value = (mock_compute, "cfg-project")
+        monkeypatch.setattr("gce_rescue_v2.core.auth.AuthManager", lambda: mock_auth)
+
+        # Mock RestoreOrchestrator to simulate failure
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                self.original_disk_name = None
+            def validate(self):
+                return True
+            def execute(self):
+                return False
+
+        monkeypatch.setattr(
+            "gce_rescue_v2.cli.restore.RestoreOrchestrator", FakeOrchestrator
+        )
 
         exit_code = cli.handle_restore(args)
         assert exit_code == 1
