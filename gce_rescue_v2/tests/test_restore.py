@@ -339,3 +339,58 @@ def test_restore_detach_original_failure_triggers_rollback(stub_restore, monkeyp
 
     orch = _make_orch()
     assert orch.execute() is False
+
+
+# ===================================================================
+# Checkpoint cleared after rollback
+# ===================================================================
+
+
+def test_restore_rollback_clears_checkpoint(stub_restore, monkeypatch):
+    """Rollback after failure clears the checkpoint metadata."""
+    from unittest.mock import MagicMock
+    from gce_rescue_v2.orchestration.rollback import RollbackHandler
+
+    # Let _rollback run (undo the no-op stub from fixture)
+    monkeypatch.undo()
+
+    # Re-apply all stubs except _rollback
+    ALL_RESTORE_OPS = [
+        StopVMOperation, DetachDiskOperation, AttachDiskOperation,
+        SetMetadataOperation, StartVMOperation, DeleteDiskOperation,
+    ]
+    for op_cls in ALL_RESTORE_OPS:
+        monkeypatch.setattr(op_cls, "execute", _success_execute)
+    monkeypatch.setattr(CheckpointManager, "create_checkpoint", lambda *a, **kw: None)
+    monkeypatch.setattr(CheckpointManager, "update_checkpoint", lambda *a, **kw: None)
+    monkeypatch.setattr(RestoreOrchestrator, "_is_disk_attached", lambda self, n: True)
+    monkeypatch.setattr(RestoreOrchestrator, "_is_disk_boot", lambda self, n: False)
+    monkeypatch.setattr(RestoreOrchestrator, "_get_vm_status", lambda self: "TERMINATED")
+    monkeypatch.setattr(RestoreOrchestrator, "_disk_exists", lambda self, n: True)
+    monkeypatch.setattr(RestoreOrchestrator, "_check_snapshot_status", lambda self: None)
+
+    def _fake_get_disk_info(self):
+        self.rescue_disk_name = "rescue-disk-123"
+        self.rescue_device_name = "disk-rescue"
+        self.original_disk_name = "orig-disk"
+        self.original_device_name = "sda"
+
+    monkeypatch.setattr(RestoreOrchestrator, "_get_disk_info", _fake_get_disk_info)
+    monkeypatch.setattr(
+        RestoreOrchestrator, "_get_clean_metadata",
+        lambda self: [{"key": "ssh-keys", "value": "user:key"}],
+    )
+
+    # Stub rollback handler to succeed without real API calls
+    monkeypatch.setattr(RollbackHandler, "rollback", lambda self, *a, **kw: True)
+
+    # Track clear_checkpoint calls
+    clear_mock = MagicMock(return_value=True)
+    monkeypatch.setattr(CheckpointManager, "clear_checkpoint", clear_mock)
+
+    # Inject a failure so _rollback is triggered
+    monkeypatch.setattr(StopVMOperation, "execute", _failure_execute)
+
+    orch = _make_orch()
+    assert orch.execute() is False
+    clear_mock.assert_called_once()

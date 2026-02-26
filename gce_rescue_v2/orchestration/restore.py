@@ -811,6 +811,11 @@ class RestoreOrchestrator:
         self._log_error("Operation failed, rolling back to rescue mode...")
         rollback_success = self.rollback_handler.rollback(self.state_tracker, self.operations_map)
 
+        # Clear checkpoint after rollback regardless of success/failure.
+        # Success: VM is back to original state, no checkpoint needed.
+        # Failure: state is inconsistent, stale checkpoint won't help recovery.
+        self.checkpoint_manager.clear_checkpoint()
+
         if not rollback_success:
             self._log_error("")
             self._log_error("=" * 60)

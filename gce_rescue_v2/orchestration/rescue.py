@@ -12,7 +12,8 @@ Coordinates the rescue workflow:
 import time
 from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX
 from ..utils.os_detection import (
-    detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64
+    detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64,
+    get_rescue_disk_type
 )
 from ..validators import (
     ValidationRunner,
@@ -810,6 +811,12 @@ class RescueOrchestrator:
         self.architecture = detect_architecture(self.vm_info)
         self._log_debug(f"Detected OS: {get_os_display_name(self.os_type)}, Architecture: {self.architecture}")
 
+        # Auto-detect rescue disk type based on machine family
+        detected_disk_type = get_rescue_disk_type(self.vm_info, self.config.rescue_disk_type)
+        if detected_disk_type != self.config.rescue_disk_type:
+            self._log_debug(f"Machine type requires {detected_disk_type} (overriding {self.config.rescue_disk_type})")
+            self.config.rescue_disk_type = detected_disk_type
+
         for disk in self.vm_info.get('disks', []):
             if disk.get('boot'):
                 self.original_disk_name = disk['source'].split('/')[-1]
@@ -983,6 +990,11 @@ fi
         self._log_error("")
         self._log_error("Operation failed, rolling back...")
         rollback_success = self.rollback_handler.rollback(self.state_tracker, self.operations_map)
+
+        # Clear checkpoint after rollback regardless of success/failure.
+        # Success: VM is back to original state, no checkpoint needed.
+        # Failure: state is inconsistent, stale checkpoint won't help recovery.
+        self.checkpoint_manager.clear_checkpoint()
 
         if not rollback_success:
             self._log_error("")

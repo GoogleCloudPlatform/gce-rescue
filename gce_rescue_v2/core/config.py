@@ -32,7 +32,7 @@ class RescueConfig:
 
     # Rescue disk settings
     rescue_disk_size_gb: int = 10
-    rescue_disk_type: str = 'pd-standard'
+    rescue_disk_type: str = 'pd-balanced'
 
     # Linux rescue image (default)
     rescue_image_family: str = 'debian-12'  # Use newer kernel for XFS/Btrfs compatibility

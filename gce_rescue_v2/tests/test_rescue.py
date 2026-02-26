@@ -388,3 +388,93 @@ def test_rescue_async_snapshot_failure_required_aborts(stub_rescue, monkeypatch)
     config = RescueConfig(create_snapshot=True, async_snapshot=True, require_snapshot=True)
     orch = _make_orch(config)
     assert orch.execute() is False
+
+
+# ===================================================================
+# Checkpoint cleared after rollback
+# ===================================================================
+
+
+def test_rescue_c4_uses_hyperdisk(stub_rescue, monkeypatch):
+    """C4 machine type auto-selects hyperdisk-balanced for rescue disk."""
+    captured = SimpleNamespace(disk_type=None)
+
+    def _fake_get_disk_info_c4(self):
+        self.vm_info = {
+            "machineType": "zones/z/machineTypes/c4-standard-2",
+            "disks": [{
+                "boot": True,
+                "source": "projects/p/zones/z/disks/original-boot",
+                "deviceName": "sda",
+            }]
+        }
+        # Call the real detection logic
+        from gce_rescue_v2.utils.os_detection import (
+            detect_os_type, detect_architecture, get_rescue_disk_type
+        )
+        self.os_type = detect_os_type(self.vm_info)
+        self.architecture = detect_architecture(self.vm_info)
+        detected_disk_type = get_rescue_disk_type(self.vm_info, self.config.rescue_disk_type)
+        if detected_disk_type != self.config.rescue_disk_type:
+            self.config.rescue_disk_type = detected_disk_type
+        self.original_disk_name = "original-boot"
+        self.original_device_name = "sda"
+
+    def _capture_create_disk(self, *args, **kwargs):
+        captured.disk_type = kwargs.get('disk_type')
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={},
+        )
+
+    monkeypatch.setattr(RescueOrchestrator, "_get_original_disk_info", _fake_get_disk_info_c4)
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture_create_disk)
+
+    config = RescueConfig(create_snapshot=False)
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    assert captured.disk_type == 'hyperdisk-balanced'
+
+
+def test_rescue_rollback_clears_checkpoint(stub_rescue, monkeypatch):
+    """Rollback after failure clears the checkpoint metadata."""
+    from unittest.mock import MagicMock
+    from gce_rescue_v2.orchestration.rollback import RollbackHandler
+
+    # Let _rollback run (undo the no-op stub from fixture)
+    monkeypatch.undo()
+
+    # Re-apply all stubs except _rollback
+    for op_cls in ALL_RESCUE_OPS:
+        monkeypatch.setattr(op_cls, "execute", _success_execute)
+    monkeypatch.setattr(CheckpointManager, "create_checkpoint", lambda *a, **kw: None)
+    monkeypatch.setattr(CheckpointManager, "update_checkpoint", lambda *a, **kw: None)
+    monkeypatch.setattr(RescueOrchestrator, "_disk_exists", lambda self, n: False)
+    monkeypatch.setattr(RescueOrchestrator, "_is_disk_attached", lambda self, n: False)
+    monkeypatch.setattr(RescueOrchestrator, "_get_vm_status", lambda self: "TERMINATED")
+    monkeypatch.setattr(RescueOrchestrator, "_generate_startup_script", lambda self: "echo test")
+
+    def _fake_get_disk_info(self):
+        self.vm_info = {
+            "disks": [{"boot": True, "source": "projects/p/zones/z/disks/original-boot",
+                        "deviceName": "sda"}]
+        }
+        self.os_type = "linux"
+        self.architecture = "x86_64"
+        self.original_disk_name = "original-boot"
+        self.original_device_name = "sda"
+
+    monkeypatch.setattr(RescueOrchestrator, "_get_original_disk_info", _fake_get_disk_info)
+
+    # Stub rollback handler to succeed without real API calls
+    monkeypatch.setattr(RollbackHandler, "rollback", lambda self, *a, **kw: True)
+
+    # Track clear_checkpoint calls
+    clear_mock = MagicMock(return_value=True)
+    monkeypatch.setattr(CheckpointManager, "clear_checkpoint", clear_mock)
+
+    # Inject a failure so _rollback is triggered
+    monkeypatch.setattr(StopVMOperation, "execute", _failure_execute)
+
+    orch = _make_orch()
+    assert orch.execute() is False
+    clear_mock.assert_called_once()

@@ -5,12 +5,14 @@ Covers:
 - Architecture detection (x86_64, ARM64)
 - Shielded VM detection
 - Confidential VM detection
+- Rescue disk type detection (Hyperdisk-only families)
 """
 
 import pytest
 
 from gce_rescue_v2.utils.os_detection import (
     detect_architecture,
+    get_rescue_disk_type,
     is_shielded_vm,
     get_shielded_config,
     is_confidential_vm,
@@ -240,3 +242,102 @@ class TestConfidentialVMDetection:
         """Return empty string for non-confidential VM."""
         vm = {}
         assert get_confidential_type(vm) == ''
+
+
+class TestRescueDiskTypeDetection:
+    """Tests for get_rescue_disk_type function."""
+
+    def test_hyperdisk_c4(self):
+        """C4 machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/c4-standard-2'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_n4(self):
+        """N4 machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/n4-standard-4'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_c4a(self):
+        """C4A machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/c4a-standard-2'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_c4d(self):
+        """C4D machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'c4d-standard-8'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_m4(self):
+        """M4 machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/m4-megamem-416'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_x4(self):
+        """X4 machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/x4-megamem-960'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_a4(self):
+        """A4 machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/a4-highgpu-8g'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_h4d(self):
+        """H4D machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/h4d-standard-4'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_h3(self):
+        """H3 machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/h3-standard-88'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_a3(self):
+        """A3 machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/a3-highgpu-8g'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_hyperdisk_z3(self):
+        """Z3 machine type requires hyperdisk-balanced."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/z3-standard-88'}
+        assert get_rescue_disk_type(vm) == 'hyperdisk-balanced'
+
+    def test_pd_balanced_e2(self):
+        """E2 machine type uses pd-balanced (default)."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/e2-micro'}
+        assert get_rescue_disk_type(vm) == 'pd-balanced'
+
+    def test_pd_balanced_n2(self):
+        """N2 machine type uses pd-balanced (default)."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/n2-standard-4'}
+        assert get_rescue_disk_type(vm) == 'pd-balanced'
+
+    def test_pd_balanced_c3(self):
+        """C3 machine type uses pd-balanced (no pd-standard support)."""
+        vm = {'machineType': 'zones/us-central1-a/machineTypes/c3-standard-4'}
+        assert get_rescue_disk_type(vm) == 'pd-balanced'
+
+    def test_pd_balanced_n1(self):
+        """N1 machine type uses pd-balanced (default)."""
+        vm = {'machineType': 'n1-standard-1'}
+        assert get_rescue_disk_type(vm) == 'pd-balanced'
+
+    def test_no_machine_type(self):
+        """Missing machineType field falls back to default."""
+        vm = {}
+        assert get_rescue_disk_type(vm) == 'pd-balanced'
+
+    def test_empty_machine_type(self):
+        """Empty machineType string falls back to default."""
+        vm = {'machineType': ''}
+        assert get_rescue_disk_type(vm) == 'pd-balanced'
+
+    def test_custom_default(self):
+        """Custom default is returned for standard families."""
+        vm = {'machineType': 'e2-micro'}
+        assert get_rescue_disk_type(vm, default='pd-ssd') == 'pd-ssd'
+
+    def test_custom_default_overridden_for_hyperdisk(self):
+        """Custom default is overridden for Hyperdisk-only families."""
+        vm = {'machineType': 'c4-standard-2'}
+        assert get_rescue_disk_type(vm, default='pd-ssd') == 'hyperdisk-balanced'
