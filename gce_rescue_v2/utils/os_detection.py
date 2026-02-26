@@ -181,6 +181,50 @@ def detect_license_type(vm: Dict[str, Any]) -> str:
     return 'unknown'
 
 
+# Machine families that only support Hyperdisk (no Persistent Disk at all).
+# These cannot use pd-balanced or any other PD type.
+HYPERDISK_ONLY_FAMILIES = frozenset([
+    'a3', 'a4',
+    'c4', 'c4a', 'c4d',
+    'h3', 'h4d',
+    'm4',
+    'n4', 'n4a', 'n4d',
+    'x4',
+    'z3',
+])
+
+
+def get_rescue_disk_type(vm: Dict[str, Any], default: str = 'pd-balanced') -> str:
+    """Get the appropriate rescue disk type based on the VM's machine family.
+
+    Many newer machine families don't support pd-standard. The default
+    pd-balanced covers most families. Hyperdisk-only families (C4, N4,
+    H3, etc.) that don't support any Persistent Disk type get
+    hyperdisk-balanced.
+
+    Args:
+        vm: VM instance response from GCP API
+        default: Default disk type (pd-balanced covers most families)
+
+    Returns:
+        'hyperdisk-balanced' for Hyperdisk-only families, otherwise the default
+    """
+    machine_type = vm.get('machineType', '')
+    if not machine_type:
+        return default
+
+    # Machine type format: zones/ZONE/machineTypes/TYPE or just TYPE
+    machine_type_name = machine_type.split('/')[-1] if '/' in machine_type else machine_type
+
+    # Extract family prefix (everything before the first '-')
+    family = machine_type_name.split('-')[0].lower()
+
+    if family in HYPERDISK_ONLY_FAMILIES:
+        return 'hyperdisk-balanced'
+
+    return default
+
+
 def detect_architecture(vm: Dict[str, Any]) -> str:
     """
     Detect the CPU architecture of a VM.
