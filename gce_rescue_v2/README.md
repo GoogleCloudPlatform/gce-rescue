@@ -2,7 +2,7 @@
 
 **Rescue unbootable Google Compute Engine VMs** - Boot into a rescue environment to fix broken configurations, corrupted files, or boot issues.
 
-> **Beta**: Report issues at [GitHub Issues](https://github.com/GoogleCloudPlatform/gce-rescue/issues)
+Report issues at [GitHub Issues](https://github.com/GoogleCloudPlatform/gce-rescue/issues)
 
 ## What's New in V2
 
@@ -61,10 +61,10 @@ gcloud projects add-iam-policy-binding PROJECT_ID \
 ## Installation
 
 ```bash
-pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git@v2-beta
+pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
 
 # Verify
-gce-rescue-v2 --version
+gce-rescue --version
 ```
 
 ## Commands
@@ -73,32 +73,32 @@ gce-rescue-v2 --version
 VM won't boot
     │
     ├─ Not sure what's wrong?
-    │   └─ gce-rescue-v2 diagnose   (read-only, safe anytime)
+    │   └─ gce-rescue diagnose   (read-only, safe anytime)
     │
     ├─ diagnose found a fixable issue (e.g. fstab)?
-    │   └─ gce-rescue-v2 repair     (auto-fix, Linux only)
+    │   └─ gce-rescue repair     (auto-fix, Linux only)
     │
     ├─ Need manual access to the disk?
-    │   ├─ gce-rescue-v2 rescue     (enter rescue mode)
+    │   ├─ gce-rescue rescue     (enter rescue mode)
     │   ├─ SSH/RDP in and fix
-    │   └─ gce-rescue-v2 restore    (exit rescue mode)
+    │   └─ gce-rescue restore    (exit rescue mode)
     │
     └─ VM stuck from a previous rescue?
-        └─ gce-rescue-v2 restore    (or re-run rescue to resume/rollback)
+        └─ gce-rescue restore    (or re-run rescue to resume/rollback)
 ```
 
 ```bash
 # Diagnose boot issues (read-only)
-gce-rescue-v2 diagnose VM_NAME --zone ZONE [--project PROJECT] [--format json]
+gce-rescue diagnose VM_NAME --zone ZONE [--project PROJECT] [--format json]
 
 # Auto-fix diagnosed issues (Linux only)
-gce-rescue-v2 repair VM_NAME --zone ZONE [--project PROJECT] [--no-snapshot] [--quiet]
+gce-rescue repair VM_NAME --zone ZONE [--project PROJECT] [--no-snapshot] [--quiet]
 
 # Rescue (enter rescue mode for manual fix)
-gce-rescue-v2 rescue VM_NAME --zone ZONE [--project PROJECT] [--no-snapshot] [--quiet]
+gce-rescue rescue VM_NAME --zone ZONE [--project PROJECT] [--no-snapshot] [--quiet]
 
 # Restore (exit rescue mode)
-gce-rescue-v2 restore VM_NAME --zone ZONE [--project PROJECT] [--quiet]
+gce-rescue restore VM_NAME --zone ZONE [--project PROJECT] [--quiet]
 ```
 
 | Flag | Description |
@@ -112,7 +112,7 @@ gce-rescue-v2 restore VM_NAME --zone ZONE [--project PROJECT] [--quiet]
 ## Example: Diagnose
 
 ```bash
-$ gce-rescue-v2 diagnose web-server --zone=us-central1-a
+$ gce-rescue diagnose web-server --zone=us-central1-a
 
 Diagnosis for instance [web-server]:
 
@@ -128,19 +128,19 @@ Diagnosis for instance [web-server]:
 
     To fix this issue:
       1. Boot into rescue mode:
-         $ gce-rescue-v2 rescue web-server --zone=us-central1-a
+         $ gce-rescue rescue web-server --zone=us-central1-a
       2. Edit fstab: nano /mnt/sysroot/etc/fstab
       3. Comment out the invalid entry and save.
       4. Restore:
-         $ gce-rescue-v2 restore web-server --zone=us-central1-a
+         $ gce-rescue restore web-server --zone=us-central1-a
 
-    Or auto-fix with: gce-rescue-v2 repair web-server --zone=us-central1-a
+    Or auto-fix with: gce-rescue repair web-server --zone=us-central1-a
 ```
 
 ## Example: Repair (auto-fix)
 
 ```bash
-$ gce-rescue-v2 repair web-server --zone=us-central1-a
+$ gce-rescue repair web-server --zone=us-central1-a
 
 Diagnosis for instance [web-server]:
   [CRITICAL] fstab: UUID specified in /etc/fstab cannot be found
@@ -172,7 +172,7 @@ Repair complete. Instance [web-server] is now running. (1m 42s)
 **Rescue:**
 
 ```bash
-$ gce-rescue-v2 rescue web-server --zone=us-central1-a
+$ gce-rescue rescue web-server --zone=us-central1-a
 
 You are about to rescue instance [web-server] in zone [us-central1-a].
 
@@ -199,7 +199,7 @@ Next Steps:
 2. Fix the issue (affected boot disk is mounted at /mnt/sysroot).
 
 3. Restore original configuration:
-   $ gce-rescue-v2 restore web-server --zone=us-central1-a --project=my-project
+   $ gce-rescue restore web-server --zone=us-central1-a --project=my-project
 ```
 
 **Connect and fix:**
@@ -216,7 +216,7 @@ user@web-server:~$ exit
 **Restore:**
 
 ```bash
-$ gce-rescue-v2 restore web-server --zone=us-central1-a
+$ gce-rescue restore web-server --zone=us-central1-a
 
 You are about to restore instance [web-server] in zone [us-central1-a] project [my-project].
 
@@ -246,7 +246,7 @@ Connect to the instance:
 **Rescue:**
 
 ```bash
-$ gce-rescue-v2 rescue win-server --zone=us-central1-a
+$ gce-rescue rescue win-server --zone=us-central1-a
 
 You are about to rescue instance [win-server] in zone [us-central1-a].
 
@@ -275,7 +275,7 @@ Next Steps:
 2. Fix the issue (affected boot disk is mounted at D:\).
 
 3. Restore original configuration:
-   $ gce-rescue-v2 restore win-server --zone=us-central1-a --project=my-project
+   $ gce-rescue restore win-server --zone=us-central1-a --project=my-project
 ```
 
 **Connect and fix:**
@@ -288,7 +288,7 @@ Next Steps:
 **Restore:**
 
 ```bash
-$ gce-rescue-v2 restore win-server --zone=us-central1-a
+$ gce-rescue restore win-server --zone=us-central1-a
 
 You are about to restore instance [win-server] in zone [us-central1-a] project [my-project].
 
@@ -315,10 +315,10 @@ Forgot password? Reset it:
 
 | Action | V1 | V2 |
 |--------|----|----|
-| Diagnose boot issues | N/A | `gce-rescue-v2 diagnose VM --zone ZONE` |
-| Auto-fix boot issues | N/A | `gce-rescue-v2 repair VM --zone ZONE` |
-| Enter rescue | `gce-rescue -n VM -z ZONE` | `gce-rescue-v2 rescue VM --zone ZONE` |
-| Exit rescue | `gce-rescue -n VM -z ZONE` (same) | `gce-rescue-v2 restore VM --zone ZONE` |
+| Diagnose boot issues | N/A | `gce-rescue diagnose VM --zone ZONE` |
+| Auto-fix boot issues | N/A | `gce-rescue repair VM --zone ZONE` |
+| Enter rescue | `gce-rescue -n VM -z ZONE` | `gce-rescue rescue VM --zone ZONE` |
+| Exit rescue | `gce-rescue -n VM -z ZONE` (same) | `gce-rescue restore VM --zone ZONE` |
 | Skip snapshot | `--skip-snapshot` | `--no-snapshot` |
 | No prompts | `-f` or `--force` | `--quiet` |
 
