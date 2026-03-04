@@ -45,7 +45,7 @@ class DiagnoseOperation(BaseOperation):
             OperationResult with diagnosis data in rollback_data field
         """
         try:
-            self._log_info(f"Starting diagnosis for VM: {vm_name}")
+            self._log_debug(f"Starting diagnosis for VM: {vm_name}")
             if tracking_label:
                 self._log_debug(f"  Operation tracking: {tracking_label}")
 
@@ -67,14 +67,14 @@ class DiagnoseOperation(BaseOperation):
                     instance=vm_name
                 ).execute()
                 vm_status = vm_instance.get('status', 'UNKNOWN')
-                self._log_info(f"VM status: {vm_status}")
+                self._log_debug(f"VM status: {vm_status}")
 
                 # Detect OS info
                 os_type = detect_os_type(vm_instance)
                 os_flavor = detect_os_flavor(vm_instance)
                 architecture = detect_architecture(vm_instance)
                 license_type = detect_license_type(vm_instance)
-                self._log_info(
+                self._log_debug(
                     f"OS: {os_type}, flavor: {os_flavor}, "
                     f"arch: {architecture}, license: {license_type}"
                 )
@@ -89,12 +89,12 @@ class DiagnoseOperation(BaseOperation):
 
             # Status-aware warnings
             if vm_status == 'SUSPENDED':
-                self._log_info(
+                self._log_debug(
                     "VM is suspended, serial logs may not contain "
                     "recent boot activity"
                 )
             elif vm_status in ('STAGING', 'PROVISIONING'):
-                self._log_info(
+                self._log_debug(
                     "VM is still starting, serial output may be incomplete"
                 )
 
@@ -129,7 +129,7 @@ class DiagnoseOperation(BaseOperation):
                 message = "Unable to complete diagnosis"
                 success = False
 
-            self._log_info(f"Diagnosis complete: {message}")
+            self._log_debug(f"Diagnosis complete: {message}")
 
             return OperationResult(
                 operation_name=self.name,
@@ -350,7 +350,7 @@ class DiagnoseOperation(BaseOperation):
                     }
                 )
 
-        self._log_info("Analyzing serial console output for boot errors")
+        self._log_debug("Analyzing serial console output for boot errors")
         return self._analyze_serial(
             serial_output, vm_name, vm_status,
             os_type, os_flavor, architecture, license_type
