@@ -98,7 +98,7 @@ class CreateDiskOperation(BaseOperation):
                         disk=disk_name
                     ).execute()
                     return disk['status']
-                except:
+                except Exception:
                     return 'CREATING'
 
             if not self._wait_for_status(get_status, 'READY', timeout):
