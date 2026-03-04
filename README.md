@@ -2,7 +2,19 @@
 
 [![test badge](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml/badge.svg?branch=main&event=push)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml?query=branch%3Amain+event%3Apush)
 
-Rescue unbootable Google Compute Engine VMs. Automatically swaps the boot disk on the same VM so you keep your IP, networking, and configuration.
+Rescue unbootable Google Compute Engine VMs. Operates on the same VM — no new instance is created.
+
+**Auto-fix path**: The `repair` command reads serial console output, identifies
+the boot failure, and applies a fix automatically end to end.
+
+**Rescue path**: When auto-fix is not available for the detected issue, the
+`rescue` command swaps your broken boot disk with a rescue disk and attaches the
+original boot disk as a secondary disk, providing a rescue environment for manual
+repair. Once fixed, the `restore` command puts your fixed boot disk back.
+
+<p align="center">
+  <img src="gce-rescue.svg" alt="GCE Rescue Workflow" width="600">
+</p>
 
 > **Note**: GCE Rescue is not an officially supported Google Cloud product. The Google Cloud Support team maintains this repository.
 
@@ -47,6 +59,18 @@ gce-rescue --version
 
 ## Commands
 
+All commands operate on the same VM instance:
+
+| Command | What it does | Modifies VM? |
+|---------|-------------|:---:|
+| `diagnose` | Identifies boot errors from serial console output | No |
+| `repair` | Diagnoses and fixes boot issues automatically | Yes |
+| `rescue` | Provides a rescue environment for investigation via SSH/RDP | Yes |
+| `restore` | Reverses rescue, puts your fixed boot disk back | Yes |
+
+Repair and rescue operations create a snapshot before changes, roll back
+automatically on failure, and can resume if interrupted.
+
 ```
 VM won't boot
     |
@@ -65,12 +89,7 @@ VM won't boot
         gce-rescue restore     (or re-run rescue to resume/rollback)
 ```
 
-| Command | Description |
-|---------|-------------|
-| `gce-rescue diagnose VM --zone ZONE` | Analyze serial console for boot errors (read-only) |
-| `gce-rescue repair VM --zone ZONE` | Auto-diagnose and fix boot issues (Linux only) |
-| `gce-rescue rescue VM --zone ZONE` | Enter rescue mode for manual repair |
-| `gce-rescue restore VM --zone ZONE` | Exit rescue mode, restore original boot disk |
+### Flags
 
 | Flag | Description |
 |------|-------------|
@@ -91,21 +110,6 @@ VM won't boot
 | **Session Recovery** | Resume or rollback interrupted operations |
 | **Safety Snapshots** | Backup snapshot before any changes (default) |
 | **ARM64 Support** | Automatic architecture detection |
-
-## How It Works
-
-```
-BEFORE (won't boot)          AFTER RESCUE (same VM)
-+-------------+              +-------------+
-|    VM       |              |    VM       | Same IP!
-+-------------+              +-------------+
-| Boot:       |              | Boot: [Rescue Disk]
-| [Original]  |  -------->   | Secondary: [Original]
-| (broken)    |              |   at /mnt/sysroot
-+-------------+              +-------------+
-```
-
-GCE Rescue swaps the boot disk on the same VM (not creating a new one), preserving networking, IPs, and configuration.
 
 ## V1 Legacy
 
