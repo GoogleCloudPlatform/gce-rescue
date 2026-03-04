@@ -31,7 +31,9 @@ def show_v2_banner():
   """Show banner promoting V2 availability."""
   yellow = '\033[93m'
   reset = '\033[0m'
-  banner = f"{yellow}NOTICE: This is V1 (legacy). V2 is now the default: gce-rescue --help{reset}"
+  msg = ('NOTICE: This is V1 (legacy). '
+         'V2 is now the default: gce-rescue --help')
+  banner = f"{yellow}{msg}{reset}"
   print(banner, file=sys.stderr)
 
 
