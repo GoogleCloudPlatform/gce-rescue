@@ -46,7 +46,7 @@ install_requires = [
 setup(
   name = 'gce-rescue',
   version = VERSION,
-  description='GCE Rescue - Boot your GCE VM in rescue mode (V1 + V2 Beta).',
+  description='GCE Rescue - Rescue unbootable Google Compute Engine VMs.',
   url = 'https://github.com/googlecloudplatform/gce-rescue',
   author = 'GCE Rescue Team',
   author_email = 'gce-rescue-dev@google.com',
@@ -70,12 +70,13 @@ setup(
   python_requires='>=3.9',
   entry_points={
         'console_scripts': [
-            'gce-rescue = gce_rescue.bin.rescue:main',        # V1 (Legacy/Stable)
-            'gce-rescue-v2 = gce_rescue_v2.cli:main',         # V2 (Beta/New)
+            'gce-rescue = gce_rescue_v2.cli:main',            # V2 (GA)
+            'gce-rescue-v2 = gce_rescue_v2.cli:main',         # Deprecated alias
+            'gce-rescue-v1 = gce_rescue.bin.rescue:main',     # V1 (Legacy)
         ],
     },
   classifiers = [
-    'Development Status :: 4 - Beta',
+    'Development Status :: 5 - Production/Stable',
     'License :: OSI Approved :: Apache Software License',
     'Operating System :: OS Independent',
     'Programming Language :: Python :: 3.9',
