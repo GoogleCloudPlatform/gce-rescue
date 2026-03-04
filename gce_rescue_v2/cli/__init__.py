@@ -1,5 +1,5 @@
 """
-GCE Rescue V2 - gcloud-compatible Command Line Interface
+GCE Rescue - gcloud-compatible Command Line Interface
 
 Follows gcloud conventions for future integration into gcloud SDK.
 
@@ -8,8 +8,8 @@ Future command structure:
     gcloud compute instances restore <instance-name> --zone=<zone>
 
 Current standalone usage:
-    gce-rescue-v2 rescue <instance-name> --zone=<zone>
-    gce-rescue-v2 restore <instance-name> --zone=<zone>
+    gce-rescue rescue <instance-name> --zone=<zone>
+    gce-rescue restore <instance-name> --zone=<zone>
 """
 
 import argparse
@@ -54,7 +54,7 @@ class CustomArgumentParser(argparse.ArgumentParser):
                     invalid = match.group(1)
                     lines.append(f"Invalid command '{invalid}'.")
                     lines.append("")
-                    lines.append("Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]")
+                    lines.append("Usage: gce-rescue COMMAND VM_NAME --zone=ZONE [OPTIONS]")
                     lines.append("")
                     lines.append("Available commands:")
                     lines.append("  rescue         Boot a VM into rescue mode")
@@ -90,7 +90,7 @@ class CustomArgumentParser(argparse.ArgumentParser):
                                      f" 'rescue' command.")
                         lines.append("")
                         lines.append("Example:")
-                        lines.append(f"  $ gce-rescue-v2 rescue VM_NAME --zone=ZONE {flag}")
+                        lines.append(f"  $ gce-rescue rescue VM_NAME --zone=ZONE {flag}")
                         break
                 for flag in self.RESTORE_ONLY_FLAGS:
                     if flag in unrecognized:
@@ -99,13 +99,13 @@ class CustomArgumentParser(argparse.ArgumentParser):
                                      f" 'restore' command.")
                         lines.append("")
                         lines.append("Example:")
-                        lines.append(f"  $ gce-rescue-v2 restore VM_NAME --zone=ZONE {flag}")
+                        lines.append(f"  $ gce-rescue restore VM_NAME --zone=ZONE {flag}")
                         break
             else:
                 lines.append(f"{message.capitalize()}")
         elif "required: command" in message.lower():
             usage_lines = [
-                "Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]",
+                "Usage: gce-rescue COMMAND VM_NAME --zone=ZONE [OPTIONS]",
                 "",
                 "Commands:",
                 "  rescue         Boot a VM into rescue mode",
@@ -114,11 +114,11 @@ class CustomArgumentParser(argparse.ArgumentParser):
                 "  repair         Diagnose and auto-fix boot issues",
                 "",
                 "Examples:",
-                "  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a",
-                "  $ gce-rescue-v2 restore my-vm --zone=us-central1-a",
+                "  $ gce-rescue rescue my-vm --zone=us-central1-a",
+                "  $ gce-rescue restore my-vm --zone=us-central1-a",
                 "",
                 "For detailed help:",
-                "  $ gce-rescue-v2 --help",
+                "  $ gce-rescue --help",
                 ""
             ]
             self.exit(0, "\n".join(usage_lines) + "\n")
@@ -128,10 +128,10 @@ class CustomArgumentParser(argparse.ArgumentParser):
                 required = match.group(1)
                 lines.append(f"Missing required argument: {required}")
                 lines.append("")
-                lines.append("Usage: gce-rescue-v2 COMMAND VM_NAME --zone=ZONE [OPTIONS]")
+                lines.append("Usage: gce-rescue COMMAND VM_NAME --zone=ZONE [OPTIONS]")
                 lines.append("")
                 lines.append("Example:")
-                lines.append("  $ gce-rescue-v2 rescue my-vm --zone=us-central1-a")
+                lines.append("  $ gce-rescue rescue my-vm --zone=us-central1-a")
             else:
                 lines.append(f"{message.capitalize()}")
         else:
@@ -139,7 +139,7 @@ class CustomArgumentParser(argparse.ArgumentParser):
 
         lines.append("")
         lines.append("For help, run:")
-        lines.append("  $ gce-rescue-v2 --help")
+        lines.append("  $ gce-rescue --help")
 
         self.exit(2, f"{error_prefix()} " + "\n".join(lines) + "\n\n")
 
@@ -154,28 +154,28 @@ def create_parser() -> CustomArgumentParser:
 
     # Main parser
     parser = CustomArgumentParser(
-        prog='gce-rescue-v2',
-        description='Google Compute Engine VM Rescue Tool (Beta)',
+        prog='gce-rescue',
+        description='Google Compute Engine VM Rescue Tool',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 EXAMPLES
     Rescue a VM:
-        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a
+        $ gce-rescue rescue my-vm --zone=us-central1-a
 
     Rescue without snapshot (faster):
-        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a --no-snapshot
+        $ gce-rescue rescue my-vm --zone=us-central1-a --no-snapshot
 
     Restore a VM:
-        $ gce-rescue-v2 restore my-vm --zone=us-central1-a
+        $ gce-rescue restore my-vm --zone=us-central1-a
 
     Automation (no prompts):
-        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a --quiet
+        $ gce-rescue rescue my-vm --zone=us-central1-a --quiet
 
     Diagnose boot issues:
-        $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a
+        $ gce-rescue diagnose my-vm --zone=us-central1-a
 
     Auto-repair boot issues:
-        $ gce-rescue-v2 repair my-vm --zone=us-central1-a
+        $ gce-rescue repair my-vm --zone=us-central1-a
 
 SUPPORTED OS
     - Linux (auto-detected): Boots Debian 12 rescue environment
@@ -189,7 +189,7 @@ For more information: https://github.com/GoogleCloudPlatform/gce-rescue
     parser.add_argument(
         '--version',
         action='version',
-        version=f'gce-rescue-v2 {VERSION}'
+        version=f'gce-rescue {VERSION}'
     )
 
     # Subcommands
@@ -209,10 +209,10 @@ For more information: https://github.com/GoogleCloudPlatform/gce-rescue
         epilog="""
 EXAMPLES
     Rescue a VM:
-        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a
+        $ gce-rescue rescue my-vm --zone=us-central1-a
 
     Rescue without snapshot (faster but riskier):
-        $ gce-rescue-v2 rescue my-vm --zone=us-central1-a --no-snapshot
+        $ gce-rescue rescue my-vm --zone=us-central1-a --no-snapshot
 
 AFTER RESCUE
     Linux VMs:
@@ -224,7 +224,7 @@ AFTER RESCUE
         Affected disk mounted at: D:\\ (or next available drive)
 
 TO EXIT RESCUE MODE
-    $ gce-rescue-v2 restore my-vm --zone=us-central1-a
+    $ gce-rescue restore my-vm --zone=us-central1-a
         """
     )
 
@@ -241,10 +241,10 @@ TO EXIT RESCUE MODE
         epilog="""
 EXAMPLES
     Restore a VM:
-        $ gce-rescue-v2 restore my-vm --zone=us-central1-a
+        $ gce-rescue restore my-vm --zone=us-central1-a
 
     Restore and keep rescue disk (for analysis):
-        $ gce-rescue-v2 restore my-vm --zone=us-central1-a --keep-rescue-disk
+        $ gce-rescue restore my-vm --zone=us-central1-a --keep-rescue-disk
 
 NOTES
     The rescue disk is deleted by default after restore.
@@ -263,13 +263,13 @@ NOTES
         epilog="""
 EXAMPLES
     Diagnose a VM:
-        $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a
+        $ gce-rescue diagnose my-vm --zone=us-central1-a
 
     Diagnose and output as JSON:
-        $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a --format=json
+        $ gce-rescue diagnose my-vm --zone=us-central1-a --format=json
 
     Diagnose and output as YAML:
-        $ gce-rescue-v2 diagnose my-vm --zone=us-central1-a --format=yaml
+        $ gce-rescue diagnose my-vm --zone=us-central1-a --format=yaml
 
 NOTES
     This is a read-only operation that does not modify the VM.
@@ -290,13 +290,13 @@ NOTES
         epilog="""
 EXAMPLES
     Repair a VM with boot issues:
-        $ gce-rescue-v2 repair my-vm --zone=us-central1-a
+        $ gce-rescue repair my-vm --zone=us-central1-a
 
     Repair without snapshot (faster):
-        $ gce-rescue-v2 repair my-vm --zone=us-central1-a --no-snapshot
+        $ gce-rescue repair my-vm --zone=us-central1-a --no-snapshot
 
     Repair in automation (no prompts):
-        $ gce-rescue-v2 repair my-vm --zone=us-central1-a --quiet
+        $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
 SUPPORTED FIXES
     - fstab: Comments out invalid UUID, device, or label entries
@@ -480,9 +480,37 @@ def args_to_restore_config(args: argparse.Namespace) -> RestoreConfig:
     return config
 
 
+def _get_log_file() -> str:
+    """Get the log file path from the active logger, if any."""
+    import logging
+    logger = logging.getLogger('gce_rescue')
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            return handler.baseFilename
+    return ''
+
+
+def _print_support_footer(exit_code: int):
+    """Print support footer with email and log file reference."""
+    log_file = _get_log_file()
+    import os
+    if exit_code != 0:
+        if log_file:
+            log_name = os.path.basename(log_file)
+            print(f"\nStuck? We've got your back. Email: gce-rescue-dev@google.com"
+                  f" (attach log: {log_name})", file=sys.stderr)
+        else:
+            print(f"\nStuck? We've got your back. Email: gce-rescue-dev@google.com",
+                  file=sys.stderr)
+    else:
+        print(f"\nSaved you time? We'd love to hear about it. Email:"
+              f" gce-rescue-dev@google.com", file=sys.stderr)
+
+
 def main():
     """Main CLI entry point (gcloud-compatible)."""
 
+    exit_code = 0
     try:
         # Parse arguments
         parser = create_parser()
@@ -490,32 +518,34 @@ def main():
 
         # Validate
         if not validate_args(args):
-            return 1
-
+            exit_code = 1
         # Execute command
-        if args.command == 'rescue':
-            return handle_rescue(args)
+        elif args.command == 'rescue':
+            exit_code = handle_rescue(args)
         elif args.command == 'restore':
-            return handle_restore(args)
+            exit_code = handle_restore(args)
         elif args.command == 'diagnose':
-            return handle_diagnose(args)
+            exit_code = handle_diagnose(args)
         elif args.command == 'repair':
-            return handle_repair(args)
+            exit_code = handle_repair(args)
         else:
-            print(f"{error_prefix()} (gce-rescue-v2) Unknown command: {args.command}",
+            print(f"{error_prefix()} (gce-rescue) Unknown command: {args.command}",
                   file=sys.stderr)
-            return 1
+            exit_code = 1
 
     except KeyboardInterrupt:
         print("\n\nOperation cancelled by user.", file=sys.stderr)
         return 130  # Standard exit code for SIGINT
     except Exception as e:
-        print(f"{error_prefix()} (gce-rescue-v2) Unexpected error: {str(e)}",
+        print(f"{error_prefix()} (gce-rescue) Unexpected error: {str(e)}",
               file=sys.stderr)
         if '--verbosity=debug' in sys.argv or '--verbosity debug' in sys.argv:
             import traceback
             traceback.print_exc()
-        return 1
+        exit_code = 1
+
+    _print_support_footer(exit_code)
+    return exit_code
 
 
 if __name__ == '__main__':

@@ -158,7 +158,7 @@ def _validate_vm_exists(compute, project: str, zone: str, vm_name: str) -> tuple
                     f"Instance [{vm_name}] is already in rescue mode.",
                     "",
                     "To exit rescue mode and restore the VM, run:",
-                    f"  $ gce-rescue-v2 restore {vm_name} --zone={zone} --project={project}",
+                    f"  $ gce-rescue restore {vm_name} --zone={zone} --project={project}",
                     ""
                 ]
                 return (False, None, "\n".join(lines))
@@ -225,7 +225,7 @@ def _validate_vm_for_restore(compute, project: str, zone: str, vm_name: str) -> 
                 f"Instance [{vm_name}] is not in rescue mode.",
                 "",
                 "To put the VM into rescue mode first, run:",
-                f"  $ gce-rescue-v2 rescue {vm_name} --zone={zone} --project={project}",
+                f"  $ gce-rescue rescue {vm_name} --zone={zone} --project={project}",
                 ""
             ]
             return (False, None, "\n".join(lines))

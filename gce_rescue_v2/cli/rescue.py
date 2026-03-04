@@ -84,7 +84,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
                   " Local SSDs!", file=sys.stderr)
             print("", file=sys.stderr)
             print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
-            print(f"  $ gce-rescue-v2 rescue {args.instance_name} --zone={args.zone}"
+            print(f"  $ gce-rescue rescue {args.instance_name} --zone={args.zone}"
                   f" --quiet --force", file=sys.stderr)
             return 1
 
@@ -237,7 +237,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
             logger.info("2. Fix the issue (affected boot disk is mounted at D:\\).")
             logger.info("")
             logger.info("3. Restore original configuration:")
-            logger.info(f"   $ gce-rescue-v2 restore {vm_name}"
+            logger.info(f"   $ gce-rescue restore {vm_name}"
                         f" --zone={zone} --project={project}")
         else:
             logger.info("1. Connect to the instance:")
@@ -253,7 +253,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
             logger.info("2. Fix the issue (affected boot disk is mounted at /mnt/sysroot).")
             logger.info("")
             logger.info("3. Restore original configuration:")
-            logger.info(f"   $ gce-rescue-v2 restore {vm_name}"
+            logger.info(f"   $ gce-rescue restore {vm_name}"
                         f" --zone={zone} --project={project}")
 
         logger.info("")

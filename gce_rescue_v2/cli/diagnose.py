@@ -91,7 +91,7 @@ def handle_diagnose(args: argparse.Namespace) -> int:
             print("Serial console shows the rescue environment, not original boot errors.",
                   file=sys.stderr)
             print("Restore the VM first, then run diagnose:", file=sys.stderr)
-            print(f"  $ gce-rescue-v2 restore {args.instance_name} --zone={args.zone}"
+            print(f"  $ gce-rescue restore {args.instance_name} --zone={args.zone}"
                   f" --project={project}", file=sys.stderr)
             return 1
 

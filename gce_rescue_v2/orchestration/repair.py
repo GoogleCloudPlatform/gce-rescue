@@ -152,7 +152,7 @@ class RepairOrchestrator:
             print("", file=sys.stderr)
             print("For Windows VMs, use rescue mode for manual repair:", file=sys.stderr)
             print(
-                f"  $ gce-rescue-v2 rescue {self.vm_name} "
+                f"  $ gce-rescue rescue {self.vm_name} "
                 f"--zone={self.zone} --project={self.project}",
                 file=sys.stderr
             )
@@ -295,7 +295,7 @@ class RepairOrchestrator:
                 self._log_error("")
                 self._log_error("When done, restore with:")
                 self._log_error(
-                    f"  $ gce-rescue-v2 restore {self.vm_name} "
+                    f"  $ gce-rescue restore {self.vm_name} "
                     f"--zone={self.zone} --project={self.project}"
                 )
                 return {
@@ -325,7 +325,7 @@ class RepairOrchestrator:
                     "VM may be in rescue mode. Try restoring manually:"
                 )
                 self._log_error(
-                    f"  $ gce-rescue-v2 restore {self.vm_name} "
+                    f"  $ gce-rescue restore {self.vm_name} "
                     f"--zone={self.zone} --project={self.project}"
                 )
                 return {
@@ -451,7 +451,7 @@ class RepairOrchestrator:
                     "VM may be in rescue mode. Try restoring manually:"
                 )
                 self._log_error(
-                    f"  $ gce-rescue-v2 restore {self.vm_name} "
+                    f"  $ gce-rescue restore {self.vm_name} "
                     f"--zone={self.zone} --project={self.project}"
                 )
                 return {

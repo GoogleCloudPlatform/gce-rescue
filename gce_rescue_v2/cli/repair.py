@@ -4,8 +4,10 @@ import argparse
 import logging
 import sys
 from collections import Counter
+from datetime import datetime
 from typing import Optional, Dict, Any, List
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
+from ..utils.logger import setup_logging
 from ..orchestration.checkpoint import CheckpointManager
 from .output import _Spinner, _format_duration
 from .preflight import get_gcloud_config, _create_tracked_client
@@ -25,7 +27,7 @@ def _show_boot_verification(boot_verified: Optional[bool],
             print(f"  - {err}")
         print("")
         print("Consider using rescue mode for manual investigation:")
-        print(f"  $ gce-rescue-v2 rescue {vm_name} --zone={zone}")
+        print(f"  $ gce-rescue rescue {vm_name} --zone={zone}")
     # If None, skip silently (couldn't verify)
 
 
@@ -115,7 +117,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if project:
             ssh_cmd += f" --project={project}"
         print(ssh_cmd, file=sys.stderr)
-        restore_cmd = f"  $ gce-rescue-v2 restore {vm_name}"
+        restore_cmd = f"  $ gce-rescue restore {vm_name}"
         if zone:
             restore_cmd += f" --zone={zone}"
         if project:
@@ -141,7 +143,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if snapshot_name:
             print(f"Backup snapshot: {snapshot_name}", file=sys.stderr)
         print("VM may still be in rescue mode. Try restoring manually:", file=sys.stderr)
-        restore_cmd = f"  $ gce-rescue-v2 restore {vm_name}"
+        restore_cmd = f"  $ gce-rescue restore {vm_name}"
         if zone:
             restore_cmd += f" --zone={zone}"
         if project:
@@ -198,10 +200,17 @@ def handle_repair(args: argparse.Namespace) -> int:
 
     # Setup logging
     debug = args.verbosity == 'debug'
-    log_level = logging.DEBUG if debug else logging.WARNING
-    logging.basicConfig(level=log_level, format='%(levelname)s: %(message)s')
-    logger = logging.getLogger(__name__)
-    logger.console_level = log_level
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_file = f"{args.instance_name}-repair-{timestamp}.log"
+    logger = setup_logging(
+        level='DEBUG' if debug else 'INFO',
+        log_file=log_file,
+        debug=debug
+    )
+
+    logger.debug(f"GCE Rescue - Repair")
+    logger.debug(f"Log file: {log_file}")
+    logger.debug(f"VM: {args.instance_name}, Zone: {args.zone}, Project: {project}")
 
     # Create repair orchestrator
     from ..orchestration.repair import RepairOrchestrator
@@ -210,7 +219,8 @@ def handle_repair(args: argparse.Namespace) -> int:
 
     orchestrator = RepairOrchestrator(
         compute=compute, project=project, zone=args.zone,
-        vm_name=args.instance_name, config=config, logger=logger
+        vm_name=args.instance_name, config=config, logger=logger,
+        log_file=log_file
     )
 
     # Pre-flight: check VM state (rescue mode, running, etc.)
@@ -240,7 +250,7 @@ def handle_repair(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             print("", file=sys.stderr)
             print("For Windows VMs, use rescue mode for manual repair:", file=sys.stderr)
-            print(f"  $ gce-rescue-v2 rescue {args.instance_name} --zone={args.zone}"
+            print(f"  $ gce-rescue rescue {args.instance_name} --zone={args.zone}"
                   f" --project={project}", file=sys.stderr)
             print("", file=sys.stderr)
             print("Or check the serial console output manually:", file=sys.stderr)
@@ -294,7 +304,7 @@ def handle_repair(args: argparse.Namespace) -> int:
                                 print("")
                                 print("Run repair again to fix boot issues:")
                                 print(
-                                    f"  $ gce-rescue-v2 repair "
+                                    f"  $ gce-rescue repair "
                                     f"{args.instance_name} --zone={args.zone} "
                                     f"--project={project}"
                                 )
@@ -392,7 +402,7 @@ def handle_repair(args: argparse.Namespace) -> int:
         print("")
         print("  Use rescue mode for manual repair:")
         print(
-            f"    $ gce-rescue-v2 rescue {args.instance_name} "
+            f"    $ gce-rescue rescue {args.instance_name} "
             f"--zone={args.zone} --project={project}"
         )
         return 0
@@ -408,7 +418,7 @@ def handle_repair(args: argparse.Namespace) -> int:
         print("")
         print("  Use rescue mode for manual repair:")
         print(
-            f"    $ gce-rescue-v2 rescue {args.instance_name} "
+            f"    $ gce-rescue rescue {args.instance_name} "
             f"--zone={args.zone} --project={project}"
         )
         return 0
