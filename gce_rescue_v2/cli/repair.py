@@ -3,9 +3,11 @@
 import argparse
 import logging
 import sys
+import uuid
 from collections import Counter
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+from ..core.config import build_user_agent
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
 from ..utils.logger import setup_logging
 from ..orchestration.checkpoint import CheckpointManager
@@ -178,6 +180,15 @@ def handle_repair(args: argparse.Namespace) -> int:
     """Handle repair command."""
     from ..core.auth import AuthManager
 
+    # Analytics: generate session ID and detect execution mode
+    session_id = uuid.uuid4().hex[:12]
+    is_auto = (
+        args.quiet if hasattr(args, 'quiet') else False
+    ) or (
+        getattr(args, 'format', 'disable') in ('json', 'yaml', 'value')
+    ) or not sys.stdout.isatty()
+    mode = 'auto' if is_auto else 'interactive'
+
     # Get project from args or gcloud config
     project = args.project or get_gcloud_config('core/project')
 
@@ -220,7 +231,7 @@ def handle_repair(args: argparse.Namespace) -> int:
     orchestrator = RepairOrchestrator(
         compute=compute, project=project, zone=args.zone,
         vm_name=args.instance_name, config=config, logger=logger,
-        log_file=log_file
+        log_file=log_file, session_id=session_id, mode=mode
     )
 
     # Pre-flight: check VM state (rescue mode, running, etc.)
@@ -228,7 +239,11 @@ def handle_repair(args: argparse.Namespace) -> int:
     if not debug:
         spinner.start()
     try:
-        tracked = _create_tracked_client(compute, 'repair-vm-state')
+        vm_ua = build_user_agent(
+            session_id=session_id, command='repair', mode=mode,
+            step='vm-state'
+        )
+        tracked = _create_tracked_client(compute, vm_ua)
         vm = tracked.instances().get(
             project=project, zone=args.zone, instance=args.instance_name
         ).execute()

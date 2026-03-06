@@ -2,18 +2,17 @@
 
 import sys
 from typing import Optional
-from ..core.config import VERSION
 
 
-def _create_tracked_client(compute, tracking_label: str):
-    """Create a compute client with a tracking User-Agent header.
+def _create_tracked_client(compute, user_agent: str):
+    """Create a compute client with a custom User-Agent header.
 
     Args:
         compute: Base compute client (used to extract credentials)
-        tracking_label: Label appended to User-Agent (e.g., 'diagnose-vm-state')
+        user_agent: Full User-Agent string (from build_user_agent())
 
     Returns:
-        Compute API client with User-Agent: gce-rescue-{VERSION}-{tracking_label}
+        Compute API client with the specified User-Agent header.
     """
     try:
         from googleapiclient import discovery
@@ -26,7 +25,6 @@ def _create_tracked_client(compute, tracking_label: str):
             return compute
 
         credentials = compute._http.credentials
-        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
 
         def _request_builder(http, *args, **kwargs):
             headers = kwargs.setdefault('headers', {})
@@ -135,7 +133,8 @@ def _parse_api_error(e: Exception, vm_name: str, zone: str, project: str = None)
     return f"API error: {error_str[:200]}\n"
 
 
-def _validate_vm_exists(compute, project: str, zone: str, vm_name: str) -> tuple:
+def _validate_vm_exists(compute, project: str, zone: str, vm_name: str,
+                        user_agent: str = None) -> tuple:
     """
     Validate VM exists and is in a valid state for rescue.
 
@@ -143,8 +142,8 @@ def _validate_vm_exists(compute, project: str, zone: str, vm_name: str) -> tuple
         (success: bool, vm_info: dict or None, error_message: str or None)
     """
     try:
-        tracked = _create_tracked_client(compute, 'rescue-vm-preflight')
-        vm = tracked.instances().get(
+        client = _create_tracked_client(compute, user_agent) if user_agent else compute
+        vm = client.instances().get(
             project=project,
             zone=zone,
             instance=vm_name
@@ -197,7 +196,8 @@ def _check_local_ssds(vm_info: dict) -> list:
     return local_ssds
 
 
-def _validate_vm_for_restore(compute, project: str, zone: str, vm_name: str) -> tuple:
+def _validate_vm_for_restore(compute, project: str, zone: str, vm_name: str,
+                             user_agent: str = None) -> tuple:
     """
     Validate VM exists and is in rescue mode for restore.
 
@@ -205,8 +205,8 @@ def _validate_vm_for_restore(compute, project: str, zone: str, vm_name: str) -> 
         (success: bool, vm_info: dict or None, error_message: str or None)
     """
     try:
-        tracked = _create_tracked_client(compute, 'restore-vm-preflight')
-        vm = tracked.instances().get(
+        client = _create_tracked_client(compute, user_agent) if user_agent else compute
+        vm = client.instances().get(
             project=project,
             zone=zone,
             instance=vm_name

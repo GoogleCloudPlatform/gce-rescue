@@ -6,13 +6,8 @@ by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
 import time
-from googleapiclient import discovery
-import googleapiclient.http
-import google_auth_httplib2
-import httplib2
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, METADATA_SET_FAILED
-from ..core.config import VERSION
 
 
 # Prefix used to backup original metadata keys that conflict with rescue keys
@@ -167,43 +162,6 @@ class SetMetadataOperation(BaseOperation):
                 message=f"Failed to set metadata: {error_msg}",
                 error=error_detail
             )
-
-    def _create_tracked_client(self, tracking_label: str):
-        """
-        Create a compute client with unique User-Agent for usage tracking.
-
-        Args:
-            tracking_label: Tracking label in format '{operation_type}-{action_group}-{action_detail}'
-                Example: 'rescue-meta-set-rescue-keys'
-
-        Returns:
-            Compute API client with custom User-Agent header
-        """
-        # Get credentials from the base compute client
-        credentials = self.compute._http.credentials
-
-        # Build unique User-Agent for tracking
-        # Format: gce-rescue-{VERSION}-{tracking_label}
-        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
-
-        def _request_builder(http, *args, **kwargs):
-            """Inject custom User-Agent header."""
-            headers = kwargs.setdefault('headers', {})
-            headers['user-agent'] = user_agent
-            auth_http = google_auth_httplib2.AuthorizedHttp(
-                credentials,
-                http=httplib2.Http()
-            )
-            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
-
-        # Create compute client with custom request builder
-        return discovery.build(
-            'compute',
-            'v1',
-            credentials=credentials,
-            cache_discovery=False,
-            requestBuilder=_request_builder
-        )
 
     def _merge_with_backup(self, original_items: list, new_items: list) -> list:
         """

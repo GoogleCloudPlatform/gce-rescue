@@ -7,14 +7,9 @@ import time
 from typing import Optional
 import logging
 
-from googleapiclient import discovery
-import googleapiclient.http
-import google_auth_httplib2
-import httplib2
 from googleapiclient.errors import HttpError
 
 from ..core.diagnosis import analyze_serial_output, DiagnosisResult
-from ..core.config import VERSION
 from ..utils.os_detection import (
     detect_os_type, detect_os_flavor, detect_architecture, detect_license_type,
 )
@@ -427,31 +422,6 @@ class DiagnoseOperation(BaseOperation):
                 return last_result
 
             time.sleep(poll_interval)
-
-    def _create_tracked_client(self, tracking_label: str):
-        """Create a compute client with unique User-Agent for usage tracking.
-
-        Args:
-            tracking_label: Tracking label for the User-Agent header.
-
-        Returns:
-            Compute API client with custom User-Agent header
-        """
-        credentials = self.compute._http.credentials
-        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
-
-        def _request_builder(http, *args, **kwargs):
-            headers = kwargs.setdefault('headers', {})
-            headers['user-agent'] = user_agent
-            auth_http = google_auth_httplib2.AuthorizedHttp(
-                credentials, http=httplib2.Http()
-            )
-            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
-
-        return discovery.build(
-            'compute', 'v1', credentials=credentials,
-            cache_discovery=False, requestBuilder=_request_builder
-        )
 
     def rollback(self, rollback_data: dict) -> bool:
         """No rollback needed for read-only diagnosis operation.
