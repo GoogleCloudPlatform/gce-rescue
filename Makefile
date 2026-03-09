@@ -27,8 +27,8 @@ build: setup.py
 
 install: setup.py
 	python3 -m pip install .
-	@echo "V1 Executable: $(DEST_DIR)/gce-rescue"
-	@echo "V2 Executable: $(DEST_DIR)/gce-rescue-v2"
+	@echo "V2 Executable: $(DEST_DIR)/gce-rescue"
+	@echo "V1 Legacy:     $(DEST_DIR)/gce-rescue-v1"
 
 # Lint V2 code
 lint-v2:

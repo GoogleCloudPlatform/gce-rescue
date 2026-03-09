@@ -213,13 +213,13 @@ class DiagnosisReportFormatter:
         # Lead with auto-repair when available
         if auto_fixable:
             lines.append("  Auto-repair (recommended):")
-            lines.append(f"    $ gce-rescue-v2 repair {vm_name} --zone={zone}")
+            lines.append(f"    $ gce-rescue repair {vm_name} --zone={zone}")
             lines.append("")
             lines.append("  Or fix manually:")
 
         # Manual steps
         lines.append("    1. Enter rescue mode:")
-        lines.append(f"       $ gce-rescue-v2 rescue {vm_name} --zone={zone}")
+        lines.append(f"       $ gce-rescue rescue {vm_name} --zone={zone}")
 
         # Category-aware fix guidance + per-issue fix suggestions
         if len(categories) == 1:
@@ -250,7 +250,7 @@ class DiagnosisReportFormatter:
                 lines.append(f"       - {fix}")
 
         lines.append("    3. Restore the VM:")
-        lines.append(f"       $ gce-rescue-v2 restore {vm_name} --zone={zone}")
+        lines.append(f"       $ gce-rescue restore {vm_name} --zone={zone}")
 
         return "\n".join(lines)
 
@@ -308,7 +308,7 @@ class DiagnosisReportFormatter:
 
         lines.append("")
         lines.append("Then run diagnosis again:")
-        lines.append(f"  $ gce-rescue-v2 diagnose {vm_name} --zone={zone}")
+        lines.append(f"  $ gce-rescue diagnose {vm_name} --zone={zone}")
 
         return "\n".join(lines)
 

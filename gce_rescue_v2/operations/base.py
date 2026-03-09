@@ -14,6 +14,11 @@ from typing import Optional, Dict, Any
 import time
 import json
 
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
+
 
 def extract_error_message(exception: Exception) -> str:
     """
@@ -202,6 +207,30 @@ class BaseOperation(ABC):
         """Log error message if logger available."""
         if self.logger:
             self.logger.error(message)
+
+    def _create_tracked_client(self, user_agent: str):
+        """Create a compute client with a custom User-Agent for analytics.
+
+        Args:
+            user_agent: Full User-Agent string (from build_user_agent()).
+
+        Returns:
+            Compute API client with the custom User-Agent header.
+        """
+        credentials = self.compute._http.credentials
+
+        def _request_builder(http, *args, **kwargs):
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials, http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        return discovery.build(
+            'compute', 'v1', credentials=credentials,
+            cache_discovery=False, requestBuilder=_request_builder
+        )
 
     def _wait_for_status(self, check_func, target_status: str, timeout: int = 300) -> bool:
         """

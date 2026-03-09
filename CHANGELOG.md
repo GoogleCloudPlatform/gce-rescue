@@ -5,6 +5,17 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-03-04
+
+### GA Release
+- CLI command renamed from `gce-rescue-v2` to `gce-rescue`
+- V1 legacy available as `gce-rescue-v1`
+- Development status: Production/Stable
+
+### Fixed
+- Bare `except:` in create_disk.py replaced with `except Exception:`
+- Package data path in pyproject.toml (`core/patterns/` -> `core/diagnose_rules/`)
+
 ## [2.0.0-beta.5] - 2026-02-15
 
 ### Added

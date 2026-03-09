@@ -27,7 +27,7 @@ import googleapiclient.http
 import google_auth_httplib2
 import httplib2
 
-from ..core.config import RescueConfig, RestoreConfig, VERSION
+from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
 from ..core.fix_catalog import SUPPORTED_FIX_CATEGORIES
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
@@ -60,7 +60,8 @@ class RepairOrchestrator:
     """Orchestrates diagnose -> rescue (with fix) -> restore."""
 
     def __init__(self, compute, project: str, zone: str, vm_name: str,
-                 config: RescueConfig = None, logger=None, log_file: str = None):
+                 config: RescueConfig = None, logger=None, log_file: str = None,
+                 session_id: str = None, mode: str = None):
         self.compute = compute
         self.project = project
         self.zone = zone
@@ -68,6 +69,8 @@ class RepairOrchestrator:
         self.config = config or RescueConfig()
         self.logger = logger
         self.log_file = log_file
+        self.session_id = session_id
+        self.mode = mode
 
         # Progress tracking
         self._spinner_thread = None
@@ -99,10 +102,16 @@ class RepairOrchestrator:
         if self.logger:
             self.logger.error(message)
 
-    def _create_tracked_client(self, tracking_label: str):
-        """Create a compute client with unique User-Agent for usage tracking."""
+    def _ua(self, step: str) -> str:
+        """Build User-Agent string for the given step."""
+        return build_user_agent(
+            session_id=self.session_id, command='repair',
+            mode=self.mode, step=step
+        )
+
+    def _create_tracked_client(self, user_agent: str):
+        """Create a compute client with custom User-Agent for analytics."""
         credentials = self.compute._http.credentials
-        user_agent = f'gce-rescue-{VERSION}-{tracking_label}'
 
         def _request_builder(http, *args, **kwargs):
             headers = kwargs.setdefault('headers', {})
@@ -128,11 +137,11 @@ class RepairOrchestrator:
         runner.add(CredentialsValidator(self.compute, self.project, self.zone))
         runner.add(IAMPermissionsValidator(
             self.compute, self.project, self.zone, self.vm_name,
-            tracking_label='repair-val-iam'
+            tracking_label=self._ua('val-iam')
         ))
         runner.add(VMStateValidator(
             self.compute, self.project, self.zone, self.vm_name,
-            tracking_label='repair-val-vm-state'
+            tracking_label=self._ua('val-vm-state')
         ))
 
         results = runner.run_all(self.logger)
@@ -142,7 +151,7 @@ class RepairOrchestrator:
 
         # Check Linux-only
         from ..utils.os_detection import detect_os_type
-        compute = self._create_tracked_client('repair-val-os')
+        compute = self._create_tracked_client(self._ua('val-os'))
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
@@ -152,7 +161,7 @@ class RepairOrchestrator:
             print("", file=sys.stderr)
             print("For Windows VMs, use rescue mode for manual repair:", file=sys.stderr)
             print(
-                f"  $ gce-rescue-v2 rescue {self.vm_name} "
+                f"  $ gce-rescue rescue {self.vm_name} "
                 f"--zone={self.zone} --project={self.project}",
                 file=sys.stderr
             )
@@ -179,7 +188,7 @@ class RepairOrchestrator:
             self.compute, self.project, self.zone, self.logger
         )
         result = diagnose_op.execute(
-            self.vm_name, tracking_label='repair-diagnose', stabilize=True
+            self.vm_name, tracking_label=self._ua('diagnose'), stabilize=True
         )
 
         if not result.success:
@@ -247,7 +256,8 @@ class RepairOrchestrator:
                 suppress_progress=True,
                 progress_callback=self._make_progress_callback(
                     "Rescue", RESCUE_SUBSTEP_LABELS
-                )
+                ),
+                session_id=self.session_id, mode=self.mode
             )
             # Skip validation (already done)
             if not rescue.execute():
@@ -295,7 +305,7 @@ class RepairOrchestrator:
                 self._log_error("")
                 self._log_error("When done, restore with:")
                 self._log_error(
-                    f"  $ gce-rescue-v2 restore {self.vm_name} "
+                    f"  $ gce-rescue restore {self.vm_name} "
                     f"--zone={self.zone} --project={self.project}"
                 )
                 return {
@@ -316,7 +326,8 @@ class RepairOrchestrator:
                 log_file=self.log_file, suppress_progress=True,
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
-                )
+                ),
+                session_id=self.session_id, mode=self.mode
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -325,7 +336,7 @@ class RepairOrchestrator:
                     "VM may be in rescue mode. Try restoring manually:"
                 )
                 self._log_error(
-                    f"  $ gce-rescue-v2 restore {self.vm_name} "
+                    f"  $ gce-rescue restore {self.vm_name} "
                     f"--zone={self.zone} --project={self.project}"
                 )
                 return {
@@ -368,7 +379,7 @@ class RepairOrchestrator:
             Snapshot name if found, None otherwise.
         """
         try:
-            compute = self._create_tracked_client('repair-snapshot-lookup')
+            compute = self._create_tracked_client(self._ua('snapshot-lookup'))
             vm_info = compute.instances().get(
                 project=self.project, zone=self.zone, instance=self.vm_name
             ).execute()
@@ -442,7 +453,8 @@ class RepairOrchestrator:
                 log_file=self.log_file, suppress_progress=True,
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
-                )
+                ),
+                session_id=self.session_id, mode=self.mode
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -451,7 +463,7 @@ class RepairOrchestrator:
                     "VM may be in rescue mode. Try restoring manually:"
                 )
                 self._log_error(
-                    f"  $ gce-rescue-v2 restore {self.vm_name} "
+                    f"  $ gce-rescue restore {self.vm_name} "
                     f"--zone={self.zone} --project={self.project}"
                 )
                 return {
@@ -569,7 +581,7 @@ class RepairOrchestrator:
             base_script = f.read()
 
         # Get original disk name for placeholder replacement
-        compute = self._create_tracked_client('repair-script-vm-info')
+        compute = self._create_tracked_client(self._ua('script-vm-info'))
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
@@ -677,7 +689,7 @@ class RepairOrchestrator:
         """
         serial_output = ''
         try:
-            compute = self._create_tracked_client('repair-serial-parse')
+            compute = self._create_tracked_client(self._ua('serial-parse'))
             # Try default port first (matches verify_startup behavior)
             serial_response = compute.instances().getSerialPortOutput(
                 project=self.project, zone=self.zone,
@@ -769,7 +781,7 @@ class RepairOrchestrator:
             time.sleep(1)
 
         try:
-            compute = self._create_tracked_client('repair-boot-verify')
+            compute = self._create_tracked_client(self._ua('boot-verify'))
             serial_response = compute.instances().getSerialPortOutput(
                 project=self.project, zone=self.zone,
                 instance=self.vm_name

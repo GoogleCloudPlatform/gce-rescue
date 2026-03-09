@@ -10,10 +10,10 @@ Coordinates the rescue workflow:
 """
 
 import time
-from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX
+from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX, build_user_agent
 from ..utils.os_detection import (
     detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64,
-    get_rescue_disk_type
+    get_rescue_disk_type, detect_os_flavor
 )
 from ..validators import (
     ValidationRunner,
@@ -74,7 +74,7 @@ class RescueOrchestrator:
     def __init__(self, compute, project: str, zone: str, vm_name: str,
                  config: RescueConfig = None, logger=None, log_file: str = None,
                  startup_script_override: str = None, suppress_progress: bool = False,
-                 progress_callback=None):
+                 progress_callback=None, session_id: str = None, mode: str = None):
         """
         Initialize rescue orchestrator.
 
@@ -89,6 +89,8 @@ class RescueOrchestrator:
             startup_script_override: Custom startup script (replaces default)
             suppress_progress: Suppress progress spinner (for embedding in repair)
             progress_callback: Optional callback(phase_label) invoked on each step
+            session_id: Analytics session UUID (12-char hex)
+            mode: Execution mode ('interactive' or 'auto')
         """
         self.compute = compute
         self.project = project
@@ -100,6 +102,8 @@ class RescueOrchestrator:
         self._startup_script_override = startup_script_override
         self._suppress_progress = suppress_progress
         self._progress_callback = progress_callback
+        self.session_id = session_id
+        self.mode = mode
 
         # State tracking
         self.state_tracker = StateTracker()
@@ -113,6 +117,7 @@ class RescueOrchestrator:
         # OS and architecture detection (will be set during execution)
         self.os_type = None
         self.architecture = None
+        self.os_flavor = None
         self.vm_info = None
 
         # Windows rescue credentials (generated for RDP access)
@@ -263,6 +268,14 @@ class RescueOrchestrator:
         if self.logger:
             self.logger.error(message)
 
+    def _ua(self, step: str) -> str:
+        """Build User-Agent string for the given step."""
+        return build_user_agent(
+            session_id=self.session_id, command='rescue',
+            os_type=self.os_type, arch=self.architecture,
+            flavor=self.os_flavor, mode=self.mode, step=step
+        )
+
     def set_resume_state(self, checkpoint: CheckpointData):
         """
         Set resume state from a checkpoint.
@@ -362,8 +375,8 @@ class RescueOrchestrator:
 
         # Add validators with tracking labels
         runner.add(CredentialsValidator(self.compute, self.project, self.zone))
-        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='rescue-val-iam'))
-        vm_validator = VMStateValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='rescue-val-vm-state')
+        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label=self._ua('val-iam')))
+        vm_validator = VMStateValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label=self._ua('val-vm-state'))
         runner.add(vm_validator)
 
         # Run validations
@@ -454,7 +467,7 @@ class RescueOrchestrator:
                     vm_name=self.vm_name,
                     timeout=self.config.vm_stop_timeout,
                     discard_local_ssd=self.config.force,
-                    tracking_label='rescue-vm-stop'
+                    tracking_label=self._ua('vm-stop')
                 )
                 self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data, step_number=1)
                 if not result.success:
@@ -476,7 +489,7 @@ class RescueOrchestrator:
                 result = detach_boot.execute(
                     vm_name=self.vm_name,
                     device_name=self.original_device_name,
-                    tracking_label='rescue-disk-detach-orig'
+                    tracking_label=self._ua('disk-detach-orig')
                 )
                 self.state_tracker.add_operation("Detach Boot Disk", result.success, result.message, result.rollback_data, step_number=2)
                 if not result.success:
@@ -502,7 +515,7 @@ class RescueOrchestrator:
                     description=f"Pre-rescue safety snapshot of {self.vm_name}",
                     timeout=self.config.snapshot_timeout,
                     wait=not self.config.async_snapshot,
-                    tracking_label='rescue-disk-snapshot'
+                    tracking_label=self._ua('disk-snapshot')
                 )
                 self.state_tracker.add_operation("Create Snapshot", result.success, result.message, result.rollback_data, step_number=3)
 
@@ -562,7 +575,7 @@ class RescueOrchestrator:
                         disk_type=self.config.rescue_disk_type,
                         source_image=f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}',
                         timeout=self.config.disk_create_timeout,
-                        tracking_label='rescue-disk-create-rescue'
+                        tracking_label=self._ua('disk-create-rescue')
                     )
                     self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data, step_number=4)
                     if not result.success:
@@ -594,7 +607,7 @@ class RescueOrchestrator:
                         vm_name=self.vm_name,
                         disk_name=rescue_disk_name,
                         boot=True,
-                        tracking_label='rescue-disk-attach-rescue'
+                        tracking_label=self._ua('disk-attach-rescue')
                     )
                     self.state_tracker.add_operation("Attach Rescue Disk", result.success, result.message, result.rollback_data, step_number=5)
                     if not result.success:
@@ -628,7 +641,7 @@ class RescueOrchestrator:
                 result = set_metadata.execute(
                     vm_name=self.vm_name,
                     metadata_items=metadata_items,
-                    tracking_label='rescue-meta-set-rescue-keys'
+                    tracking_label=self._ua('meta-set-rescue-keys')
                 )
                 self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data, step_number=6)
                 if not result.success:
@@ -667,7 +680,7 @@ class RescueOrchestrator:
                     result = start_vm.execute(
                         vm_name=self.vm_name,
                         timeout=self.config.vm_start_timeout,
-                        tracking_label='rescue-vm-start'
+                        tracking_label=self._ua('vm-start')
                     )
                     self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data, step_number=7)
                     if not result.success:
@@ -742,7 +755,7 @@ class RescueOrchestrator:
                         vm_name=self.vm_name,
                         disk_name=self.original_disk_name,
                         boot=False,
-                        tracking_label='rescue-disk-attach-orig'
+                        tracking_label=self._ua('disk-attach-orig')
                     )
                     self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data, step_number=8)
                     if not result.success:
@@ -765,7 +778,7 @@ class RescueOrchestrator:
                 result = verify_startup.execute(
                     vm_name=self.vm_name,
                     timeout=self.config.startup_verification_timeout,
-                    tracking_label='rescue-vm-verify-startup'
+                    tracking_label=self._ua('vm-verify-startup')
                 )
                 self.verification_succeeded = result.success
                 # Don't fail on verification timeout - continue
@@ -809,6 +822,7 @@ class RescueOrchestrator:
         # Detect OS type and architecture
         self.os_type = detect_os_type(self.vm_info)
         self.architecture = detect_architecture(self.vm_info)
+        self.os_flavor = detect_os_flavor(self.vm_info)
         self._log_debug(f"Detected OS: {get_os_display_name(self.os_type)}, Architecture: {self.architecture}")
 
         # Auto-detect rescue disk type based on machine family

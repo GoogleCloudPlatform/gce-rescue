@@ -3,6 +3,8 @@
 import argparse
 import logging
 import sys
+import uuid
+from ..core.config import build_user_agent
 from ..utils.colors import error_prefix
 from ..utils.report_formatter import DiagnosisReportFormatter
 from .output import OutputFormatter, _Spinner
@@ -18,6 +20,15 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         CredentialsValidator,
         DiagnosePermissionsValidator,
     )
+
+    # Analytics: generate session ID and detect execution mode
+    session_id = uuid.uuid4().hex[:12]
+    is_auto = (
+        args.quiet if hasattr(args, 'quiet') else False
+    ) or (
+        getattr(args, 'format', 'disable') in ('json', 'yaml', 'value')
+    ) or not sys.stdout.isatty()
+    mode = 'auto' if is_auto else 'interactive'
 
     # Get project from args or gcloud config
     project = args.project or get_gcloud_config('core/project')
@@ -52,9 +63,13 @@ def handle_diagnose(args: argparse.Namespace) -> int:
     # Pre-flight validation: credentials + permissions + VM state
     runner = ValidationRunner()
     runner.add(CredentialsValidator(compute, project, args.zone))
+    val_ua = build_user_agent(
+        session_id=session_id, command='diagnose', mode=mode,
+        step='val-iam'
+    )
     runner.add(DiagnosePermissionsValidator(
         compute, project, args.zone, args.instance_name,
-        tracking_label='diagnose-val-iam'
+        tracking_label=val_ua
     ))
 
     spinner = _Spinner("Checking VM state")
@@ -65,7 +80,11 @@ def handle_diagnose(args: argparse.Namespace) -> int:
     # Also fetch VM info for state/rescue/OS checks under the same spinner
     vm = None
     try:
-        tracked = _create_tracked_client(compute, 'diagnose-vm-state')
+        vm_ua = build_user_agent(
+            session_id=session_id, command='diagnose', mode=mode,
+            step='vm-state'
+        )
+        tracked = _create_tracked_client(compute, vm_ua)
         vm = tracked.instances().get(
             project=project, zone=args.zone, instance=args.instance_name
         ).execute()
@@ -80,6 +99,11 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         results.print_failures()
         return 1
 
+    # OS info for analytics (populated below if VM info available)
+    os_type = None
+    arch = None
+    flavor = None
+
     # Pre-flight checks on VM (rescue mode first, then state, then OS)
     if vm:
         # Rescue mode check first -- always suggest restoring
@@ -91,7 +115,7 @@ def handle_diagnose(args: argparse.Namespace) -> int:
             print("Serial console shows the rescue environment, not original boot errors.",
                   file=sys.stderr)
             print("Restore the VM first, then run diagnose:", file=sys.stderr)
-            print(f"  $ gce-rescue-v2 restore {args.instance_name} --zone={args.zone}"
+            print(f"  $ gce-rescue restore {args.instance_name} --zone={args.zone}"
                   f" --project={project}", file=sys.stderr)
             return 1
 
@@ -109,9 +133,13 @@ def handle_diagnose(args: argparse.Namespace) -> int:
                       f" --zone={args.zone} --project={project}", file=sys.stderr)
             return 1
 
-        # Linux only
-        from ..utils.os_detection import detect_os_type
+        # Detect OS info for analytics and Linux-only check
+        from ..utils.os_detection import (
+            detect_os_type, detect_architecture, detect_os_flavor
+        )
         os_type = detect_os_type(vm)
+        arch = detect_architecture(vm)
+        flavor = detect_os_flavor(vm)
         if os_type == 'windows':
             print(f"{error_prefix()} Diagnose is only supported for Linux VMs.",
                   file=sys.stderr)
@@ -134,8 +162,13 @@ def handle_diagnose(args: argparse.Namespace) -> int:
         spinner = _Spinner("Analyzing serial console output")
         if not debug:
             spinner.start()
+        diag_ua = build_user_agent(
+            session_id=session_id, command='diagnose',
+            os_type=os_type, arch=arch, flavor=flavor,
+            mode=mode, step='diagnose'
+        )
         result = diagnose_op.execute(
-            args.instance_name, tracking_label='diagnose', stabilize=True
+            args.instance_name, tracking_label=diag_ua, stabilize=True
         )
         if not debug:
             spinner.stop()

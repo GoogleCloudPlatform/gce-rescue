@@ -229,12 +229,12 @@ class TestErrorsReport:
     def test_rescue_command_in_fix_section(self, formatter, single_error_diagnosis):
         """Fix section should contain rescue command in manual steps."""
         report = formatter.format_report(single_error_diagnosis)
-        assert 'gce-rescue-v2 rescue test-vm' in report
+        assert 'gce-rescue rescue test-vm' in report
 
     def test_restore_command_in_fix_section(self, formatter, single_error_diagnosis):
         """Fix section should contain restore command."""
         report = formatter.format_report(single_error_diagnosis)
-        assert 'gce-rescue-v2 restore test-vm --zone=us-central1-a' in report
+        assert 'gce-rescue restore test-vm --zone=us-central1-a' in report
 
     def test_no_borders(self, formatter, single_error_diagnosis):
         """Error report should not contain ===== borders."""
@@ -359,7 +359,7 @@ class TestUnableReport:
     def test_unable_shows_retry_hint(self, formatter, unable_diagnosis):
         """Unable report should show how to retry diagnosis."""
         report = formatter.format_report(unable_diagnosis)
-        assert 'gce-rescue-v2 diagnose test-vm' in report
+        assert 'gce-rescue diagnose test-vm' in report
 
 
 class TestSerialConsoleStyling:
@@ -416,8 +416,8 @@ class TestSkipFixSection:
             single_error_diagnosis, skip_fix_section=True
         )
         assert 'To fix this issue:' not in report
-        assert 'gce-rescue-v2 rescue' not in report
-        assert 'gce-rescue-v2 restore' not in report
+        assert 'gce-rescue rescue' not in report
+        assert 'gce-rescue restore' not in report
 
     def test_skip_fix_section_true_keeps_errors(
         self, formatter, single_error_diagnosis
@@ -439,7 +439,7 @@ class TestSkipFixSection:
             single_error_diagnosis, skip_fix_section=False
         )
         assert 'To fix this issue:' in report
-        assert 'gce-rescue-v2 rescue' in report
+        assert 'gce-rescue rescue' in report
 
     def test_skip_fix_section_default_includes_guidance(
         self, formatter, single_error_diagnosis
@@ -471,7 +471,7 @@ class TestAutoRepairSuggestion:
         """When fstab error is detected, auto-repair should lead the fix section."""
         report = formatter.format_report(single_error_diagnosis)
         assert 'Auto-repair (recommended):' in report
-        assert 'gce-rescue-v2 repair' in report
+        assert 'gce-rescue repair' in report
 
     def test_auto_repair_before_manual(
         self, formatter, single_error_diagnosis
@@ -488,7 +488,7 @@ class TestAutoRepairSuggestion:
         """When any fixable category is present, auto-repair should appear."""
         report = formatter.format_report(multi_error_diagnosis)
         assert 'Auto-repair (recommended):' in report
-        assert 'gce-rescue-v2 repair' in report
+        assert 'gce-rescue repair' in report
 
     def test_no_auto_repair_for_unfixable_only(self, formatter):
         """When no fixable categories, auto-repair should not appear."""
@@ -517,14 +517,14 @@ class TestAutoRepairSuggestion:
         report = formatter.format_report(diagnosis)
         assert 'Auto-repair' not in report
         assert 'Or fix manually:' not in report
-        assert 'gce-rescue-v2 repair' not in report
+        assert 'gce-rescue repair' not in report
 
     def test_auto_repair_line_has_vm_name(
         self, formatter, single_error_diagnosis
     ):
         """Auto-repair suggestion should include the VM name."""
         report = formatter.format_report(single_error_diagnosis)
-        assert 'gce-rescue-v2 repair test-vm' in report
+        assert 'gce-rescue repair test-vm' in report
 
     def test_auto_repair_line_has_zone(
         self, formatter, single_error_diagnosis

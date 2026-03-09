@@ -2,8 +2,9 @@
 
 import argparse
 import sys
+import uuid
 from datetime import datetime
-from ..core.config import RestoreConfig, OS_TYPE_WINDOWS
+from ..core.config import RestoreConfig, OS_TYPE_WINDOWS, build_user_agent
 from ..core.error_messages import get_error_suggestion
 from ..utils.colors import error_prefix, clear_lines
 from ..utils.logger import setup_logging
@@ -17,6 +18,15 @@ from . import checkpoint_ui
 def handle_restore(args: argparse.Namespace) -> int:
     """Handle restore command."""
     from ..core.auth import AuthManager
+
+    # Analytics: generate session ID and detect execution mode
+    session_id = uuid.uuid4().hex[:12]
+    is_auto = (
+        args.quiet
+        or getattr(args, 'format', 'disable') in ('json', 'yaml', 'value')
+        or not sys.stdout.isatty()
+    )
+    mode = 'auto' if is_auto else 'interactive'
 
     # Get project from args or gcloud config
     project = args.project or preflight.get_gcloud_config('core/project')
@@ -60,8 +70,13 @@ def handle_restore(args: argparse.Namespace) -> int:
 
     if not resuming:
         # Validate VM exists and is in rescue mode BEFORE confirmation
+        ua = build_user_agent(
+            session_id=session_id, command='restore', mode=mode,
+            step='vm-preflight'
+        )
         valid, vm_info, error_msg = preflight._validate_vm_for_restore(
-            compute, project, args.zone, args.instance_name
+            compute, project, args.zone, args.instance_name,
+            user_agent=ua
         )
         if not valid:
             print(f"{error_prefix()} {error_msg}", file=sys.stderr)
@@ -132,7 +147,7 @@ def handle_restore(args: argparse.Namespace) -> int:
         orchestrator = RestoreOrchestrator(
             compute=compute, project=project, zone=zone,
             vm_name=vm_name, config=config, logger=logger,
-            log_file=log_file
+            log_file=log_file, session_id=session_id, mode=mode
         )
 
         # Set resume state if resuming from checkpoint

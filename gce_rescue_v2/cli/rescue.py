@@ -2,8 +2,9 @@
 
 import argparse
 import sys
+import uuid
 from datetime import datetime
-from ..core.config import RescueConfig, OS_TYPE_WINDOWS
+from ..core.config import RescueConfig, OS_TYPE_WINDOWS, build_user_agent
 from ..core.error_messages import get_error_suggestion
 from ..utils.colors import error_prefix, warning_prefix, note_prefix, clear_lines
 from ..utils.logger import setup_logging
@@ -17,6 +18,15 @@ from . import checkpoint_ui
 def handle_rescue(args: argparse.Namespace) -> int:
     """Handle rescue command."""
     from ..core.auth import AuthManager
+
+    # Analytics: generate session ID and detect execution mode
+    session_id = uuid.uuid4().hex[:12]
+    is_auto = (
+        args.quiet
+        or getattr(args, 'format', 'disable') in ('json', 'yaml', 'value')
+        or not sys.stdout.isatty()
+    )
+    mode = 'auto' if is_auto else 'interactive'
 
     # Get project from args or gcloud config
     project = args.project or preflight.get_gcloud_config('core/project')
@@ -63,8 +73,13 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
     if not resuming:
         # Validate VM exists and state BEFORE confirmation
+        ua = build_user_agent(
+            session_id=session_id, command='rescue', mode=mode,
+            step='vm-preflight'
+        )
         valid, vm_info, error_msg = preflight._validate_vm_exists(
-            compute, project, args.zone, args.instance_name
+            compute, project, args.zone, args.instance_name,
+            user_agent=ua
         )
         if not valid:
             print(f"{error_prefix()} {error_msg}", file=sys.stderr)
@@ -84,7 +99,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
                   " Local SSDs!", file=sys.stderr)
             print("", file=sys.stderr)
             print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
-            print(f"  $ gce-rescue-v2 rescue {args.instance_name} --zone={args.zone}"
+            print(f"  $ gce-rescue rescue {args.instance_name} --zone={args.zone}"
                   f" --quiet --force", file=sys.stderr)
             return 1
 
@@ -164,7 +179,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
         orchestrator = RescueOrchestrator(
             compute=compute, project=project, zone=zone,
             vm_name=vm_name, config=config, logger=logger,
-            log_file=log_file
+            log_file=log_file, session_id=session_id, mode=mode
         )
 
         # Set resume state if resuming from checkpoint
@@ -237,7 +252,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
             logger.info("2. Fix the issue (affected boot disk is mounted at D:\\).")
             logger.info("")
             logger.info("3. Restore original configuration:")
-            logger.info(f"   $ gce-rescue-v2 restore {vm_name}"
+            logger.info(f"   $ gce-rescue restore {vm_name}"
                         f" --zone={zone} --project={project}")
         else:
             logger.info("1. Connect to the instance:")
@@ -253,7 +268,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
             logger.info("2. Fix the issue (affected boot disk is mounted at /mnt/sysroot).")
             logger.info("")
             logger.info("3. Restore original configuration:")
-            logger.info(f"   $ gce-rescue-v2 restore {vm_name}"
+            logger.info(f"   $ gce-rescue restore {vm_name}"
                         f" --zone={zone} --project={project}")
 
         logger.info("")

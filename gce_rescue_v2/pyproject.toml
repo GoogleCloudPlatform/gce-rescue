@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gce-rescue"
-version = "2.0.0-beta.5"
+version = "2.0.0"
 description = "Rescue unbootable Google Compute Engine VMs"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["gcp", "gce", "google-cloud", "rescue", "vm", "recovery"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: System Administrators",
     "License :: OSI Approved :: Apache Software License",
@@ -43,7 +43,7 @@ dev = [
 ]
 
 [project.scripts]
-gce-rescue-v2 = "gce_rescue_v2.cli:main"
+gce-rescue = "gce_rescue_v2.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/gokulr94/gce-rescue"
@@ -59,8 +59,7 @@ gce_rescue_v2 = [
     "startup_scripts/*.sh",
     "startup_scripts/*.ps1",
     "startup_scripts/fixes/*.sh",
-    "core/patterns/*.yaml",
-    "core/patterns/README.md",
+    "core/diagnose_rules/*.yaml",
 ]
 
 [tool.pytest.ini_options]
