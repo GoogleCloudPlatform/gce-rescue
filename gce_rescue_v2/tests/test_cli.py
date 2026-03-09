@@ -544,7 +544,7 @@ class TestHandleRescue:
         # Mock preflight._validate_vm_exists
         monkeypatch.setattr(
             preflight, "_validate_vm_exists",
-            lambda c, p, z, vm: (True, {"disks": [], "status": "RUNNING", "metadata": {"items": []}}, None),
+            lambda c, p, z, vm, user_agent=None: (True, {"disks": [], "status": "RUNNING", "metadata": {"items": []}}, None),
         )
         monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: [])
 
@@ -596,7 +596,7 @@ class TestHandleRestore:
 
         monkeypatch.setattr(
             preflight, "_validate_vm_for_restore",
-            lambda c, p, z, vm: (True, {"disks": [], "metadata": {"items": [{"key": "rescue-mode", "value": "1"}]}}, None),
+            lambda c, p, z, vm, user_agent=None: (True, {"disks": [], "metadata": {"items": [{"key": "rescue-mode", "value": "1"}]}}, None),
         )
 
         class FakeOrchestrator:

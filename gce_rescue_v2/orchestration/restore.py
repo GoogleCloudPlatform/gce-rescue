@@ -13,7 +13,8 @@ Coordinates the restore workflow (exit rescue mode):
 """
 
 import time
-from ..core.config import RestoreConfig
+from ..core.config import RestoreConfig, build_user_agent
+from ..utils.os_detection import detect_os_type, detect_architecture, detect_os_flavor
 from ..validators import (
     ValidationRunner,
     CredentialsValidator,
@@ -64,7 +65,8 @@ class RestoreOrchestrator:
 
     def __init__(self, compute, project: str, zone: str, vm_name: str,
                  config: RestoreConfig = None, logger=None, log_file: str = None,
-                 suppress_progress: bool = False, progress_callback=None):
+                 suppress_progress: bool = False, progress_callback=None,
+                 session_id: str = None, mode: str = None):
         """
         Initialize restore orchestrator.
 
@@ -88,6 +90,13 @@ class RestoreOrchestrator:
         self.log_file = log_file
         self._suppress_progress = suppress_progress
         self._progress_callback = progress_callback
+        self.session_id = session_id
+        self.mode = mode
+
+        # OS info (detected during disk info retrieval)
+        self.os_type = None
+        self.architecture = None
+        self.os_flavor = None
 
         # State tracking
         self.state_tracker = StateTracker()
@@ -233,6 +242,14 @@ class RestoreOrchestrator:
         if self.logger:
             self.logger.error(message)
 
+    def _ua(self, step: str) -> str:
+        """Build User-Agent string for the given step."""
+        return build_user_agent(
+            session_id=self.session_id, command='restore',
+            os_type=self.os_type, arch=self.architecture,
+            flavor=self.os_flavor, mode=self.mode, step=step
+        )
+
     def set_resume_state(self, checkpoint: CheckpointData):
         """
         Set resume state from a checkpoint.
@@ -342,8 +359,8 @@ class RestoreOrchestrator:
 
         # Add validators with tracking labels
         runner.add(CredentialsValidator(self.compute, self.project, self.zone))
-        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='restore-val-iam'))
-        runner.add(VMRestoreStateValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label='restore-val-vm-state'))
+        runner.add(IAMPermissionsValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label=self._ua('val-iam')))
+        runner.add(VMRestoreStateValidator(self.compute, self.project, self.zone, self.vm_name, tracking_label=self._ua('val-vm-state')))
 
         # Run validations
         results = runner.run_all(self.logger)
@@ -423,7 +440,7 @@ class RestoreOrchestrator:
                     vm_name=self.vm_name,
                     timeout=self.config.vm_stop_timeout,
                     discard_local_ssd=has_local_ssd,
-                    tracking_label='restore-vm-stop'
+                    tracking_label=self._ua('vm-stop')
                 )
                 self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data, step_number=1)
                 if not result.success:
@@ -454,7 +471,7 @@ class RestoreOrchestrator:
                     result = detach_rescue.execute(
                         vm_name=self.vm_name,
                         device_name=self.rescue_device_name,
-                        tracking_label='restore-disk-detach-rescue'
+                        tracking_label=self._ua('disk-detach-rescue')
                     )
                     self.state_tracker.add_operation("Detach Rescue Disk", result.success, result.message, result.rollback_data, step_number=2)
                     if not result.success:
@@ -483,7 +500,7 @@ class RestoreOrchestrator:
                     result = detach_original.execute(
                         vm_name=self.vm_name,
                         device_name=self.original_device_name,
-                        tracking_label='restore-disk-detach-orig'
+                        tracking_label=self._ua('disk-detach-orig')
                     )
                     self.state_tracker.add_operation("Detach Original Disk", result.success, result.message, result.rollback_data, step_number=3)
                     if not result.success:
@@ -513,7 +530,7 @@ class RestoreOrchestrator:
                         vm_name=self.vm_name,
                         disk_name=self.original_disk_name,
                         boot=True,
-                        tracking_label='restore-disk-attach-orig'
+                        tracking_label=self._ua('disk-attach-orig')
                     )
                     self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data, step_number=4)
                     if not result.success:
@@ -536,7 +553,7 @@ class RestoreOrchestrator:
                     vm_name=self.vm_name,
                     metadata_items=clean_metadata,
                     preserve_existing=False,
-                    tracking_label='restore-meta-restore-orig'
+                    tracking_label=self._ua('meta-restore-orig')
                 )
                 self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data, step_number=5)
                 if not result.success:
@@ -567,7 +584,7 @@ class RestoreOrchestrator:
                     result = start_vm.execute(
                         vm_name=self.vm_name,
                         timeout=self.config.vm_start_timeout,
-                        tracking_label='restore-vm-start'
+                        tracking_label=self._ua('vm-start')
                     )
                     self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data, step_number=6)
                     if not result.success:
@@ -591,7 +608,7 @@ class RestoreOrchestrator:
                     self._log_debug("Deleting rescue disk...")
                     result = delete_rescue.execute(
                         disk_name=self.rescue_disk_name,
-                        tracking_label='restore-disk-delete-rescue'
+                        tracking_label=self._ua('disk-delete-rescue')
                     )
                     # Note: Don't add to state tracker (can't rollback deletion)
                     if not result.success:
@@ -639,6 +656,11 @@ class RestoreOrchestrator:
             zone=self.zone,
             instance=self.vm_name
         ).execute()
+
+        # Detect OS info for analytics User-Agent
+        self.os_type = detect_os_type(vm)
+        self.architecture = detect_architecture(vm)
+        self.os_flavor = detect_os_flavor(vm)
 
         # Get original disk from metadata (more reliable)
         metadata = vm.get('metadata', {})
