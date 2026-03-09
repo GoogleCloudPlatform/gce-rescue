@@ -4,20 +4,16 @@ on:
   push:
     branches:
       - v2-beta
+      - main
       - 'feature/v2*'
       - 'develop/v2*'
-    paths:
-      - 'gce_rescue_v2/**'
-      - '.github/workflows/v2-ci.yml'
   pull_request:
     branches:
       - v2-beta
       - main
-    paths:
-      - 'gce_rescue_v2/**'
 
 jobs:
-  test-v2:
+  unit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -42,11 +38,37 @@ jobs:
       run: |
         pip install -e .
 
-    - name: Run V2 tests
+    - name: Run tests
       run: |
         python -m pytest gce_rescue_v2/tests/ -v --tb=short
 
-  lint-v2:
+  cover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov
+
+    - name: Install package
+      run: |
+        pip install -e .
+
+    - name: Run tests with coverage
+      run: |
+        python -m pytest gce_rescue_v2/tests/ --cov=gce_rescue_v2 --cov-report=term-missing --cov-fail-under=50
+
+  lint:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
