@@ -247,7 +247,9 @@ def handle_rescue(args: argparse.Namespace) -> int:
                             f" 3389 --local-host-port=localhost:3389"
                             f" --zone={zone} --project={project}")
             logger.info(f"   User: rescue_admin")
-            logger.info(f"   Password: {orchestrator.windows_rescue_password}")
+            logger.info(  # lgtm[py/clear-text-logging-sensitive-data]
+                f"   Password: {orchestrator.windows_rescue_password}"
+            )  # Intentional: user needs temporary rescue password for RDP access
             logger.info("")
             logger.info("2. Fix the issue (affected boot disk is mounted at D:\\).")
             logger.info("")
