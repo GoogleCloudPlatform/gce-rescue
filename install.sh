@@ -157,10 +157,12 @@ ok "pip: $($PIP --version 2>&1 | awk '{print $2}')"
 # --- Step 4: Install gce-rescue ---
 info "Installing gce-rescue..."
 
-# Use archive URL (no git required)
-$PIP install --quiet --upgrade "$ARCHIVE" 2>/dev/null \
-  || $PIP install --quiet --upgrade "$ARCHIVE" --user 2>/dev/null \
-  || fail "pip install failed. Check network connectivity and try again."
+# Use archive URL (no git required). Show errors on failure.
+if ! $PIP install --upgrade "$ARCHIVE" 2>&1 | tail -5; then
+  info "Retrying with --user flag..."
+  $PIP install --upgrade "$ARCHIVE" --user \
+    || fail "pip install failed. Try manually: $PIP install $ARCHIVE"
+fi
 
 # --- Step 5: Verify ---
 if command -v gce-rescue >/dev/null 2>&1; then
