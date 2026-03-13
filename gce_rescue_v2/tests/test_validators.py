@@ -241,8 +241,8 @@ class TestVMStateValidator:
         assert result.passed is False
         assert "SEV_SNP" in result.message
 
-    def test_shielded_vm_secure_boot_blocked(self, mock_compute):
-        """Test Shielded VM with Secure Boot is blocked."""
+    def test_shielded_vm_secure_boot_allowed(self, mock_compute):
+        """Test Shielded VM with Secure Boot is allowed (rescue image is signed)."""
         payload = {
             "status": "RUNNING",
             "disks": [{"source": "projects/p/zones/z/disks/d", "boot": True, "deviceName": "d"}],
@@ -253,10 +253,7 @@ class TestVMStateValidator:
 
         result = validator.validate()
 
-        assert result.passed is False
-        assert "Shielded VM" in result.message
-        assert "Secure Boot" in result.message
-        assert "fix" in result.details
+        assert result.passed is True
 
     def test_shielded_vm_without_secure_boot_allowed(self, mock_compute):
         """Test Shielded VM without Secure Boot is allowed."""

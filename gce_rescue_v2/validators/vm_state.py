@@ -7,7 +7,7 @@ Validates that the VM exists and is in a valid state for rescue operations.
 from googleapiclient.errors import HttpError
 
 from .base import BaseValidator, ValidationResult
-from ..utils.os_detection import is_shielded_vm, is_confidential_vm, get_confidential_type
+from ..utils.os_detection import is_confidential_vm, get_confidential_type
 
 
 class VMStateValidator(BaseValidator):
@@ -152,30 +152,9 @@ class VMStateValidator(BaseValidator):
                     }
                 )
 
-            # Check for Shielded VM with Secure Boot (not supported)
-            if is_shielded_vm(vm):
-                return ValidationResult(
-                    validator_name=self.name,
-                    passed=False,
-                    message="Shielded VMs with Secure Boot are not supported",
-                    details={
-                        "vm_name": self.vm_name,
-                        "reason": (
-                            "Shielded VMs with Secure Boot enabled require signed boot disks. "
-                            "The rescue disk cannot boot with Secure Boot enabled."
-                        ),
-                        "fix": (
-                            "Options for Shielded VMs:\n"
-                            f"  1. Temporarily disable Secure Boot:\n"
-                            f"     gcloud compute instances stop {self.vm_name} --zone={self.zone}\n"
-                            f"     gcloud compute instances update {self.vm_name} --zone={self.zone} "
-                            "--no-shielded-secure-boot\n"
-                            "     Then run rescue again.\n"
-                            "  2. Use serial console for debugging\n"
-                            "  3. Create a snapshot and attach to another VM"
-                        )
-                    }
-                )
+            # Note: Shielded VMs with Secure Boot are supported.
+            # GCP's debian-cloud images are signed with Google's UEFI keys
+            # and boot fine with Secure Boot enabled.
 
             # Build result details
             details = {
