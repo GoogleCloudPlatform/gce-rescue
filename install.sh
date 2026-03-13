@@ -157,10 +157,19 @@ ok "pip: $($PIP --version 2>&1 | awk '{print $2}')"
 # --- Step 4: Install gce-rescue ---
 info "Installing gce-rescue..."
 
-# Use archive URL (no git required). Show full errors on failure.
-$PIP install --upgrade "$ARCHIVE" \
-  || $PIP install --upgrade "$ARCHIVE" --user \
-  || fail "pip install failed. Try manually: $PIP install $ARCHIVE"
+# Ensure build tools are available
+$PIP install --quiet --upgrade setuptools wheel 2>/dev/null \
+  || $PIP install --quiet --upgrade setuptools wheel --user 2>/dev/null \
+  || true
+
+# Use archive URL (no git required)
+# Try normal install, then --no-build-isolation (skips isolated build env),
+# then --user variants. Show errors only on final failure.
+$PIP install --upgrade "$ARCHIVE" 2>/dev/null \
+  || $PIP install --upgrade --no-build-isolation "$ARCHIVE" 2>/dev/null \
+  || $PIP install --upgrade "$ARCHIVE" --user 2>/dev/null \
+  || $PIP install --upgrade --no-build-isolation "$ARCHIVE" --user 2>/dev/null \
+  || { echo ""; $PIP install --upgrade --no-build-isolation "$ARCHIVE" --user; fail "pip install failed. Try manually: $PIP install $ARCHIVE"; }
 
 # --- Step 5: Verify ---
 if command -v gce-rescue >/dev/null 2>&1; then
