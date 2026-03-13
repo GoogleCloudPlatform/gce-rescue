@@ -1,58 +1,135 @@
 #!/bin/bash
-# GCE Rescue installer
-# Usage: curl -sSL https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/v2-beta/install.sh | bash
+# GCE Rescue installer (Linux / macOS / Cloud Shell / WSL)
+#
+# Usage:
+#   curl -sSL https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/v2-beta/install.sh | bash
+#
+# For Windows PowerShell, use install.ps1 instead.
 
 set -e
 
-REPO="https://github.com/GoogleCloudPlatform/gce-rescue.git@v2-beta"
-MIN_PYTHON="3.9"
+BRANCH="v2-beta"
+ARCHIVE="https://github.com/GoogleCloudPlatform/gce-rescue/archive/${BRANCH}.tar.gz"
+MIN_PYTHON_MINOR=9
 
-echo "Installing GCE Rescue..."
+info()  { echo "  $*"; }
+ok()    { echo "  [OK] $*"; }
+fail()  { echo "  [FAILED] $*"; exit 1; }
 
-# Find Python 3
+echo ""
+echo "GCE Rescue - Installer"
+echo "======================"
+echo ""
+
+# --- Step 1: Detect OS ---
+OS="$(uname -s)"
+case "$OS" in
+  Linux*)  PLATFORM="linux" ;;
+  Darwin*) PLATFORM="macos" ;;
+  *)       fail "Unsupported platform: $OS. Use install.ps1 for Windows." ;;
+esac
+info "Platform: $PLATFORM"
+
+# --- Step 2: Find or install Python >= 3.9 ---
 PYTHON=""
 for cmd in python3 python; do
   if command -v "$cmd" >/dev/null 2>&1; then
-    version=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
-    if [ -n "$version" ]; then
-      major=$(echo "$version" | cut -d. -f1)
-      minor=$(echo "$version" | cut -d. -f2)
-      if [ "$major" -ge 3 ] && [ "$minor" -ge 9 ]; then
-        PYTHON="$cmd"
-        break
-      fi
+    minor=$("$cmd" -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
+    major=$("$cmd" -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo "0")
+    if [ "$major" -eq 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ]; then
+      PYTHON="$cmd"
+      break
     fi
   fi
 done
 
 if [ -z "$PYTHON" ]; then
-  echo "Error: Python >= ${MIN_PYTHON} is required but not found."
-  echo ""
-  echo "Install Python:"
-  echo "  Debian/Ubuntu: sudo apt-get install -y python3 python3-pip"
-  echo "  RHEL/CentOS:   sudo yum install -y python3 python3-pip"
-  echo "  macOS:          brew install python3"
-  exit 1
+  info "Python >= 3.${MIN_PYTHON_MINOR} not found. Attempting to install..."
+  if [ "$PLATFORM" = "linux" ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+      sudo apt-get update -qq && sudo apt-get install -y -qq python3 python3-pip python3-venv >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+      sudo yum install -y -q python3 python3-pip >/dev/null 2>&1
+    elif command -v dnf >/dev/null 2>&1; then
+      sudo dnf install -y -q python3 python3-pip >/dev/null 2>&1
+    else
+      fail "Cannot auto-install Python. Install Python >= 3.${MIN_PYTHON_MINOR} manually and re-run."
+    fi
+  elif [ "$PLATFORM" = "macos" ]; then
+    if command -v brew >/dev/null 2>&1; then
+      brew install -q python3 2>/dev/null
+    else
+      fail "Install Python >= 3.${MIN_PYTHON_MINOR}: https://www.python.org/downloads/"
+    fi
+  fi
+  # Re-check
+  for cmd in python3 python; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      minor=$("$cmd" -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
+      major=$("$cmd" -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo "0")
+      if [ "$major" -eq 3 ] && [ "$minor" -ge "$MIN_PYTHON_MINOR" ]; then
+        PYTHON="$cmd"
+        break
+      fi
+    fi
+  done
+  [ -z "$PYTHON" ] && fail "Python installation failed. Install Python >= 3.${MIN_PYTHON_MINOR} manually."
 fi
+ok "Python: $($PYTHON --version 2>&1)"
 
-echo "  Python: $($PYTHON --version)"
+# --- Step 3: Ensure pip is available ---
+if ! $PYTHON -m pip --version >/dev/null 2>&1; then
+  info "pip not found. Installing..."
+  if [ "$PLATFORM" = "linux" ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+      sudo apt-get install -y -qq python3-pip >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+      sudo yum install -y -q python3-pip >/dev/null 2>&1
+    fi
+  fi
+  # Fallback: bootstrap pip
+  if ! $PYTHON -m pip --version >/dev/null 2>&1; then
+    curl -sSL https://bootstrap.pypa.io/get-pip.py | $PYTHON >/dev/null 2>&1 \
+      || fail "Cannot install pip. Install it manually: $PYTHON -m ensurepip"
+  fi
+fi
+ok "pip: $($PYTHON -m pip --version 2>&1 | awk '{print $2}')"
 
-# Install
-$PYTHON -m pip install --quiet --upgrade pip 2>/dev/null || true
-$PYTHON -m pip install --quiet "git+${REPO}" 2>/dev/null
+# --- Step 4: Install gce-rescue ---
+info "Installing gce-rescue..."
 
-# Verify
+# Use archive URL (no git required)
+$PYTHON -m pip install --quiet --upgrade "$ARCHIVE" 2>/dev/null \
+  || $PYTHON -m pip install --quiet --upgrade "$ARCHIVE" --user 2>/dev/null \
+  || fail "pip install failed. Check network connectivity and try again."
+
+# --- Step 5: Verify ---
+# Check multiple possible locations
 if command -v gce-rescue >/dev/null 2>&1; then
-  echo "  Version: $(gce-rescue --version 2>&1 | head -1)"
+  ok "gce-rescue $(gce-rescue --version 2>&1 | head -1)"
+elif $PYTHON -m gce_rescue_v2.cli --version >/dev/null 2>&1; then
+  # Installed but not in PATH (--user install)
+  USER_BIN="$($PYTHON -c 'import site; print(site.getusersitepackages().replace("lib/python/site-packages","bin").replace("site-packages","../../bin"))' 2>/dev/null || echo "")"
+  ok "gce-rescue installed (not in PATH)"
   echo ""
-  echo "Done. Run: gce-rescue --help"
-else
-  # pip installed to user site, not in PATH
-  INSTALL_PATH=$($PYTHON -m pip show gce-rescue 2>/dev/null | grep "^Location:" | cut -d' ' -f2)
+  echo "  Add to PATH by running:"
+  echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
   echo ""
-  echo "Installed, but 'gce-rescue' is not in PATH."
-  echo "Try: $PYTHON -m gce_rescue_v2.cli --help"
-  echo "Or add pip's bin directory to PATH:"
-  echo "  export PATH=\"\$($PYTHON -m site --user-base)/bin:\$PATH\""
+  echo "  Or run directly:"
+  echo "    $PYTHON -m gce_rescue_v2.cli --help"
+  echo ""
   exit 0
+else
+  fail "Installation verification failed."
 fi
+
+# --- Done ---
+echo ""
+echo "  Usage:"
+echo "    gce-rescue diagnose VM_NAME --zone=ZONE"
+echo "    gce-rescue repair   VM_NAME --zone=ZONE"
+echo "    gce-rescue rescue   VM_NAME --zone=ZONE"
+echo "    gce-rescue restore  VM_NAME --zone=ZONE"
+echo ""
+echo "  Run 'gce-rescue --help' for more options."
+echo ""
