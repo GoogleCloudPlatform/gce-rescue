@@ -1,5 +1,5 @@
 #!/bin/bash
-# GCE Rescue installer (Linux / macOS / Cloud Shell / WSL)
+# GCE Rescue installer (Linux / macOS / Cloud Shell / WSL / Google Corp)
 #
 # Usage:
 #   curl -sSL https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/v2-beta/install.sh | bash
@@ -30,7 +30,7 @@ case "$OS" in
 esac
 info "Platform: $PLATFORM"
 
-# --- Step 2: Find or install Python >= 3.9 ---
+# --- Step 2: Find Python >= 3.9 ---
 PYTHON=""
 for cmd in python3 python; do
   if command -v "$cmd" >/dev/null 2>&1; then
@@ -77,69 +77,98 @@ if [ -z "$PYTHON" ]; then
 fi
 ok "Python: $($PYTHON --version 2>&1)"
 
-# --- Step 3: Ensure pip is available ---
-if ! $PYTHON -m pip --version >/dev/null 2>&1; then
-  info "pip not found. Installing..."
+# --- Step 3: Find a working pip ---
+PIP=""
 
-  # Try ensurepip first
-  $PYTHON -m ensurepip --upgrade >/dev/null 2>&1 || true
+# Option 1: python -m pip
+if $PYTHON -m pip --version >/dev/null 2>&1; then
+  PIP="$PYTHON -m pip"
+fi
+
+# Option 2: standalone pip3 / pip
+if [ -z "$PIP" ]; then
+  for pipcmd in pip3 pip; do
+    if command -v "$pipcmd" >/dev/null 2>&1; then
+      # Verify it's for the right Python
+      pip_python=$("$pipcmd" --version 2>/dev/null | grep -oP 'python \K[0-9]+\.[0-9]+' || echo "")
+      if [ -n "$pip_python" ]; then
+        pip_major=$(echo "$pip_python" | cut -d. -f1)
+        pip_minor=$(echo "$pip_python" | cut -d. -f2)
+        if [ "$pip_major" -eq 3 ] && [ "$pip_minor" -ge "$MIN_PYTHON_MINOR" ]; then
+          PIP="$pipcmd"
+          break
+        fi
+      else
+        # Can't verify version, use it anyway
+        PIP="$pipcmd"
+        break
+      fi
+    fi
+  done
+fi
+
+# Option 3: Try to install pip
+if [ -z "$PIP" ]; then
+  info "pip not found. Attempting to install..."
+
+  # Try ensurepip
+  $PYTHON -m ensurepip --upgrade >/dev/null 2>&1 && PIP="$PYTHON -m pip" || true
 
   # Try package manager
-  if ! $PYTHON -m pip --version >/dev/null 2>&1; then
-    if [ "$PLATFORM" = "linux" ]; then
-      if command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip >/dev/null 2>&1
-      elif command -v yum >/dev/null 2>&1; then
-        sudo yum install -y -q python3-pip >/dev/null 2>&1
-      elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y -q python3-pip >/dev/null 2>&1
-      fi
-    elif [ "$PLATFORM" = "macos" ]; then
-      # macOS system Python often lacks pip; install via brew Python instead
-      if command -v brew >/dev/null 2>&1; then
-        info "macOS system Python lacks pip. Installing Python via Homebrew..."
-        brew install -q python3 2>/dev/null
-        # Refresh: brew Python includes pip
-        for cmd in python3 python; do
-          if command -v "$cmd" >/dev/null 2>&1; then
-            if $cmd -m pip --version >/dev/null 2>&1; then
-              PYTHON="$cmd"
-              break
-            fi
-          fi
-        done
-      fi
+  if [ -z "$PIP" ] && [ "$PLATFORM" = "linux" ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+      sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+      sudo yum install -y -q python3-pip >/dev/null 2>&1
+    elif command -v dnf >/dev/null 2>&1; then
+      sudo dnf install -y -q python3-pip >/dev/null 2>&1
+    fi
+    $PYTHON -m pip --version >/dev/null 2>&1 && PIP="$PYTHON -m pip" || true
+  fi
+
+  # macOS: try brew Python (includes pip)
+  if [ -z "$PIP" ] && [ "$PLATFORM" = "macos" ]; then
+    if command -v brew >/dev/null 2>&1; then
+      info "Installing Python via Homebrew (includes pip)..."
+      brew install -q python3 2>/dev/null
+      for cmd in python3 python; do
+        if command -v "$cmd" >/dev/null 2>&1 && $cmd -m pip --version >/dev/null 2>&1; then
+          PYTHON="$cmd"
+          PIP="$cmd -m pip"
+          break
+        fi
+      done
     fi
   fi
 
   # Last resort: get-pip.py
-  if ! $PYTHON -m pip --version >/dev/null 2>&1; then
-    curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py \
-      && $PYTHON /tmp/get-pip.py --quiet >/dev/null 2>&1 \
-      && rm -f /tmp/get-pip.py \
-      || fail "Cannot install pip. Try: brew install python3 (macOS) or sudo apt install python3-pip (Linux)"
+  if [ -z "$PIP" ]; then
+    curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py 2>/dev/null \
+      && $PYTHON /tmp/get-pip.py --user --quiet 2>/dev/null \
+      && rm -f /tmp/get-pip.py || true
+    $PYTHON -m pip --version >/dev/null 2>&1 && PIP="$PYTHON -m pip" || true
   fi
+
+  [ -z "$PIP" ] && fail "Cannot install pip.\n\n  Try one of:\n    brew install python3          (macOS)\n    sudo apt install python3-pip  (Debian/Ubuntu)\n    sudo yum install python3-pip  (RHEL/CentOS)\n    curl https://bootstrap.pypa.io/get-pip.py | python3"
 fi
-ok "pip: $($PYTHON -m pip --version 2>&1 | awk '{print $2}')"
+
+ok "pip: $($PIP --version 2>&1 | awk '{print $2}')"
 
 # --- Step 4: Install gce-rescue ---
 info "Installing gce-rescue..."
 
 # Use archive URL (no git required)
-$PYTHON -m pip install --quiet --upgrade "$ARCHIVE" 2>/dev/null \
-  || $PYTHON -m pip install --quiet --upgrade "$ARCHIVE" --user 2>/dev/null \
+$PIP install --quiet --upgrade "$ARCHIVE" 2>/dev/null \
+  || $PIP install --quiet --upgrade "$ARCHIVE" --user 2>/dev/null \
   || fail "pip install failed. Check network connectivity and try again."
 
 # --- Step 5: Verify ---
-# Check multiple possible locations
 if command -v gce-rescue >/dev/null 2>&1; then
   ok "gce-rescue $(gce-rescue --version 2>&1 | head -1)"
 elif $PYTHON -m gce_rescue_v2.cli --version >/dev/null 2>&1; then
-  # Installed but not in PATH (--user install)
-  USER_BIN="$($PYTHON -c 'import site; print(site.getusersitepackages().replace("lib/python/site-packages","bin").replace("site-packages","../../bin"))' 2>/dev/null || echo "")"
   ok "gce-rescue installed (not in PATH)"
   echo ""
-  echo "  Add to PATH by running:"
+  echo "  Add to PATH:"
   echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
   echo ""
   echo "  Or run directly:"
