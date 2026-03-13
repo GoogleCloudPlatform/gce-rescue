@@ -47,8 +47,18 @@ gce-rescue restore my-vm --zone=us-central1-a
 
 ## Installation
 
+**Option 1: pip install (recommended)**
+
 ```bash
 pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
+```
+
+**Option 2: Clone and install**
+
+```bash
+git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
+cd gce-rescue
+pip install .
 ```
 
 Verify:
