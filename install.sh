@@ -80,17 +80,44 @@ ok "Python: $($PYTHON --version 2>&1)"
 # --- Step 3: Ensure pip is available ---
 if ! $PYTHON -m pip --version >/dev/null 2>&1; then
   info "pip not found. Installing..."
-  if [ "$PLATFORM" = "linux" ]; then
-    if command -v apt-get >/dev/null 2>&1; then
-      sudo apt-get install -y -qq python3-pip >/dev/null 2>&1
-    elif command -v yum >/dev/null 2>&1; then
-      sudo yum install -y -q python3-pip >/dev/null 2>&1
+
+  # Try ensurepip first
+  $PYTHON -m ensurepip --upgrade >/dev/null 2>&1 || true
+
+  # Try package manager
+  if ! $PYTHON -m pip --version >/dev/null 2>&1; then
+    if [ "$PLATFORM" = "linux" ]; then
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip >/dev/null 2>&1
+      elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y -q python3-pip >/dev/null 2>&1
+      elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y -q python3-pip >/dev/null 2>&1
+      fi
+    elif [ "$PLATFORM" = "macos" ]; then
+      # macOS system Python often lacks pip; install via brew Python instead
+      if command -v brew >/dev/null 2>&1; then
+        info "macOS system Python lacks pip. Installing Python via Homebrew..."
+        brew install -q python3 2>/dev/null
+        # Refresh: brew Python includes pip
+        for cmd in python3 python; do
+          if command -v "$cmd" >/dev/null 2>&1; then
+            if $cmd -m pip --version >/dev/null 2>&1; then
+              PYTHON="$cmd"
+              break
+            fi
+          fi
+        done
+      fi
     fi
   fi
-  # Fallback: bootstrap pip
+
+  # Last resort: get-pip.py
   if ! $PYTHON -m pip --version >/dev/null 2>&1; then
-    curl -sSL https://bootstrap.pypa.io/get-pip.py | $PYTHON >/dev/null 2>&1 \
-      || fail "Cannot install pip. Install it manually: $PYTHON -m ensurepip"
+    curl -sSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py \
+      && $PYTHON /tmp/get-pip.py --quiet >/dev/null 2>&1 \
+      && rm -f /tmp/get-pip.py \
+      || fail "Cannot install pip. Try: brew install python3 (macOS) or sudo apt install python3-pip (Linux)"
   fi
 fi
 ok "pip: $($PYTHON -m pip --version 2>&1 | awk '{print $2}')"
