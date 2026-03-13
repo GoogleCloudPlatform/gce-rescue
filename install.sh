@@ -157,19 +157,52 @@ ok "pip: $($PIP --version 2>&1 | awk '{print $2}')"
 # --- Step 4: Install gce-rescue ---
 info "Installing gce-rescue..."
 
-# Ensure build tools are available
-$PIP install --quiet --upgrade setuptools wheel 2>/dev/null \
-  || $PIP install --quiet --upgrade setuptools wheel --user 2>/dev/null \
-  || true
+# Download and extract (avoids pip build isolation issues)
+TMPDIR=$(mktemp -d)
+info "Downloading..."
+curl -sSL "$ARCHIVE" -o "$TMPDIR/gce-rescue.tar.gz" \
+  || fail "Download failed. Check network connectivity."
+tar xzf "$TMPDIR/gce-rescue.tar.gz" -C "$TMPDIR" \
+  || fail "Extract failed."
+SRC="$TMPDIR/gce-rescue-${BRANCH}"
 
-# Use archive URL (no git required)
-# Try normal install, then --no-build-isolation (skips isolated build env),
-# then --user variants. Show errors only on final failure.
-$PIP install --upgrade "$ARCHIVE" 2>/dev/null \
-  || $PIP install --upgrade --no-build-isolation "$ARCHIVE" 2>/dev/null \
-  || $PIP install --upgrade "$ARCHIVE" --user 2>/dev/null \
-  || $PIP install --upgrade --no-build-isolation "$ARCHIVE" --user 2>/dev/null \
-  || { echo ""; $PIP install --upgrade --no-build-isolation "$ARCHIVE" --user; fail "pip install failed. Try manually: $PIP install $ARCHIVE"; }
+# Install: try pip methods, then setup.py directly
+INSTALLED=false
+
+# Method 1: pip install from local path
+if [ "$INSTALLED" = false ]; then
+  $PIP install --quiet "$SRC" 2>/dev/null && INSTALLED=true || true
+fi
+
+# Method 2: pip with --no-build-isolation
+if [ "$INSTALLED" = false ]; then
+  $PIP install --quiet --no-build-isolation "$SRC" 2>/dev/null && INSTALLED=true || true
+fi
+
+# Method 3: pip install --user
+if [ "$INSTALLED" = false ]; then
+  $PIP install --quiet "$SRC" --user 2>/dev/null && INSTALLED=true || true
+fi
+
+# Method 4: pip --user --no-build-isolation
+if [ "$INSTALLED" = false ]; then
+  $PIP install --quiet --no-build-isolation "$SRC" --user 2>/dev/null && INSTALLED=true || true
+fi
+
+# Method 5: setup.py directly (no pip build system)
+if [ "$INSTALLED" = false ]; then
+  (cd "$SRC" && $PYTHON setup.py install --user --quiet 2>/dev/null) && INSTALLED=true || true
+fi
+
+# Method 6: setup.py as root
+if [ "$INSTALLED" = false ]; then
+  (cd "$SRC" && $PYTHON setup.py install --quiet 2>/dev/null) && INSTALLED=true || true
+fi
+
+# Cleanup
+rm -rf "$TMPDIR"
+
+[ "$INSTALLED" = false ] && fail "All install methods failed. Try manually:\n    $PIP install git+https://github.com/GoogleCloudPlatform/gce-rescue.git@${BRANCH}"
 
 # --- Step 5: Verify ---
 if command -v gce-rescue >/dev/null 2>&1; then
