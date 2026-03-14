@@ -297,7 +297,7 @@ PERMISSION_DENIED = ErrorSuggestion(
 INSUFFICIENT_SCOPES = ErrorSuggestion(
     message="Insufficient authentication scopes",
     causes=[
-        "Your credentials don't include Compute Engine API scopes",
+        "gce-rescue cannot access Compute Engine APIs with your current credentials",
         "Application default credentials were created without compute scopes",
     ],
     suggestions=[

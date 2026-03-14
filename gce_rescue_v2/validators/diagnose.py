@@ -124,8 +124,8 @@ class DiagnosePermissionsValidator(BaseValidator):
                         message="Insufficient authentication scopes",
                         details={
                             "fix": (
-                                "Your credentials don't include Compute Engine "
-                                "API scopes.\n"
+                                "gce-rescue cannot access Compute Engine APIs "
+                                "with your current credentials.\n"
                                 "      Run: gcloud auth application-default login"
                             ),
                         }

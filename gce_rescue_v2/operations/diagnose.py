@@ -315,8 +315,8 @@ class DiagnoseOperation(BaseOperation):
                             'diagnosis_status': 'unable_to_diagnose',
                             'boot_errors': [],
                             'recommendations': [
-                                "Your credentials don't include Compute Engine "
-                                "API scopes",
+                                "gce-rescue cannot access Compute Engine APIs "
+                                "with your current credentials",
                                 "Run: gcloud auth application-default login",
                                 "Then try again"
                             ]
