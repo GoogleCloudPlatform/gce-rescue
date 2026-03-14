@@ -84,39 +84,42 @@
     $pythonCmd = Get-PythonCommand
 
     if (-not $pythonCmd) {
-        Write-Warn "Python not found. Installing..."
+        Write-Fail "Python not found."
         Write-Host ""
+        $install = Read-Host "  Install Python 3.12 now? (Y/n)"
+        if ($install -ne "n" -and $install -ne "N") {
+            $pyInstalled = $false
+            $pyUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+            $pyInstaller = "$env:TEMP\python-installer.exe"
+            try {
+                Write-Host "  Downloading Python 3.12..." -ForegroundColor Cyan
+                Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing
+                Write-Host "  Installing Python (this may take a minute)..." -ForegroundColor Cyan
+                Start-Process $pyInstaller -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait
+                Remove-Item $pyInstaller -ErrorAction SilentlyContinue
 
-        $pyInstalled = $false
+                # Refresh PATH
+                $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                            [System.Environment]::GetEnvironmentVariable("Path", "User")
+                $pythonCmd = Get-PythonCommand
+                if ($pythonCmd) { $pyInstalled = $true }
+            } catch {
+                Write-Warn "Download failed: $_"
+            }
 
-        # Try direct download first (works on GCE VMs and managed machines)
-        $pyUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
-        $pyInstaller = "$env:TEMP\python-installer.exe"
-        try {
-            Write-Host "  Downloading Python 3.12..." -ForegroundColor Cyan
-            Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing
-            Write-Host "  Installing Python (this may take a minute)..." -ForegroundColor Cyan
-            Start-Process $pyInstaller -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait
-            Remove-Item $pyInstaller -ErrorAction SilentlyContinue
-
-            # Refresh PATH
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                        [System.Environment]::GetEnvironmentVariable("Path", "User")
-            $pythonCmd = Get-PythonCommand
-            if ($pythonCmd) { $pyInstalled = $true }
-        } catch {
-            Write-Warn "Direct download failed: $_"
-        }
-
-        if (-not $pyInstalled) {
-            Write-Fail "Could not install Python automatically."
+            if (-not $pyInstalled) {
+                Write-Fail "Python installation failed."
+                Write-Host "  Download manually: https://www.python.org/downloads/"
+                Write-Host "  IMPORTANT: Check 'Add Python to PATH' during installation."
+                return
+            }
+        } else {
             Write-Host ""
-            Write-Host "  Install Python manually, then re-run this installer:" -ForegroundColor White
-            Write-Host ""
+            Write-Host "  Install Python manually:" -ForegroundColor White
             Write-Host "    https://www.python.org/downloads/" -ForegroundColor Yellow
             Write-Host "    IMPORTANT: Check 'Add Python to PATH' during installation."
             Write-Host ""
-            Write-Host "  After installing, open a new PowerShell window and run:" -ForegroundColor White
+            Write-Host "  Then re-run:" -ForegroundColor White
             Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
             return
         }
@@ -146,18 +149,39 @@
     if (-not $hasGcloud) {
         Write-Fail "gcloud CLI not found."
         Write-Host ""
-        Write-Host "  Install gcloud CLI first, then re-run this installer:" -ForegroundColor White
-        Write-Host ""
-        $hasWinget = Get-Command "winget" -ErrorAction SilentlyContinue
-        if ($hasWinget) {
-            Write-Host "    winget install Google.CloudSDK" -ForegroundColor Yellow
+        $install = Read-Host "  Install gcloud CLI now? (Y/n)"
+        if ($install -ne "n" -and $install -ne "N") {
+            $gcloudUrl = "https://dl.google.com/dl/cloudsdk/channels/rapid/GoogleCloudSDKInstaller.exe"
+            $gcloudInstaller = "$env:TEMP\gcloud-installer.exe"
+            try {
+                Write-Host "  Downloading gcloud CLI..." -ForegroundColor Cyan
+                Invoke-WebRequest -Uri $gcloudUrl -OutFile $gcloudInstaller -UseBasicParsing
+                Write-Host "  Installing gcloud CLI (this may take a few minutes)..." -ForegroundColor Cyan
+                Start-Process $gcloudInstaller -ArgumentList "/S" -Wait
+                Remove-Item $gcloudInstaller -ErrorAction SilentlyContinue
+
+                # Refresh PATH
+                $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                            [System.Environment]::GetEnvironmentVariable("Path", "User")
+                $hasGcloud = Get-Command "gcloud" -ErrorAction SilentlyContinue
+                if (-not $hasGcloud) {
+                    Write-Warn "gcloud installed. Reopen PowerShell and re-run the installer."
+                    return
+                }
+            } catch {
+                Write-Fail "Download failed: $_"
+                Write-Host "  Install manually: https://cloud.google.com/sdk/docs/install"
+                return
+            }
         } else {
-            Write-Host "    https://cloud.google.com/sdk/docs/install"
+            Write-Host ""
+            Write-Host "  Install gcloud CLI manually:" -ForegroundColor White
+            Write-Host "    https://cloud.google.com/sdk/docs/install" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "  Then re-run:" -ForegroundColor White
+            Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
+            return
         }
-        Write-Host ""
-        Write-Host "  After installing, open a new PowerShell window and re-run:" -ForegroundColor White
-        Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
-        return
     }
 
     try {
