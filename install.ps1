@@ -81,29 +81,26 @@ if (-not $pythonCmd) {
     Write-Host "  Install Python using one of these methods:" -ForegroundColor White
     Write-Host ""
 
-    # Check if winget is available
     if (Test-Command "winget") {
-        Write-Host "  Option 1 (recommended):"
         Write-Host "    winget install Python.Python.3.12" -ForegroundColor Yellow
         Write-Host ""
         $install = Read-Host "  Install Python via winget now? (Y/n)"
         if ($install -ne "n" -and $install -ne "N") {
             Write-Host "  Installing Python..." -ForegroundColor Cyan
-            winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements
-            # Refresh PATH
+            Start-Process -FilePath "winget" -ArgumentList "install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent" -Wait -NoNewWindow
+            # Refresh PATH from registry
             $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                         [System.Environment]::GetEnvironmentVariable("Path", "User")
             $pythonCmd = Get-PythonCommand
             if (-not $pythonCmd) {
-                Write-Fail "Python installed but not found in PATH."
-                Write-Host "  Close and reopen PowerShell, then run this script again."
+                Write-Warn "Python installed. Reopen PowerShell and re-run the installer."
                 exit 1
             }
         } else {
             exit 1
         }
     } else {
-        Write-Host "  Download from: https://www.python.org/downloads/"
+        Write-Host "  Download from: https://www.python.org/downloads/" -ForegroundColor White
         Write-Host "  IMPORTANT: Check 'Add Python to PATH' during installation."
         exit 1
     }
@@ -134,22 +131,20 @@ if (-not (Test-Command "gcloud")) {
     Write-Host ""
 
     if (Test-Command "winget") {
-        Write-Host "  Option 1 (recommended):"
         Write-Host "    winget install Google.CloudSDK" -ForegroundColor Yellow
         Write-Host ""
         $install = Read-Host "  Install gcloud CLI via winget now? (Y/n)"
         if ($install -ne "n" -and $install -ne "N") {
             Write-Host "  Installing gcloud CLI (this may take a few minutes)..." -ForegroundColor Cyan
-            winget install Google.CloudSDK --accept-package-agreements --accept-source-agreements
+            Start-Process -FilePath "winget" -ArgumentList "install Google.CloudSDK --accept-package-agreements --accept-source-agreements --silent" -Wait -NoNewWindow
             $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                         [System.Environment]::GetEnvironmentVariable("Path", "User")
             if (-not (Test-Command "gcloud")) {
-                Write-Fail "gcloud installed but not found in PATH."
-                Write-Host "  Close and reopen PowerShell, then run this script again."
+                Write-Warn "gcloud installed. Reopen PowerShell and re-run the installer."
                 exit 1
             }
         } else {
-            Write-Host "  Install manually: https://cloud.google.com/sdk/docs/install"
+            Write-Host "  Install from: https://cloud.google.com/sdk/docs/install"
             exit 1
         }
     } else {
