@@ -62,23 +62,6 @@ gcloud auth application-default login
 
 ## Usage
 
-```bash
-# Diagnose boot issues (read-only)
-gce-rescue diagnose my-vm --zone=us-central1-a
-
-# Auto-fix (Linux, currently fstab errors)
-gce-rescue repair my-vm --zone=us-central1-a
-
-# Manual fix (Linux + Windows)
-gce-rescue rescue my-vm --zone=us-central1-a
-# SSH/RDP in, fix the issue, then:
-gce-rescue restore my-vm --zone=us-central1-a
-```
-
-## Commands
-
-All commands operate on the same VM instance:
-
 | Command | What it does | Modifies VM? |
 |---------|-------------|:---:|
 | `diagnose` | Identifies boot errors from serial console output | No |
@@ -86,26 +69,25 @@ All commands operate on the same VM instance:
 | `rescue` | Provides a rescue environment for investigation via SSH/RDP | Yes |
 | `restore` | Reverses rescue, puts your fixed boot disk back | Yes |
 
-Repair and rescue operations create a snapshot before changes, roll back
-automatically on failure, and can resume if interrupted.
+1. **Start with diagnose** — understand what's wrong (safe, read-only)
+   ```bash
+   gce-rescue diagnose VM_NAME --zone=ZONE
+   ```
 
-```
-VM won't boot
-    |
-    +-- Not sure what's wrong?
-    |   gce-rescue diagnose    (read-only, safe anytime)
-    |
-    +-- diagnose found a fixable issue (e.g. fstab)?
-    |   gce-rescue repair      (auto-fix, Linux only)
-    |
-    +-- Need manual access to the disk?
-    |   gce-rescue rescue      (enter rescue mode)
-    |   SSH/RDP in and fix
-    |   gce-rescue restore     (exit rescue mode)
-    |
-    +-- VM stuck from a previous rescue?
-        gce-rescue restore     (or re-run rescue to resume/rollback)
-```
+2. **Auto-fix available?** — let repair handle it automatically
+   ```bash
+   gce-rescue repair VM_NAME --zone=ZONE
+   ```
+
+3. **Need manual access?** — enter rescue mode, fix it yourself
+   ```bash
+   gce-rescue rescue VM_NAME --zone=ZONE
+   # SSH/RDP in, fix the issue on /mnt/sysroot
+   gce-rescue restore VM_NAME --zone=ZONE
+   ```
+
+All operations create a snapshot before changes, roll back automatically on
+failure, and can resume if interrupted.
 
 ### Flags
 
