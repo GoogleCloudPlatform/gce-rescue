@@ -271,7 +271,8 @@ PIP_FLAGS="--user"
 if ! "$PYTHON_CMD" -m pip install --user --dry-run pip >/dev/null 2>&1; then
     PIP_FLAGS="--break-system-packages"
 fi
-FILTER_NOISE='grep -v "^WARNING:" | grep -v "^ERROR: pip" | grep -v "requires protobuf" | grep -v "which is incompatible"'
+PIP_FLAGS="$PIP_FLAGS --no-warn-script-location"
+FILTER_NOISE='grep -v "^WARNING:" | grep -v "^ERROR: pip" | grep -v "requires protobuf" | grep -v "which is incompatible" | grep -v "^\[notice\]"'
 
 # Check if already installed
 INSTALLED=false
@@ -469,11 +470,11 @@ if has_command gce-rescue; then
     echo "  gce-rescue rescue VM_NAME --zone=ZONE"
     echo "  gce-rescue restore VM_NAME --zone=ZONE"
 else
-    echo "To activate gce-rescue, run:"
+    echo "Run this to activate gce-rescue in your current terminal:"
     echo ""
-    echo "  source ~/.bashrc"
+    echo "  source ~/.bashrc && gce-rescue --help"
     echo ""
-    echo "Then:"
+    echo "Quick start:"
     echo "  gce-rescue diagnose VM_NAME --zone=ZONE"
     echo "  gce-rescue repair VM_NAME --zone=ZONE"
     echo "  gce-rescue rescue VM_NAME --zone=ZONE"
