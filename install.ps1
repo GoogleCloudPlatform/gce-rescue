@@ -86,7 +86,7 @@
             Write-Host "  Downloading Python 3.12..." -ForegroundColor Cyan
             Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing
             Write-Host "  Installing Python (this may take a minute)..." -ForegroundColor Cyan
-            Start-Process $pyInstaller -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait
+            Start-Process $pyInstaller -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=0" -Wait
             Remove-Item $pyInstaller -ErrorAction SilentlyContinue
 
             # Refresh PATH
