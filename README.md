@@ -29,7 +29,7 @@ gce-rescue repair my-vm --zone=us-central1-a      # Auto-fix it
 
 ### Google Cloud Shell (recommended)
 
-Open [Cloud Shell](https://shell.cloud.google.com) — Python, gcloud, and authentication are already set up.
+Open <a href="https://shell.cloud.google.com" target="_blank">Cloud Shell</a> — Python, gcloud, and authentication are already set up.
 
 ```bash
 pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
