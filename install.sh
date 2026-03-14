@@ -251,18 +251,27 @@ ok "gce-rescue $INSTALLED_VER installed"
 step "4/5" "Checking PATH..."
 
 # Find the scripts/bin directory where pip installed gce-rescue
-# Check user site first (pip installs here when system dir is not writable)
-USER_SCRIPTS_DIR=$("$PYTHON_CMD" -c "import site; print(site.getusersitepackages().replace('site-packages','../../bin'))" 2>/dev/null) || true
-SYSTEM_SCRIPTS_DIR=$("$PYTHON_CMD" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null) || true
+# Try multiple locations and use the one that has the binary
+USER_BIN="$("$PYTHON_CMD" -c "import site; print(site.getuserbase())" 2>/dev/null)/bin" || true
+LOCAL_BIN="$HOME/.local/bin"
+SYSTEM_BIN=$("$PYTHON_CMD" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null) || true
 
-# Use whichever directory actually contains gce-rescue
-if [ -n "$USER_SCRIPTS_DIR" ] && [ -f "$USER_SCRIPTS_DIR/gce-rescue" ]; then
-    SCRIPTS_DIR="$USER_SCRIPTS_DIR"
-elif [ -n "$SYSTEM_SCRIPTS_DIR" ] && [ -f "$SYSTEM_SCRIPTS_DIR/gce-rescue" ]; then
-    SCRIPTS_DIR="$SYSTEM_SCRIPTS_DIR"
-else
-    # Fallback: common user bin location
-    SCRIPTS_DIR="$HOME/.local/bin"
+SCRIPTS_DIR=""
+for dir in "$USER_BIN" "$LOCAL_BIN" "$SYSTEM_BIN"; do
+    if [ -n "$dir" ] && [ -f "$dir/gce-rescue" ]; then
+        SCRIPTS_DIR="$dir"
+        break
+    fi
+done
+
+# Fallback if binary not found in any known location
+if [ -z "$SCRIPTS_DIR" ]; then
+    # Check pip show for the install location
+    SCRIPTS_DIR=$("$PYTHON_CMD" -m pip show -f gce-rescue 2>/dev/null \
+        | grep "Location:" | awk '{print $2}' \
+        | sed 's|/lib/python.*/site-packages||')/bin || true
+    # Last resort
+    [ -z "$SCRIPTS_DIR" ] && SCRIPTS_DIR="$LOCAL_BIN"
 fi
 
 if has_command gce-rescue; then
@@ -331,11 +340,16 @@ if [ -n "$PROJECT" ] && [ "$PROJECT" != "(unset)" ]; then
     ok "Project: $PROJECT"
 else
     warn "No default project set."
-    read -r -p "  Enter your GCP project ID: " PROJECT_INPUT < /dev/tty
-    if [ -n "$PROJECT_INPUT" ]; then
-        gcloud config set project "$PROJECT_INPUT"
-        PROJECT="$PROJECT_INPUT"
-        ok "Project: $PROJECT"
+    if [ -t 0 ] || [ -e /dev/tty ]; then
+        printf "  Enter your GCP project ID: "
+        read -r PROJECT_INPUT < /dev/tty
+        if [ -n "$PROJECT_INPUT" ]; then
+            gcloud config set project "$PROJECT_INPUT" 2>/dev/null
+            PROJECT="$PROJECT_INPUT"
+            ok "Project: $PROJECT"
+        fi
+    else
+        echo "  Set project with: gcloud config set project PROJECT_ID"
     fi
 fi
 
