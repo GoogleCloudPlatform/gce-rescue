@@ -11,7 +11,7 @@
     irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex
 #>
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 # --- Configuration ---
 $REPO_URL = "https://github.com/gokulr94/gce-rescue/archive/refs/heads/v2-beta.zip"
@@ -158,7 +158,7 @@ if (-not (Test-Command "gcloud")) {
     }
 }
 
-$gcloudVer = & gcloud version --format="value(Google Cloud SDK)" 2>$null
+$gcloudVer = (& gcloud --version 2>$null | Select-Object -First 1) -replace "Google Cloud SDK ", ""
 Write-OK "gcloud CLI $gcloudVer"
 
 # ============================================================
