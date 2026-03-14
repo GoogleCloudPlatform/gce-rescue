@@ -115,22 +115,42 @@ class DiagnosePermissionsValidator(BaseValidator):
                     }
                 )
             elif e.resp.status == 403:
-                # testIamPermissions itself requires compute.instances.list
-                # at the project level. In production environments, users often
-                # have instance-level access without project-level list.
-                # Pass through and let the actual API calls validate access.
-                return ValidationResult(
-                    validator_name=self.name,
-                    passed=True,
-                    message="Skipped (insufficient access to testIamPermissions API)",
-                    details={
-                        "note": (
-                            "Could not pre-check permissions because "
-                            "testIamPermissions requires compute.instances.list. "
-                            "Actual permissions will be validated during execution."
-                        ),
-                    }
-                )
+                error_str = str(e)
+                if ('insufficient authentication scopes' in error_str.lower()
+                        or 'insufficientPermissions' in error_str):
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Insufficient authentication scopes",
+                        details={
+                            "fix": (
+                                "Your credentials don't include Compute Engine "
+                                "API scopes.\n"
+                                "      Re-authenticate with:\n"
+                                "        $ gcloud auth login\n"
+                                "        $ gcloud auth application-default login"
+                            ),
+                        }
+                    )
+                else:
+                    # testIamPermissions itself requires compute.instances.list
+                    # at the project level. In production environments, users
+                    # often have instance-level access without project-level
+                    # list. Pass through and let actual API calls validate.
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=True,
+                        message="Skipped (insufficient access to testIamPermissions API)",
+                        details={
+                            "note": (
+                                "Could not pre-check permissions because "
+                                "testIamPermissions requires "
+                                "compute.instances.list. "
+                                "Actual permissions will be validated "
+                                "during execution."
+                            ),
+                        }
+                    )
             else:
                 return ValidationResult(
                     validator_name=self.name,

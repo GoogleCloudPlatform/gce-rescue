@@ -105,15 +105,41 @@ def _parse_api_error(e: Exception, vm_name: str, zone: str, project: str = None)
         return "\n".join(lines)
 
     if 'forbidden' in error_str.lower() or 'permission' in error_str.lower() or '403' in error_str:
-        lines = [
-            "Permission denied.",
-        ]
-        if project:
-            lines.append(f"  Project: {project}")
-        lines.append("")
-        lines.append("To verify project access, run:")
-        lines.append("  $ gcloud projects list")
-        lines.append("")
+        # Distinguish between OAuth scope errors and IAM permission errors
+        if 'insufficient authentication scopes' in error_str.lower() or 'insufficientPermissions' in error_str:
+            lines = [
+                "Insufficient authentication scopes.",
+                "",
+                "Your credentials don't include Compute Engine API scopes.",
+                "Re-authenticate with one of these commands:",
+                "  $ gcloud auth login",
+                "  $ gcloud auth application-default login",
+                "",
+                "To check your active account:",
+                "  $ gcloud auth list",
+                ""
+            ]
+        else:
+            lines = [
+                "Permission denied.",
+                "",
+                "Your account may be missing required IAM roles.",
+                "Required roles:",
+                "  - roles/compute.instanceAdmin.v1 (VM operations)",
+                "  - roles/compute.storageAdmin (disk and snapshot operations)",
+                "",
+                "To check your roles:",
+                f"  $ gcloud projects get-iam-policy {project or 'PROJECT_ID'} \\",
+                "      --flatten='bindings[].members' \\",
+                "      --filter='bindings.members:YOUR_EMAIL' \\",
+                "      --format='table(bindings.role)'",
+                "",
+                "To grant access:",
+                f"  $ gcloud projects add-iam-policy-binding {project or 'PROJECT_ID'} \\",
+                "      --member='user:YOUR_EMAIL' \\",
+                "      --role='roles/compute.instanceAdmin.v1'",
+                ""
+            ]
         return "\n".join(lines)
 
     if 'Invalid value for field' in error_str:

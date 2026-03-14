@@ -166,6 +166,38 @@ class IAMPermissionsValidator(BaseValidator):
                     message="Skipped (VM validation will run next)",
                     details={"note": "VM not found, will be caught by VM validator"}
                 )
+            elif e.resp.status == 403:
+                error_str = str(e)
+                if ('insufficient authentication scopes' in error_str.lower()
+                        or 'insufficientPermissions' in error_str):
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Insufficient authentication scopes",
+                        details={
+                            "fix": (
+                                "Your credentials don't include Compute Engine "
+                                "API scopes.\n"
+                                "      Re-authenticate with:\n"
+                                "        $ gcloud auth login\n"
+                                "        $ gcloud auth application-default login"
+                            ),
+                        }
+                    )
+                else:
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message=f"Permission denied",
+                        details={
+                            "missing": self.INSTANCE_PERMISSIONS,
+                            "required_roles": [
+                                "roles/compute.instanceAdmin.v1 (for VM operations)",
+                                "roles/compute.storageAdmin (for disk and snapshot operations)"
+                            ],
+                            "fix": f"Grant required roles to your account for project {self.project}",
+                        }
+                    )
             else:
                 # Some other API error
                 return ValidationResult(
