@@ -171,6 +171,52 @@ fi
 
 ok "Python $PY_VERSION ($PYTHON_CMD)"
 
+# Check pip is available
+if ! "$PYTHON_CMD" -m pip --version >/dev/null 2>&1; then
+    warn "pip not found."
+    if [ "$OS" != "Darwin" ]; then
+        if has_command apt-get; then
+            echo "  Installing python3-pip..."
+            if ask_yn "Install pip via apt now? (Y/n)" "Y"; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq python3-pip python3-venv
+            else
+                fail "pip is required. Install with: sudo apt-get install python3-pip"
+                exit 1
+            fi
+        elif has_command dnf; then
+            echo "  Installing python3-pip..."
+            if ask_yn "Install pip via dnf now? (Y/n)" "Y"; then
+                sudo dnf install -y -q python3-pip
+            else
+                fail "pip is required. Install with: sudo dnf install python3-pip"
+                exit 1
+            fi
+        elif has_command yum; then
+            echo "  Installing python3-pip..."
+            if ask_yn "Install pip via yum now? (Y/n)" "Y"; then
+                sudo yum install -y -q python3-pip
+            else
+                fail "pip is required. Install with: sudo yum install python3-pip"
+                exit 1
+            fi
+        else
+            fail "pip is required. Install it manually."
+            exit 1
+        fi
+    else
+        # macOS: pip should come with Python from brew
+        fail "pip not found. Reinstall Python: brew install python@3.12"
+        exit 1
+    fi
+
+    # Verify pip works now
+    if ! "$PYTHON_CMD" -m pip --version >/dev/null 2>&1; then
+        fail "pip still not available after install."
+        exit 1
+    fi
+    ok "pip installed"
+fi
+
 # ============================================================
 # Step 2: Check gcloud CLI
 # ============================================================
