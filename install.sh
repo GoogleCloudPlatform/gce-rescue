@@ -482,3 +482,9 @@ fi
 echo ""
 echo "Documentation: https://github.com/GoogleCloudPlatform/gce-rescue"
 echo ""
+
+# If PATH was updated, restart the shell so gce-rescue is immediately usable
+if ! has_command gce-rescue && [ -n "$SCRIPTS_DIR" ]; then
+    echo "Restarting shell to activate PATH..."
+    exec bash
+fi
