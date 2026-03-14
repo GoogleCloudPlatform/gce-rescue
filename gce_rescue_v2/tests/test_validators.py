@@ -336,7 +336,7 @@ class TestValidationRunner:
         runner.add(self._FailValidator(None, "p", "z"))
         runner.add(self._FailValidator(None, "p", "z"))
 
-        results = runner.run_all()
+        results = runner.run_all(stop_on_failure=False)
         assert results.all_passed() is False
         assert len(results.get_failures()) == 2
 

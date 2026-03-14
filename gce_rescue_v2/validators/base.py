@@ -244,12 +244,13 @@ class ValidationRunner:
         """
         self.validators.append(validator)
 
-    def run_all(self, logger=None) -> ValidationResults:
+    def run_all(self, logger=None, stop_on_failure: bool = True) -> ValidationResults:
         """
         Run all validators and collect results.
 
         Args:
             logger: Optional logger for debug output
+            stop_on_failure: Stop running validators after first failure
 
         Returns:
             ValidationResults with all results
@@ -278,5 +279,11 @@ class ValidationRunner:
                     logger.debug(f"[Validator]   {result.validator_name}...done.")
                 else:
                     logger.info(f"  {result.validator_name}...FAILED.")
+
+            # Stop early if this validator failed
+            if stop_on_failure and not result.passed:
+                if logger:
+                    logger.debug("[Validator] Stopping: fix this error first")
+                break
 
         return results
