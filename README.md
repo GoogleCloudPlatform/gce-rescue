@@ -18,15 +18,51 @@ repair. Once fixed, the `restore` command puts your fixed boot disk back.
 
 > **Note**: GCE Rescue is not an officially supported Google Cloud product. The Google Cloud Support team maintains this repository.
 
-## Quick Start
+## Installation
+
+<details open>
+<summary><h3>Google Cloud Shell (recommended)</h3></summary>
+
+Open [Cloud Shell](https://shell.cloud.google.com) — Python, gcloud, and authentication are already set up.
 
 ```bash
-# Install
 pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
+```
 
-# Authenticate
+</details>
+
+<details>
+<summary><h3>Local Machine</h3></summary>
+
+**Linux / macOS**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.sh | bash
+```
+
+**Windows** (run PowerShell as Administrator)
+
+```powershell
+irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex
+```
+
+The installers handle all prerequisites (Python, gcloud, PATH, authentication)
+and will prompt before installing anything.
+
+**Install from source** (requires Python >= 3.9, [gcloud CLI](https://cloud.google.com/sdk/docs/install), Git)
+
+```bash
+git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
+cd gce-rescue
+pip install .
 gcloud auth application-default login
+```
 
+</details>
+
+## Usage
+
+```bash
 # Diagnose boot issues (read-only)
 gce-rescue diagnose my-vm --zone=us-central1-a
 
@@ -37,34 +73,6 @@ gce-rescue repair my-vm --zone=us-central1-a
 gce-rescue rescue my-vm --zone=us-central1-a
 # SSH/RDP in, fix the issue, then:
 gce-rescue restore my-vm --zone=us-central1-a
-```
-
-## Requirements
-
-- Python >= 3.9
-- `gcloud` CLI ([install](https://cloud.google.com/sdk/docs/install))
-- `Compute Instance Admin (v1)` IAM role or equivalent
-
-## Installation
-
-**Option 1: pip install (recommended)**
-
-```bash
-pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
-```
-
-**Option 2: Clone and install**
-
-```bash
-git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
-cd gce-rescue
-pip install .
-```
-
-Verify:
-
-```bash
-gce-rescue --version
 ```
 
 ## Commands
@@ -121,6 +129,69 @@ VM won't boot
 | **Safety Snapshots** | Backup snapshot before any changes (default) |
 | **ARM64 Support** | Automatic architecture detection |
 
+## Uninstall
+
+```bash
+pip uninstall gce-rescue
+
+# Linux/macOS (if installed via install script)
+rm -rf ~/.gce-rescue
+```
+
+## Authentication
+
+gce-rescue uses Application Default Credentials (ADC):
+
+```bash
+gcloud auth application-default login
+```
+
+On GCE VMs, the VM service account is used automatically.
+
+More info: https://cloud.google.com/docs/authentication/provide-credentials-adc
+
+## Permissions
+
+### Required permissions by command
+
+| Permission | `diagnose` | `repair` | `rescue` | `restore` |
+|---|:---:|:---:|:---:|:---:|
+| `compute.projects.get` | x | x | x | x |
+| `compute.instances.get` | x | x | x | x |
+| `compute.instances.getSerialPortOutput` | x | x | x | |
+| `compute.instances.stop` | | x | x | x |
+| `compute.instances.start` | | x | x | x |
+| `compute.instances.attachDisk` | | x | x | x |
+| `compute.instances.detachDisk` | | x | x | x |
+| `compute.instances.setMetadata` | | x | x | x |
+| `compute.disks.create` | | x | x | |
+| `compute.disks.delete` | | x | x | x |
+| `compute.disks.get` | | x | x | x |
+| `compute.disks.createSnapshot` | | x* | x* | |
+| `compute.snapshots.create` | | x* | x* | |
+| `compute.snapshots.get` | | x* | x* | |
+| `compute.snapshots.list` | | x | | x |
+| `compute.snapshots.delete` | | x* | x* | |
+
+\* Skippable with `--no-snapshot`
+
+### IAM roles
+
+All permissions above are included in `roles/compute.instanceAdmin.v1`.
+
+| Command | Minimum Role |
+|---------|-------------|
+| `diagnose` | `roles/compute.viewer` |
+| `rescue`, `restore`, `repair` | `roles/compute.instanceAdmin.v1` |
+
+To grant access:
+
+```bash
+gcloud projects add-iam-policy-binding PROJECT_ID \
+    --member="user:EMAIL" \
+    --role="roles/compute.instanceAdmin.v1"
+```
+
 ## V1 Legacy
 
 V1 is available as `gce-rescue-v1` for backward compatibility:
@@ -130,27 +201,6 @@ gce-rescue-v1 -n VM_NAME -z ZONE -p PROJECT
 ```
 
 See the [V1 documentation](gce_rescue/README.md) for details.
-
-## Authentication
-
-Uses Application Default Credentials (ADC):
-
-```bash
-gcloud auth application-default login
-```
-
-More info: https://cloud.google.com/docs/authentication/provide-credentials-adc
-
-## Permissions
-
-Minimum IAM permissions required:
-
-| Operation | Permissions |
-|-----------|-------------|
-| Start/stop instance | `compute.instances.stop`, `compute.instances.start` |
-| Disk operations | `compute.instances.attachDisk`, `compute.instances.detachDisk`, `compute.disks.use`, `compute.images.useReadOnly` |
-| Create snapshot | `compute.snapshots.create`, `compute.disks.createSnapshot` |
-| Configure metadata | `compute.instances.setMetadata`, `compute.instances.setLabels` |
 
 ## Contact
 
