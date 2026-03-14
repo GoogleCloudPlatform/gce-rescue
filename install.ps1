@@ -74,21 +74,42 @@
     $pythonCmd = Get-PythonCommand
 
     if (-not $pythonCmd) {
-        Write-Fail "Python not found."
+        Write-Warn "Python not found. Installing..."
         Write-Host ""
-        Write-Host "  Install Python first, then re-run this installer:" -ForegroundColor White
-        Write-Host ""
-        $hasWinget = Get-Command "winget" -ErrorAction SilentlyContinue
-        if ($hasWinget) {
-            Write-Host "    winget install Python.Python.3.12" -ForegroundColor Yellow
-        } else {
-            Write-Host "    Download from: https://www.python.org/downloads/"
-            Write-Host "    IMPORTANT: Check 'Add Python to PATH' during installation."
+
+        $pyInstalled = $false
+
+        # Try direct download first (works on GCE VMs and managed machines)
+        $pyUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+        $pyInstaller = "$env:TEMP\python-installer.exe"
+        try {
+            Write-Host "  Downloading Python 3.12..." -ForegroundColor Cyan
+            Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing
+            Write-Host "  Installing Python (this may take a minute)..." -ForegroundColor Cyan
+            Start-Process $pyInstaller -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait
+            Remove-Item $pyInstaller -ErrorAction SilentlyContinue
+
+            # Refresh PATH
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                        [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $pythonCmd = Get-PythonCommand
+            if ($pythonCmd) { $pyInstalled = $true }
+        } catch {
+            Write-Warn "Direct download failed: $_"
         }
-        Write-Host ""
-        Write-Host "  After installing, open a new PowerShell window and re-run:" -ForegroundColor White
-        Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
-        return
+
+        if (-not $pyInstalled) {
+            Write-Fail "Could not install Python automatically."
+            Write-Host ""
+            Write-Host "  Install Python manually, then re-run this installer:" -ForegroundColor White
+            Write-Host ""
+            Write-Host "    https://www.python.org/downloads/" -ForegroundColor Yellow
+            Write-Host "    IMPORTANT: Check 'Add Python to PATH' during installation."
+            Write-Host ""
+            Write-Host "  After installing, open a new PowerShell window and run:" -ForegroundColor White
+            Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
+            return
+        }
     }
 
     # Verify Python version
