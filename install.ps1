@@ -81,29 +81,18 @@ if (-not $pythonCmd) {
     Write-Host "  Install Python using one of these methods:" -ForegroundColor White
     Write-Host ""
 
+    Write-Host "  Install Python first, then re-run this installer:" -ForegroundColor White
+    Write-Host ""
     if (Test-Command "winget") {
         Write-Host "    winget install Python.Python.3.12" -ForegroundColor Yellow
-        Write-Host ""
-        $install = Read-Host "  Install Python via winget now? (Y/n)"
-        if ($install -ne "n" -and $install -ne "N") {
-            Write-Host "  Installing Python..." -ForegroundColor Cyan
-            Start-Process -FilePath "winget" -ArgumentList "install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent" -Wait -NoNewWindow
-            # Refresh PATH from registry
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                        [System.Environment]::GetEnvironmentVariable("Path", "User")
-            $pythonCmd = Get-PythonCommand
-            if (-not $pythonCmd) {
-                Write-Warn "Python installed. Reopen PowerShell and re-run the installer."
-                exit 1
-            }
-        } else {
-            exit 1
-        }
     } else {
-        Write-Host "  Download from: https://www.python.org/downloads/" -ForegroundColor White
-        Write-Host "  IMPORTANT: Check 'Add Python to PATH' during installation."
-        exit 1
+        Write-Host "    Download from: https://www.python.org/downloads/"
+        Write-Host "    IMPORTANT: Check 'Add Python to PATH' during installation."
     }
+    Write-Host ""
+    Write-Host "  After installing, open a new PowerShell window and run:" -ForegroundColor White
+    Write-Host "    irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex" -ForegroundColor Yellow
+    exit 1
 }
 
 # Verify Python version
@@ -130,27 +119,17 @@ if (-not (Test-Command "gcloud")) {
     Write-Fail "gcloud CLI not found."
     Write-Host ""
 
+    Write-Host "  Install gcloud CLI first, then re-run this installer:" -ForegroundColor White
+    Write-Host ""
     if (Test-Command "winget") {
         Write-Host "    winget install Google.CloudSDK" -ForegroundColor Yellow
-        Write-Host ""
-        $install = Read-Host "  Install gcloud CLI via winget now? (Y/n)"
-        if ($install -ne "n" -and $install -ne "N") {
-            Write-Host "  Installing gcloud CLI (this may take a few minutes)..." -ForegroundColor Cyan
-            Start-Process -FilePath "winget" -ArgumentList "install Google.CloudSDK --accept-package-agreements --accept-source-agreements --silent" -Wait -NoNewWindow
-            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                        [System.Environment]::GetEnvironmentVariable("Path", "User")
-            if (-not (Test-Command "gcloud")) {
-                Write-Warn "gcloud installed. Reopen PowerShell and re-run the installer."
-                exit 1
-            }
-        } else {
-            Write-Host "  Install from: https://cloud.google.com/sdk/docs/install"
-            exit 1
-        }
     } else {
-        Write-Host "  Install from: https://cloud.google.com/sdk/docs/install"
-        exit 1
+        Write-Host "    https://cloud.google.com/sdk/docs/install"
     }
+    Write-Host ""
+    Write-Host "  After installing, open a new PowerShell window and run:" -ForegroundColor White
+    Write-Host "    irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex" -ForegroundColor Yellow
+    exit 1
 }
 
 try {
