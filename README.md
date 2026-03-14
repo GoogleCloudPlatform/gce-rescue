@@ -45,6 +45,8 @@ pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
 curl -sSL https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.sh | bash
 ```
 
+May require `sudo` if Python or pip is not installed.
+
 **Windows** (run PowerShell as Administrator)
 
 ```powershell
