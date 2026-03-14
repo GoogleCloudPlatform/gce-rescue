@@ -264,41 +264,45 @@ ok "gcloud CLI $GCLOUD_VER"
 # ============================================================
 step "3/5" "Installing gce-rescue..."
 
-# Determine pip install flags
-# PEP 668 (Debian 12+, Ubuntu 23.04+) blocks system-wide pip installs.
-# Try --user first, fall back to --break-system-packages if needed.
-PIP_FLAGS="--user"
-if ! "$PYTHON_CMD" -m pip install --user --dry-run pip >/dev/null 2>&1; then
-    PIP_FLAGS="--break-system-packages"
-fi
-PIP_FLAGS="$PIP_FLAGS --no-warn-script-location"
+INSTALL_DIR="$HOME/.gce-rescue"
+BIN_DIR="$INSTALL_DIR/bin"
 FILTER_NOISE='grep -v "^WARNING:" | grep -v "^ERROR: pip" | grep -v "requires protobuf" | grep -v "which is incompatible" | grep -v "^\[notice\]"'
 
 # Check if already installed
 INSTALLED=false
-EXISTING_VER=$("$PYTHON_CMD" -m pip show gce-rescue 2>/dev/null | grep "^Version:" | awk '{print $2}') || true
-
-if [ -n "$EXISTING_VER" ]; then
-    warn "gce-rescue $EXISTING_VER is already installed."
-    if ask_yn "Reinstall/upgrade? (y/N)" "N"; then
-        echo "  Upgrading..."
-        "$PYTHON_CMD" -m pip install $PIP_FLAGS --upgrade --force-reinstall "$REPO_URL" --quiet 2>&1 | eval "$FILTER_NOISE" || true
-    else
-        INSTALLED=true
+if [ -f "$BIN_DIR/gce-rescue" ]; then
+    EXISTING_VER=$("$BIN_DIR/python" -m pip show gce-rescue 2>/dev/null | grep "^Version:" | awk '{print $2}') || true
+    if [ -n "$EXISTING_VER" ]; then
+        warn "gce-rescue $EXISTING_VER is already installed."
+        if ask_yn "Reinstall/upgrade? (y/N)" "N"; then
+            echo "  Upgrading..."
+            "$BIN_DIR/pip" install --upgrade --force-reinstall "$REPO_URL" --quiet 2>&1 | eval "$FILTER_NOISE" || true
+        else
+            INSTALLED=true
+        fi
     fi
 fi
 
-if [ "$INSTALLED" = false ] && [ -z "$EXISTING_VER" ]; then
+if [ "$INSTALLED" = false ]; then
+    echo "  Creating virtual environment..."
+    "$PYTHON_CMD" -m venv "$INSTALL_DIR" 2>/dev/null
+    if [ ! -f "$BIN_DIR/pip" ]; then
+        fail "Failed to create virtual environment."
+        echo "  You may need: sudo apt-get install python3-venv"
+        echo "  Or: sudo dnf install python3-virtualenv"
+        exit 1
+    fi
+
     echo "  Downloading and installing from GitHub..."
-    if ! "$PYTHON_CMD" -m pip install $PIP_FLAGS "$REPO_URL" --quiet 2>&1 | eval "$FILTER_NOISE"; then
+    if ! "$BIN_DIR/pip" install "$REPO_URL" --quiet 2>&1 | eval "$FILTER_NOISE"; then
         fail "Installation failed."
-        echo "  Try manually: $PYTHON_CMD -m pip install $PIP_FLAGS $REPO_URL"
+        echo "  Try manually: $BIN_DIR/pip install $REPO_URL"
         exit 1
     fi
 fi
 
 # Get installed version
-INSTALLED_VER=$("$PYTHON_CMD" -m pip show gce-rescue 2>/dev/null | grep "^Version:" | awk '{print $2}') || echo "unknown"
+INSTALLED_VER=$("$BIN_DIR/python" -m pip show gce-rescue 2>/dev/null | grep "^Version:" | awk '{print $2}') || echo "unknown"
 ok "gce-rescue $INSTALLED_VER installed"
 
 # ============================================================
@@ -306,33 +310,11 @@ ok "gce-rescue $INSTALLED_VER installed"
 # ============================================================
 step "4/5" "Checking PATH..."
 
-# Find the scripts/bin directory where pip installed gce-rescue
-# Try multiple locations and use the one that has the binary
-USER_BIN="$("$PYTHON_CMD" -c "import site; print(site.getuserbase())" 2>/dev/null)/bin" || true
-LOCAL_BIN="$HOME/.local/bin"
-SYSTEM_BIN=$("$PYTHON_CMD" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null) || true
-
-SCRIPTS_DIR=""
-for dir in "$USER_BIN" "$LOCAL_BIN" "$SYSTEM_BIN"; do
-    if [ -n "$dir" ] && [ -f "$dir/gce-rescue" ]; then
-        SCRIPTS_DIR="$dir"
-        break
-    fi
-done
-
-# Fallback if binary not found in any known location
-if [ -z "$SCRIPTS_DIR" ]; then
-    # Check pip show for the install location
-    SCRIPTS_DIR=$("$PYTHON_CMD" -m pip show -f gce-rescue 2>/dev/null \
-        | grep "Location:" | awk '{print $2}' \
-        | sed 's|/lib/python.*/site-packages||')/bin || true
-    # Last resort
-    [ -z "$SCRIPTS_DIR" ] && SCRIPTS_DIR="$LOCAL_BIN"
-fi
+SCRIPTS_DIR="$BIN_DIR"
 
 if has_command gce-rescue; then
     ok "gce-rescue is on PATH"
-elif [ -n "$SCRIPTS_DIR" ] && [ -d "$SCRIPTS_DIR" ]; then
+elif [ -d "$SCRIPTS_DIR" ]; then
     # Determine shell config file
     SHELL_NAME=$(basename "$SHELL" 2>/dev/null || echo "bash")
     case "$SHELL_NAME" in
@@ -344,7 +326,6 @@ elif [ -n "$SCRIPTS_DIR" ] && [ -d "$SCRIPTS_DIR" ]; then
     # Check if already in PATH config
     if grep -q "$SCRIPTS_DIR" "$SHELL_RC" 2>/dev/null; then
         ok "Scripts directory already in $SHELL_RC"
-        echo "  Run: source $SHELL_RC"
     else
         warn "Adding $SCRIPTS_DIR to PATH in $SHELL_RC..."
         echo "" >> "$SHELL_RC"
@@ -358,11 +339,9 @@ elif [ -n "$SCRIPTS_DIR" ] && [ -d "$SCRIPTS_DIR" ]; then
     if ! has_command gce-rescue; then
         warn "gce-rescue will be available after restarting your terminal."
         echo "  Or run: source $SHELL_RC"
-        echo "  Or run directly: $SCRIPTS_DIR/gce-rescue"
     fi
 else
-    warn "Could not find Python scripts directory."
-    echo "  You may need to add it to PATH manually."
+    warn "Could not find gce-rescue binary."
 fi
 
 # ============================================================
