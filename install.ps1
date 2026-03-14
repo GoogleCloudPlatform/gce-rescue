@@ -66,6 +66,16 @@
     Write-Host "Sets up gce-rescue and all dependencies on this machine."
     Write-Host ""
 
+    # Check if running as Administrator
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        Write-Fail "Administrator privileges required."
+        Write-Host ""
+        Write-Host "  Right-click PowerShell > 'Run as administrator', then run:" -ForegroundColor White
+        Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
+        return
+    }
+
     # ============================================================
     # Step 1: Check Python
     # ============================================================
@@ -86,7 +96,7 @@
             Write-Host "  Downloading Python 3.12..." -ForegroundColor Cyan
             Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing
             Write-Host "  Installing Python (this may take a minute)..." -ForegroundColor Cyan
-            Start-Process $pyInstaller -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=0" -Wait
+            Start-Process $pyInstaller -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1" -Wait
             Remove-Item $pyInstaller -ErrorAction SilentlyContinue
 
             # Refresh PATH
