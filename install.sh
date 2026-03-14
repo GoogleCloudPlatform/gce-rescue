@@ -315,6 +315,7 @@ ok "gce-rescue $INSTALLED_VER installed"
 step "4/5" "Checking PATH..."
 
 SCRIPTS_DIR="$BIN_DIR"
+PATH_UPDATED=false
 
 if has_command gce-rescue; then
     ok "gce-rescue is on PATH"
@@ -338,12 +339,7 @@ elif [ -d "$SCRIPTS_DIR" ]; then
         export PATH="$PATH:$SCRIPTS_DIR"
         ok "PATH updated in $SHELL_RC"
     fi
-
-    # Verify
-    if ! has_command gce-rescue; then
-        warn "gce-rescue will be available after restarting your terminal."
-        echo "  Or run: source $SHELL_RC"
-    fi
+    PATH_UPDATED=true
 else
     warn "Could not find gce-rescue binary."
 fi
@@ -445,7 +441,14 @@ echo ""
 echo "=== Installation complete! ==="
 echo ""
 
-# Check if gce-rescue is usable in current session
+# Show activation instruction if PATH was modified
+if [ "$PATH_UPDATED" = true ]; then
+    echo "To activate in this terminal, run:"
+    echo ""
+    echo "  source ~/.bashrc"
+    echo ""
+fi
+
 if has_command gce-rescue; then
     echo "Quick start:"
     echo "  gce-rescue diagnose VM_NAME --zone=ZONE"
@@ -453,10 +456,6 @@ if has_command gce-rescue; then
     echo "  gce-rescue rescue VM_NAME --zone=ZONE"
     echo "  gce-rescue restore VM_NAME --zone=ZONE"
 else
-    echo "Run this to activate gce-rescue in your current terminal:"
-    echo ""
-    echo "  source ~/.bashrc && gce-rescue --help"
-    echo ""
     echo "Quick start:"
     echo "  gce-rescue diagnose VM_NAME --zone=ZONE"
     echo "  gce-rescue repair VM_NAME --zone=ZONE"
