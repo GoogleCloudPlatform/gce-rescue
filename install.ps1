@@ -158,7 +158,11 @@ if (-not (Test-Command "gcloud")) {
     }
 }
 
-$gcloudVer = (& gcloud --version 2>$null | Select-Object -First 1) -replace "Google Cloud SDK ", ""
+try {
+    $gcloudVer = (& gcloud --version 2>&1 | Select-Object -First 1) -replace "Google Cloud SDK ", ""
+} catch {
+    $gcloudVer = "installed"
+}
 Write-OK "gcloud CLI $gcloudVer"
 
 # ============================================================
@@ -279,25 +283,49 @@ if ($project -and $project -ne "(unset)") {
 }
 
 # Check Application Default Credentials
+# ADC is found via: 1) GOOGLE_APPLICATION_CREDENTIALS env var,
+# 2) ADC file, or 3) GCE metadata server (on GCP VMs)
 $adcPath = Join-Path $env:APPDATA "gcloud\application_default_credentials.json"
-if (Test-Path $adcPath) {
+if ($env:GOOGLE_APPLICATION_CREDENTIALS) {
+    if (Test-Path $env:GOOGLE_APPLICATION_CREDENTIALS) {
+        Write-OK "Service account credentials: $env:GOOGLE_APPLICATION_CREDENTIALS"
+    } else {
+        Write-Warn "GOOGLE_APPLICATION_CREDENTIALS is set but file not found:"
+        Write-Host "  $env:GOOGLE_APPLICATION_CREDENTIALS"
+    }
+} elseif (Test-Path $adcPath) {
     Write-OK "Application Default Credentials found"
 } else {
-    Write-Warn "Application Default Credentials (ADC) not found."
-    Write-Host "  ADC is required for gce-rescue to authenticate with GCP APIs."
-    Write-Host ""
-    $setupAdc = Read-Host "  Run 'gcloud auth application-default login' now? (Y/n)"
-    if ($setupAdc -ne "n" -and $setupAdc -ne "N") {
-        & gcloud auth application-default login
-        if (Test-Path $adcPath) {
-            Write-OK "ADC configured"
-        } else {
-            Write-Warn "ADC setup may have failed. Try again later:"
-            Write-Host "  gcloud auth application-default login"
+    # Check if running on GCE (metadata server available)
+    $onGCE = $false
+    try {
+        $meta = Invoke-RestMethod -Uri "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email" `
+            -Headers @{"Metadata-Flavor"="Google"} -TimeoutSec 2 -ErrorAction SilentlyContinue
+        if ($meta) {
+            Write-OK "Running on GCE, using VM service account: $meta"
+            $onGCE = $true
         }
-    } else {
-        Write-Warn "Run this before using gce-rescue:"
-        Write-Host "  gcloud auth application-default login"
+    } catch {}
+
+    if (-not $onGCE) {
+        Write-Warn "No credentials found for gce-rescue."
+        Write-Host "  gce-rescue needs one of these to authenticate:"
+        Write-Host "    1. Service account key (GOOGLE_APPLICATION_CREDENTIALS)"
+        Write-Host "    2. Application Default Credentials (gcloud auth application-default login)"
+        Write-Host "    3. GCE VM service account (automatic on GCP VMs)"
+        Write-Host ""
+        $setupAdc = Read-Host "  Run 'gcloud auth application-default login' now? (Y/n)"
+        if ($setupAdc -ne "n" -and $setupAdc -ne "N") {
+            & gcloud auth application-default login
+            if (Test-Path $adcPath) {
+                Write-OK "ADC configured"
+            } else {
+                Write-Warn "ADC setup may have failed. Try again later:"
+                Write-Host "  gcloud auth application-default login"
+            }
+        } else {
+            Write-Warn "Set up credentials before using gce-rescue."
+        }
     }
 }
 
