@@ -194,9 +194,44 @@ class VMStateValidator(BaseValidator):
                         "vm_name": self.vm_name,
                         "zone": self.zone,
                         "project": self.project,
-                        "fix": f"gcloud compute instances list --zone={self.zone} --project={self.project}"
+                        "fix": (
+                            f"Verify the instance name and zone are correct.\n"
+                            f"      List instances: gcloud compute instances list"
+                            f" --zone={self.zone} --project={self.project}"
+                        )
                     }
                 )
+            elif e.resp.status == 403:
+                error_str = str(e)
+                if ('insufficient authentication scopes' in error_str.lower()
+                        or 'insufficientPermissions' in error_str):
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Insufficient authentication scopes",
+                        details={
+                            "fix": (
+                                "Your credentials don't include Compute Engine "
+                                "API scopes.\n"
+                                "      Re-authenticate with:\n"
+                                "        $ gcloud auth login\n"
+                                "        $ gcloud auth application-default login"
+                            ),
+                        }
+                    )
+                else:
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Permission denied",
+                        details={
+                            "fix": (
+                                "Your account may be missing required IAM roles.\n"
+                                "      Required: roles/compute.instanceAdmin.v1, "
+                                "roles/compute.storageAdmin"
+                            )
+                        }
+                    )
             else:
                 # Some other API error
                 return ValidationResult(
@@ -331,9 +366,46 @@ class VMRestoreStateValidator(BaseValidator):
                 return ValidationResult(
                     validator_name=self.name,
                     passed=False,
-                    message=f"VM '{self.vm_name}' not found",
-                    details={"error": "VM not found"}
+                    message=f"VM '{self.vm_name}' not found in zone '{self.zone}'",
+                    details={
+                        "fix": (
+                            f"Verify the instance name and zone are correct.\n"
+                            f"      List instances: gcloud compute instances list"
+                            f" --zone={self.zone} --project={self.project}"
+                        )
+                    }
                 )
+            elif e.resp.status == 403:
+                error_str = str(e)
+                if ('insufficient authentication scopes' in error_str.lower()
+                        or 'insufficientPermissions' in error_str):
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Insufficient authentication scopes",
+                        details={
+                            "fix": (
+                                "Your credentials don't include Compute Engine "
+                                "API scopes.\n"
+                                "      Re-authenticate with:\n"
+                                "        $ gcloud auth login\n"
+                                "        $ gcloud auth application-default login"
+                            ),
+                        }
+                    )
+                else:
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Permission denied",
+                        details={
+                            "fix": (
+                                "Your account may be missing required IAM roles.\n"
+                                "      Required: roles/compute.instanceAdmin.v1, "
+                                "roles/compute.storageAdmin"
+                            )
+                        }
+                    )
             else:
                 return ValidationResult(
                     validator_name=self.name,
