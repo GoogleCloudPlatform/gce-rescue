@@ -227,8 +227,7 @@ class VMStateValidator(BaseValidator):
                         details={
                             "fix": (
                                 "Your account may be missing required IAM roles.\n"
-                                "      Required: roles/compute.instanceAdmin.v1, "
-                                "roles/compute.storageAdmin"
+                                "      Required: roles/compute.instanceAdmin.v1"
                             )
                         }
                     )
@@ -401,8 +400,7 @@ class VMRestoreStateValidator(BaseValidator):
                         details={
                             "fix": (
                                 "Your account may be missing required IAM roles.\n"
-                                "      Required: roles/compute.instanceAdmin.v1, "
-                                "roles/compute.storageAdmin"
+                                "      Required: roles/compute.instanceAdmin.v1"
                             )
                         }
                     )

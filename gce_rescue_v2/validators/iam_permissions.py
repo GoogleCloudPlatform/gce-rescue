@@ -32,8 +32,7 @@ class IAMPermissionsValidator(BaseValidator):
     - compute.snapshots.delete (default, use --no-snapshot to skip)
 
     Common failure reasons:
-    - User account doesn't have compute.instanceAdmin role
-    - User account doesn't have compute.storageAdmin role (for snapshots)
+    - User account doesn't have compute.instanceAdmin.v1 role
     - Service account missing permissions
 
     Example:
@@ -128,8 +127,7 @@ class IAMPermissionsValidator(BaseValidator):
                         "missing": missing_permissions,
                         "granted": granted_permissions,
                         "required_roles": [
-                            "roles/compute.instanceAdmin.v1 (for VM operations)",
-                            "roles/compute.storageAdmin (for disk and snapshot operations)"
+                            "roles/compute.instanceAdmin.v1"
                         ],
                         "fix": f"Grant required permissions to your account for project {self.project}",
                         "note": "Snapshot permissions also required (checked during execution)"
@@ -151,7 +149,7 @@ class IAMPermissionsValidator(BaseValidator):
                     "note": "Disk and snapshot permissions will be validated during execution",
                     "required_roles": [
                         "roles/compute.instanceAdmin.v1 (for VM operations)",
-                        "roles/compute.storageAdmin (for disk and snapshot operations)"
+                        "roles/compute.instanceAdmin.v1 includes disk and snapshot permissions"
                     ]
                 }
             )
@@ -193,7 +191,7 @@ class IAMPermissionsValidator(BaseValidator):
                             "missing": self.INSTANCE_PERMISSIONS,
                             "required_roles": [
                                 "roles/compute.instanceAdmin.v1 (for VM operations)",
-                                "roles/compute.storageAdmin (for disk and snapshot operations)"
+                                "roles/compute.instanceAdmin.v1 includes disk and snapshot permissions"
                             ],
                             "fix": f"Grant required roles to your account for project {self.project}",
                         }

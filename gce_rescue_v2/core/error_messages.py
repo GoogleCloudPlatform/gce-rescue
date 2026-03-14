@@ -287,7 +287,7 @@ PERMISSION_DENIED = ErrorSuggestion(
     suggestions=[
         "Re-authenticate: gcloud auth login",
         "Or: gcloud auth application-default login",
-        "Required IAM roles: compute.instanceAdmin.v1, compute.storageAdmin",
+        "Required IAM role: roles/compute.instanceAdmin.v1",
     ],
     commands=[
         "gcloud auth list",
