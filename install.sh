@@ -226,7 +226,7 @@ if [ -n "$EXISTING_VER" ]; then
     warn "gce-rescue $EXISTING_VER is already installed."
     if ask_yn "Reinstall/upgrade? (y/N)" "N"; then
         echo "  Upgrading..."
-        "$PYTHON_CMD" -m pip install --upgrade --force-reinstall "$REPO_URL" --quiet 2>&1 | grep -v "^WARNING:" | grep -v "^ERROR: pip's dependency"
+        "$PYTHON_CMD" -m pip install --upgrade --force-reinstall "$REPO_URL" --quiet 2>&1 | grep -v "^WARNING:" | grep -v "^ERROR: pip" | grep -v "requires protobuf" | grep -v "which is incompatible"
     else
         INSTALLED=true
     fi
@@ -234,7 +234,7 @@ fi
 
 if [ "$INSTALLED" = false ] && [ -z "$EXISTING_VER" ]; then
     echo "  Downloading and installing from GitHub..."
-    if ! "$PYTHON_CMD" -m pip install "$REPO_URL" --quiet 2>&1 | grep -v "^WARNING:" | grep -v "^ERROR: pip's dependency"; then
+    if ! "$PYTHON_CMD" -m pip install "$REPO_URL" --quiet 2>&1 | grep -v "^WARNING:" | grep -v "^ERROR: pip" | grep -v "requires protobuf" | grep -v "which is incompatible"; then
         fail "Installation failed."
         echo "  Try manually: $PYTHON_CMD -m pip install $REPO_URL"
         exit 1
