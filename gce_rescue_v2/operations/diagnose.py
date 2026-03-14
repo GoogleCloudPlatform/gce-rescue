@@ -317,8 +317,7 @@ class DiagnoseOperation(BaseOperation):
                             'recommendations': [
                                 "Your credentials don't include Compute Engine "
                                 "API scopes",
-                                "Re-authenticate: gcloud auth login",
-                                "Or: gcloud auth application-default login",
+                                "Run: gcloud auth application-default login",
                                 "Then try again"
                             ]
                         }

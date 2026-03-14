@@ -126,9 +126,7 @@ class DiagnosePermissionsValidator(BaseValidator):
                             "fix": (
                                 "Your credentials don't include Compute Engine "
                                 "API scopes.\n"
-                                "      Re-authenticate with:\n"
-                                "        $ gcloud auth login\n"
-                                "        $ gcloud auth application-default login"
+                                "      Run: gcloud auth application-default login"
                             ),
                         }
                     )

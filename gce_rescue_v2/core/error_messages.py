@@ -285,12 +285,11 @@ PERMISSION_DENIED = ErrorSuggestion(
         "Service account doesn't have access",
     ],
     suggestions=[
-        "Re-authenticate: gcloud auth login",
-        "Or: gcloud auth application-default login",
+        "Re-authenticate: gcloud auth application-default login",
         "Required IAM role: roles/compute.instanceAdmin.v1",
     ],
     commands=[
-        "gcloud auth list",
+        "gcloud auth application-default login",
         "gcloud projects get-iam-policy {project} --flatten='bindings[].members' --filter='bindings.members:$(gcloud auth list --filter=status:ACTIVE --format=\"value(account)\")' --format='table(bindings.role)'",
     ]
 )
@@ -302,10 +301,9 @@ INSUFFICIENT_SCOPES = ErrorSuggestion(
         "Application default credentials were created without compute scopes",
     ],
     suggestions=[
-        "Re-authenticate with gcloud to get fresh credentials with correct scopes",
+        "Re-authenticate to get fresh credentials with correct scopes",
     ],
     commands=[
-        "gcloud auth login",
         "gcloud auth application-default login",
     ]
 )
@@ -314,17 +312,13 @@ CREDENTIALS_INVALID = ErrorSuggestion(
     message="Invalid or expired credentials",
     causes=[
         "Credentials have expired",
-        "Not logged in to gcloud",
-        "Application default credentials not set",
+        "Application default credentials not set or expired",
     ],
     suggestions=[
         "Re-authenticate with gcloud",
-        "Set up application default credentials",
     ],
     commands=[
-        "gcloud auth login",
         "gcloud auth application-default login",
-        "gcloud auth list",
     ]
 )
 

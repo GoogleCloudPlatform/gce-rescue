@@ -111,12 +111,8 @@ def _parse_api_error(e: Exception, vm_name: str, zone: str, project: str = None)
                 "Insufficient authentication scopes.",
                 "",
                 "Your credentials don't include Compute Engine API scopes.",
-                "Re-authenticate with one of these commands:",
-                "  $ gcloud auth login",
+                "Run this to authenticate:",
                 "  $ gcloud auth application-default login",
-                "",
-                "To check your active account:",
-                "  $ gcloud auth list",
                 ""
             ]
         else:
