@@ -264,6 +264,15 @@ ok "gcloud CLI $GCLOUD_VER"
 # ============================================================
 step "3/5" "Installing gce-rescue..."
 
+# Determine pip install flags
+# PEP 668 (Debian 12+, Ubuntu 23.04+) blocks system-wide pip installs.
+# Try --user first, fall back to --break-system-packages if needed.
+PIP_FLAGS="--user"
+if ! "$PYTHON_CMD" -m pip install --user --dry-run pip >/dev/null 2>&1; then
+    PIP_FLAGS="--break-system-packages"
+fi
+FILTER_NOISE='grep -v "^WARNING:" | grep -v "^ERROR: pip" | grep -v "requires protobuf" | grep -v "which is incompatible"'
+
 # Check if already installed
 INSTALLED=false
 EXISTING_VER=$("$PYTHON_CMD" -m pip show gce-rescue 2>/dev/null | grep "^Version:" | awk '{print $2}') || true
@@ -272,7 +281,7 @@ if [ -n "$EXISTING_VER" ]; then
     warn "gce-rescue $EXISTING_VER is already installed."
     if ask_yn "Reinstall/upgrade? (y/N)" "N"; then
         echo "  Upgrading..."
-        "$PYTHON_CMD" -m pip install --user --upgrade --force-reinstall "$REPO_URL" --quiet 2>&1 | grep -v "^WARNING:" | grep -v "^ERROR: pip" | grep -v "requires protobuf" | grep -v "which is incompatible"
+        "$PYTHON_CMD" -m pip install $PIP_FLAGS --upgrade --force-reinstall "$REPO_URL" --quiet 2>&1 | eval "$FILTER_NOISE" || true
     else
         INSTALLED=true
     fi
@@ -280,9 +289,9 @@ fi
 
 if [ "$INSTALLED" = false ] && [ -z "$EXISTING_VER" ]; then
     echo "  Downloading and installing from GitHub..."
-    if ! "$PYTHON_CMD" -m pip install --user "$REPO_URL" --quiet 2>&1 | grep -v "^WARNING:" | grep -v "^ERROR: pip" | grep -v "requires protobuf" | grep -v "which is incompatible"; then
+    if ! "$PYTHON_CMD" -m pip install $PIP_FLAGS "$REPO_URL" --quiet 2>&1 | eval "$FILTER_NOISE"; then
         fail "Installation failed."
-        echo "  Try manually: $PYTHON_CMD -m pip install $REPO_URL"
+        echo "  Try manually: $PYTHON_CMD -m pip install $PIP_FLAGS $REPO_URL"
         exit 1
     fi
 fi
