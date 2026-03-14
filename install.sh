@@ -226,7 +226,7 @@ if [ -n "$EXISTING_VER" ]; then
     warn "gce-rescue $EXISTING_VER is already installed."
     if ask_yn "Reinstall/upgrade? (y/N)" "N"; then
         echo "  Upgrading..."
-        "$PYTHON_CMD" -m pip install --upgrade --force-reinstall "$REPO_URL" --quiet 2>&1
+        "$PYTHON_CMD" -m pip install --upgrade --force-reinstall "$REPO_URL" --quiet 2>&1 | grep -v "^WARNING:" | grep -v "^ERROR: pip's dependency"
     else
         INSTALLED=true
     fi
@@ -234,7 +234,7 @@ fi
 
 if [ "$INSTALLED" = false ] && [ -z "$EXISTING_VER" ]; then
     echo "  Downloading and installing from GitHub..."
-    if ! "$PYTHON_CMD" -m pip install "$REPO_URL" --quiet 2>&1; then
+    if ! "$PYTHON_CMD" -m pip install "$REPO_URL" --quiet 2>&1 | grep -v "^WARNING:" | grep -v "^ERROR: pip's dependency"; then
         fail "Installation failed."
         echo "  Try manually: $PYTHON_CMD -m pip install $REPO_URL"
         exit 1
@@ -405,11 +405,25 @@ fi
 echo ""
 echo "=== Installation complete! ==="
 echo ""
-echo "Quick start:"
-echo "  gce-rescue diagnose VM_NAME --zone=ZONE"
-echo "  gce-rescue repair VM_NAME --zone=ZONE"
-echo "  gce-rescue rescue VM_NAME --zone=ZONE"
-echo "  gce-rescue restore VM_NAME --zone=ZONE"
+
+# Check if gce-rescue is usable in current session
+if has_command gce-rescue; then
+    echo "Quick start:"
+    echo "  gce-rescue diagnose VM_NAME --zone=ZONE"
+    echo "  gce-rescue repair VM_NAME --zone=ZONE"
+    echo "  gce-rescue rescue VM_NAME --zone=ZONE"
+    echo "  gce-rescue restore VM_NAME --zone=ZONE"
+else
+    echo "To activate gce-rescue, run:"
+    echo ""
+    echo "  source ~/.bashrc"
+    echo ""
+    echo "Then:"
+    echo "  gce-rescue diagnose VM_NAME --zone=ZONE"
+    echo "  gce-rescue repair VM_NAME --zone=ZONE"
+    echo "  gce-rescue rescue VM_NAME --zone=ZONE"
+    echo "  gce-rescue restore VM_NAME --zone=ZONE"
+fi
 echo ""
 echo "Documentation: https://github.com/GoogleCloudPlatform/gce-rescue"
 echo ""
