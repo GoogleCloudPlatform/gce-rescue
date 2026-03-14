@@ -20,8 +20,7 @@ repair. Once fixed, the `restore` command puts your fixed boot disk back.
 
 ## Installation
 
-<details open>
-<summary><h3>Google Cloud Shell (recommended)</h3></summary>
+### Google Cloud Shell (recommended)
 
 Open [Cloud Shell](https://shell.cloud.google.com) — Python, gcloud, and authentication are already set up.
 
@@ -29,10 +28,9 @@ Open [Cloud Shell](https://shell.cloud.google.com) — Python, gcloud, and authe
 pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
 ```
 
-</details>
-
 <details>
-<summary><h3>Local Machine</h3></summary>
+<summary><b>Local Machine</b></summary>
+<br>
 
 **Linux / macOS**
 
@@ -48,6 +46,8 @@ irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/instal
 
 The installers handle all prerequisites (Python, gcloud, PATH, authentication)
 and will prompt before installing anything.
+
+---
 
 **Install from source** (requires Python >= 3.9, [gcloud CLI](https://cloud.google.com/sdk/docs/install), Git)
 
