@@ -92,7 +92,7 @@ if (-not $pythonCmd) {
     Write-Host ""
     Write-Host "  After installing, open a new PowerShell window and run:" -ForegroundColor White
     Write-Host "    irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex" -ForegroundColor Yellow
-    exit 1
+    return
 }
 
 # Verify Python version
@@ -102,12 +102,12 @@ if ($verOutput -match "Python (\d+\.\d+\.\d+)") {
     if ($pyVersion -lt $MIN_PYTHON_VERSION) {
         Write-Fail "Python $pyVersion found, but >= $MIN_PYTHON_VERSION required."
         Write-Host "  Update Python: https://www.python.org/downloads/"
-        exit 1
+        return
     }
     Write-OK "Python $pyVersion ($pythonCmd)"
 } else {
     Write-Fail "Could not determine Python version."
-    exit 1
+    return
 }
 
 # ============================================================
@@ -129,7 +129,7 @@ if (-not (Test-Command "gcloud")) {
     Write-Host ""
     Write-Host "  After installing, open a new PowerShell window and run:" -ForegroundColor White
     Write-Host "    irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex" -ForegroundColor Yellow
-    exit 1
+    return
 }
 
 try {
@@ -167,7 +167,7 @@ if (-not $installed) {
     if ($LASTEXITCODE -ne 0) {
         Write-Fail "Installation failed:"
         Write-Host $pipOutput
-        exit 1
+        return
     }
 }
 
@@ -233,12 +233,12 @@ if ($account) {
         $account = & gcloud auth list --filter="status:ACTIVE" --format="value(account)" 2>$null
         if (-not $account) {
             Write-Fail "Authentication failed."
-            exit 1
+            return
         }
         Write-OK "gcloud account: $account"
     } else {
         Write-Fail "gcloud authentication required. Run: gcloud auth login"
-        exit 1
+        return
     }
 }
 
