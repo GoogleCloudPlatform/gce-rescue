@@ -41,10 +41,11 @@ has_command() {
 ask_yn() {
     # Usage: ask_yn "prompt" default
     # default: Y or N
+    # Reads from /dev/tty so it works when script is piped via curl
     local prompt="$1"
     local default="${2:-Y}"
     local reply
-    read -r -p "  $prompt " reply
+    read -r -p "  $prompt " reply < /dev/tty
     reply="${reply:-$default}"
     [[ "$reply" =~ ^[Yy] ]]
 }
@@ -249,11 +250,19 @@ ok "gce-rescue $INSTALLED_VER installed"
 # ============================================================
 step "4/5" "Checking PATH..."
 
-# Find the scripts/bin directory
-SCRIPTS_DIR=$("$PYTHON_CMD" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null) || true
-if [ -z "$SCRIPTS_DIR" ]; then
-    # Fallback: user site bin
-    SCRIPTS_DIR=$("$PYTHON_CMD" -m site --user-base 2>/dev/null)/bin || true
+# Find the scripts/bin directory where pip installed gce-rescue
+# Check user site first (pip installs here when system dir is not writable)
+USER_SCRIPTS_DIR=$("$PYTHON_CMD" -c "import site; print(site.getusersitepackages().replace('site-packages','../../bin'))" 2>/dev/null) || true
+SYSTEM_SCRIPTS_DIR=$("$PYTHON_CMD" -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null) || true
+
+# Use whichever directory actually contains gce-rescue
+if [ -n "$USER_SCRIPTS_DIR" ] && [ -f "$USER_SCRIPTS_DIR/gce-rescue" ]; then
+    SCRIPTS_DIR="$USER_SCRIPTS_DIR"
+elif [ -n "$SYSTEM_SCRIPTS_DIR" ] && [ -f "$SYSTEM_SCRIPTS_DIR/gce-rescue" ]; then
+    SCRIPTS_DIR="$SYSTEM_SCRIPTS_DIR"
+else
+    # Fallback: common user bin location
+    SCRIPTS_DIR="$HOME/.local/bin"
 fi
 
 if has_command gce-rescue; then
@@ -322,7 +331,7 @@ if [ -n "$PROJECT" ] && [ "$PROJECT" != "(unset)" ]; then
     ok "Project: $PROJECT"
 else
     warn "No default project set."
-    read -r -p "  Enter your GCP project ID: " PROJECT_INPUT
+    read -r -p "  Enter your GCP project ID: " PROJECT_INPUT < /dev/tty
     if [ -n "$PROJECT_INPUT" ]; then
         gcloud config set project "$PROJECT_INPUT"
         PROJECT="$PROJECT_INPUT"
