@@ -294,8 +294,12 @@ if [ "$INSTALLED" = false ]; then
     fi
 
     echo "  Downloading and installing from GitHub..."
-    if ! "$BIN_DIR/pip" install "$REPO_URL" --quiet 2>&1 | eval "$FILTER_NOISE"; then
-        fail "Installation failed."
+    PIP_OUTPUT=$("$BIN_DIR/pip" install "$REPO_URL" 2>&1)
+    PIP_EXIT=$?
+    if [ $PIP_EXIT -ne 0 ]; then
+        fail "Installation failed:"
+        echo "$PIP_OUTPUT" | tail -20
+        echo ""
         echo "  Try manually: $BIN_DIR/pip install $REPO_URL"
         exit 1
     fi
