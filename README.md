@@ -2,7 +2,7 @@
 
 [![test badge](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml/badge.svg?branch=main&event=push)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml?query=branch%3Amain+event%3Apush)
 
-Rescue unbootable Google Compute Engine VMs. Operates on the same VM — no new instance is created.
+Rescue unbootable Google Compute Engine VMs by swapping disks on the same VM — no new instance created, same IP, no data loss. Creates a safety snapshot before any changes.
 
 **Auto-fix path**: The `repair` command reads serial console output, identifies
 the boot failure, and applies a fix automatically end to end.
@@ -12,11 +12,18 @@ the boot failure, and applies a fix automatically end to end.
 original boot disk as a secondary disk, providing a rescue environment for manual
 repair. Once fixed, the `restore` command puts your fixed boot disk back.
 
+```bash
+gce-rescue diagnose my-vm --zone=us-central1-a    # What's wrong?
+gce-rescue repair my-vm --zone=us-central1-a      # Auto-fix it
+```
+
 <p align="center">
   <img src="gce-rescue.svg" alt="GCE Rescue Workflow" width="600">
 </p>
 
 > **Note**: GCE Rescue is not an officially supported Google Cloud product. The Google Cloud Support team maintains this repository.
+
+**Requirements:** Python >= 3.9, [gcloud CLI](https://cloud.google.com/sdk/docs/install), `roles/compute.instanceAdmin.v1` IAM role.
 
 ## Installation
 
@@ -55,10 +62,20 @@ and will prompt before installing anything.
 git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
 cd gce-rescue
 pip install .
-gcloud auth application-default login
 ```
 
 </details>
+
+## Authentication
+
+| Environment | Setup |
+|---|---|
+| Cloud Shell | Pre-authenticated, nothing to do |
+| GCE VM (with service account) | Automatic via metadata server |
+| GCE VM (without compute scopes) | `gcloud auth application-default login` |
+| Local machine | `gcloud auth application-default login` |
+
+More info: [Application Default Credentials](https://cloud.google.com/docs/authentication/provide-credentials-adc)
 
 ## Usage
 
@@ -89,6 +106,25 @@ gcloud auth application-default login
 All operations create a snapshot before changes, roll back automatically on
 failure, and can resume if interrupted.
 
+<details>
+<summary><b>Sample output: diagnose</b></summary>
+
+```
+$ gce-rescue diagnose my-vm --zone=us-central1-a
+Diagnosis: my-vm (us-central1-a)
+Status:    RUNNING
+OS:        Linux (debian-12-bookworm, x86_64, Free)
+Result:    Found 1 boot error(s)
+
+  [fstab_bad_uuid] Bad UUID in /etc/fstab (critical)
+    Line: UUID=abcd-1234  /data  ext4  defaults  0  2
+    Fix:  Remove or correct the fstab entry, then reboot
+
+  Recommended: gce-rescue repair my-vm --zone=us-central1-a
+```
+
+</details>
+
 ### Flags
 
 | Flag | Description |
@@ -111,30 +147,24 @@ failure, and can resume if interrupted.
 | **Safety Snapshots** | Backup snapshot before any changes (default) |
 | **ARM64 Support** | Automatic architecture detection |
 
-## Uninstall
-
-```bash
-pip uninstall gce-rescue
-
-# Linux/macOS (if installed via install script)
-rm -rf ~/.gce-rescue
-```
-
-## Authentication
-
-gce-rescue uses Application Default Credentials (ADC):
-
-```bash
-gcloud auth application-default login
-```
-
-On GCE VMs, the VM service account is used automatically.
-
-More info: https://cloud.google.com/docs/authentication/provide-credentials-adc
-
 ## Permissions
 
-### Required permissions by command
+`roles/compute.instanceAdmin.v1` includes all permissions needed for every command.
+
+| Command | Minimum Role |
+|---------|-------------|
+| `diagnose` | `roles/compute.viewer` |
+| `rescue`, `restore`, `repair` | `roles/compute.instanceAdmin.v1` |
+
+```bash
+gcloud projects add-iam-policy-binding PROJECT_ID \
+    --member="user:EMAIL" \
+    --role="roles/compute.instanceAdmin.v1"
+```
+
+<details>
+<summary><b>Full permissions matrix</b></summary>
+<br>
 
 | Permission | `diagnose` | `repair` | `rescue` | `restore` |
 |---|:---:|:---:|:---:|:---:|
@@ -157,22 +187,7 @@ More info: https://cloud.google.com/docs/authentication/provide-credentials-adc
 
 \* Skippable with `--no-snapshot`
 
-### IAM roles
-
-All permissions above are included in `roles/compute.instanceAdmin.v1`.
-
-| Command | Minimum Role |
-|---------|-------------|
-| `diagnose` | `roles/compute.viewer` |
-| `rescue`, `restore`, `repair` | `roles/compute.instanceAdmin.v1` |
-
-To grant access:
-
-```bash
-gcloud projects add-iam-policy-binding PROJECT_ID \
-    --member="user:EMAIL" \
-    --role="roles/compute.instanceAdmin.v1"
-```
+</details>
 
 ## V1 Legacy
 
@@ -183,6 +198,15 @@ gce-rescue-v1 -n VM_NAME -z ZONE -p PROJECT
 ```
 
 See the [V1 documentation](gce_rescue/README.md) for details.
+
+## Uninstall
+
+```bash
+pip uninstall gce-rescue
+
+# Linux/macOS (if installed via install script)
+rm -rf ~/.gce-rescue
+```
 
 ## Contact
 
