@@ -15,7 +15,7 @@
     $ErrorActionPreference = "Continue"
 
     # --- Configuration ---
-    $REPO_URL = "https://github.com/gokulr94/gce-rescue/archive/refs/heads/v2-beta.zip"
+    $REPO_URL = "https://github.com/GoogleCloudPlatform/gce-rescue/archive/refs/heads/main.zip"
     $MIN_PYTHON_VERSION = [version]"3.9"
 
     # --- Helper functions ---
@@ -72,7 +72,7 @@
         Write-Fail "Administrator privileges required."
         Write-Host ""
         Write-Host "  Right-click PowerShell > 'Run as administrator', then run:" -ForegroundColor White
-        Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
+        Write-Host "    irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex" -ForegroundColor Yellow
         return
     }
 
@@ -120,7 +120,7 @@
             Write-Host "    IMPORTANT: Check 'Add Python to PATH' during installation."
             Write-Host ""
             Write-Host "  Then re-run:" -ForegroundColor White
-            Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
+            Write-Host "    irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex" -ForegroundColor Yellow
             return
         }
     }
@@ -179,7 +179,7 @@
             Write-Host "    https://cloud.google.com/sdk/docs/install" -ForegroundColor Yellow
             Write-Host ""
             Write-Host "  Then re-run:" -ForegroundColor White
-            Write-Host "    irm https://raw.githubusercontent.com/gokulr94/gce-rescue/v2-beta/install.ps1 | iex" -ForegroundColor Yellow
+            Write-Host "    irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex" -ForegroundColor Yellow
             return
         }
     }

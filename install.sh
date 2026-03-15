@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # --- Configuration ---
-REPO_URL="https://github.com/gokulr94/gce-rescue/archive/refs/heads/v2-beta.zip"
+REPO_URL="https://github.com/GoogleCloudPlatform/gce-rescue/archive/refs/heads/main.zip"
 MIN_PYTHON_VERSION="3.9"
 PACKAGE_NAME="gce-rescue"
 
