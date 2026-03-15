@@ -7,7 +7,7 @@ Validates that the VM exists and is in a valid state for rescue operations.
 from googleapiclient.errors import HttpError
 
 from .base import BaseValidator, ValidationResult
-from ..utils.os_detection import is_shielded_vm, is_confidential_vm, get_confidential_type
+from ..utils.os_detection import is_confidential_vm, get_confidential_type
 
 
 class VMStateValidator(BaseValidator):
@@ -152,30 +152,9 @@ class VMStateValidator(BaseValidator):
                     }
                 )
 
-            # Check for Shielded VM with Secure Boot (not supported)
-            if is_shielded_vm(vm):
-                return ValidationResult(
-                    validator_name=self.name,
-                    passed=False,
-                    message="Shielded VMs with Secure Boot are not supported",
-                    details={
-                        "vm_name": self.vm_name,
-                        "reason": (
-                            "Shielded VMs with Secure Boot enabled require signed boot disks. "
-                            "The rescue disk cannot boot with Secure Boot enabled."
-                        ),
-                        "fix": (
-                            "Options for Shielded VMs:\n"
-                            f"  1. Temporarily disable Secure Boot:\n"
-                            f"     gcloud compute instances stop {self.vm_name} --zone={self.zone}\n"
-                            f"     gcloud compute instances update {self.vm_name} --zone={self.zone} "
-                            "--no-shielded-secure-boot\n"
-                            "     Then run rescue again.\n"
-                            "  2. Use serial console for debugging\n"
-                            "  3. Create a snapshot and attach to another VM"
-                        )
-                    }
-                )
+            # Note: Shielded VMs with Secure Boot are supported.
+            # GCP's debian-cloud images are signed with Google's UEFI keys
+            # and boot fine with Secure Boot enabled.
 
             # Build result details
             details = {
@@ -215,9 +194,41 @@ class VMStateValidator(BaseValidator):
                         "vm_name": self.vm_name,
                         "zone": self.zone,
                         "project": self.project,
-                        "fix": f"gcloud compute instances list --zone={self.zone} --project={self.project}"
+                        "fix": (
+                            f"Verify the instance name and zone are correct.\n"
+                            f"      List instances: gcloud compute instances list"
+                            f" --zone={self.zone} --project={self.project}"
+                        )
                     }
                 )
+            elif e.resp.status == 403:
+                error_str = str(e)
+                if ('insufficient authentication scopes' in error_str.lower()
+                        or 'insufficientPermissions' in error_str):
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Insufficient authentication scopes",
+                        details={
+                            "fix": (
+                                "gce-rescue cannot access Compute Engine APIs "
+                                "with your current credentials.\n"
+                                "      Run: gcloud auth application-default login"
+                            ),
+                        }
+                    )
+                else:
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Permission denied",
+                        details={
+                            "fix": (
+                                "Your account may be missing required IAM roles.\n"
+                                "      Required: roles/compute.instanceAdmin.v1"
+                            )
+                        }
+                    )
             else:
                 # Some other API error
                 return ValidationResult(
@@ -352,9 +363,43 @@ class VMRestoreStateValidator(BaseValidator):
                 return ValidationResult(
                     validator_name=self.name,
                     passed=False,
-                    message=f"VM '{self.vm_name}' not found",
-                    details={"error": "VM not found"}
+                    message=f"VM '{self.vm_name}' not found in zone '{self.zone}'",
+                    details={
+                        "fix": (
+                            f"Verify the instance name and zone are correct.\n"
+                            f"      List instances: gcloud compute instances list"
+                            f" --zone={self.zone} --project={self.project}"
+                        )
+                    }
                 )
+            elif e.resp.status == 403:
+                error_str = str(e)
+                if ('insufficient authentication scopes' in error_str.lower()
+                        or 'insufficientPermissions' in error_str):
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Insufficient authentication scopes",
+                        details={
+                            "fix": (
+                                "gce-rescue cannot access Compute Engine APIs "
+                                "with your current credentials.\n"
+                                "      Run: gcloud auth application-default login"
+                            ),
+                        }
+                    )
+                else:
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Permission denied",
+                        details={
+                            "fix": (
+                                "Your account may be missing required IAM roles.\n"
+                                "      Required: roles/compute.instanceAdmin.v1"
+                            )
+                        }
+                    )
             else:
                 return ValidationResult(
                     validator_name=self.name,

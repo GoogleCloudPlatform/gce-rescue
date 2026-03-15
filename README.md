@@ -2,7 +2,7 @@
 
 [![test badge](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml/badge.svg?branch=main&event=push)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml?query=branch%3Amain+event%3Apush)
 
-Rescue unbootable Google Compute Engine VMs. Operates on the same VM — no new instance is created.
+Rescue unbootable Google Compute Engine VMs by swapping disks on the same VM — no new instance created, same IP, no data loss. Creates a safety snapshot before any changes.
 
 **Auto-fix path**: The `repair` command reads serial console output, identifies
 the boot failure, and applies a fix automatically end to end.
@@ -12,54 +12,74 @@ the boot failure, and applies a fix automatically end to end.
 original boot disk as a secondary disk, providing a rescue environment for manual
 repair. Once fixed, the `restore` command puts your fixed boot disk back.
 
+```bash
+gce-rescue diagnose my-vm --zone=us-central1-a    # What's wrong?
+gce-rescue repair my-vm --zone=us-central1-a      # Auto-fix it
+```
+
 <p align="center">
   <img src="gce-rescue.svg" alt="GCE Rescue Workflow" width="600">
 </p>
 
 > **Note**: GCE Rescue is not an officially supported Google Cloud product. The Google Cloud Support team maintains this repository.
 
-## Quick Start
-
-```bash
-# Install
-pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
-
-# Authenticate
-gcloud auth application-default login
-
-# Diagnose boot issues (read-only)
-gce-rescue diagnose my-vm --zone=us-central1-a
-
-# Auto-fix (Linux, currently fstab errors)
-gce-rescue repair my-vm --zone=us-central1-a
-
-# Manual fix (Linux + Windows)
-gce-rescue rescue my-vm --zone=us-central1-a
-# SSH/RDP in, fix the issue, then:
-gce-rescue restore my-vm --zone=us-central1-a
-```
-
-## Requirements
-
-- Python >= 3.9
-- `gcloud` CLI ([install](https://cloud.google.com/sdk/docs/install))
-- `Compute Instance Admin (v1)` IAM role or equivalent
+**Requirements:** Python >= 3.9, [gcloud CLI](https://cloud.google.com/sdk/docs/install), `roles/compute.instanceAdmin.v1` IAM role.
 
 ## Installation
 
+### Google Cloud Shell (recommended)
+
+Open <a href="https://shell.cloud.google.com" target="_blank">Cloud Shell</a> — Python, gcloud, and authentication are already set up.
+
 ```bash
 pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
 ```
 
-Verify:
+<details>
+<summary><b>Local Machine</b></summary>
+<br>
+
+**Linux / macOS**
 
 ```bash
-gce-rescue --version
+curl -sSL https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.sh | bash
 ```
 
-## Commands
+May require `sudo` if Python or pip is not installed.
 
-All commands operate on the same VM instance:
+**Windows** (run PowerShell as Administrator)
+
+```powershell
+irm https://raw.githubusercontent.com/GoogleCloudPlatform/gce-rescue/main/install.ps1 | iex
+```
+
+The installers handle all prerequisites (Python, gcloud, PATH, authentication)
+and will prompt before installing anything.
+
+---
+
+**Install from source** (requires Python >= 3.9, [gcloud CLI](https://cloud.google.com/sdk/docs/install), Git)
+
+```bash
+git clone https://github.com/GoogleCloudPlatform/gce-rescue.git
+cd gce-rescue
+pip install .
+```
+
+</details>
+
+## Authentication
+
+| Environment | Setup |
+|---|---|
+| Cloud Shell | Pre-authenticated, nothing to do |
+| GCE VM (with service account) | Automatic via metadata server |
+| GCE VM (without compute scopes) | `gcloud auth application-default login` |
+| Local machine | `gcloud auth application-default login` |
+
+More info: [Application Default Credentials](https://cloud.google.com/docs/authentication/provide-credentials-adc)
+
+## Usage
 
 | Command | What it does | Modifies VM? |
 |---------|-------------|:---:|
@@ -68,26 +88,44 @@ All commands operate on the same VM instance:
 | `rescue` | Provides a rescue environment for investigation via SSH/RDP | Yes |
 | `restore` | Reverses rescue, puts your fixed boot disk back | Yes |
 
-Repair and rescue operations create a snapshot before changes, roll back
-automatically on failure, and can resume if interrupted.
+1. **Start with diagnose** — understand what's wrong (safe, read-only)
+   ```bash
+   gce-rescue diagnose VM_NAME --zone=ZONE
+   ```
+
+2. **Auto-fix available?** — let repair handle it automatically
+   ```bash
+   gce-rescue repair VM_NAME --zone=ZONE
+   ```
+
+3. **Need manual access?** — enter rescue mode, fix it yourself
+   ```bash
+   gce-rescue rescue VM_NAME --zone=ZONE
+   # SSH/RDP in, fix the issue on /mnt/sysroot
+   gce-rescue restore VM_NAME --zone=ZONE
+   ```
+
+All operations create a snapshot before changes, roll back automatically on
+failure, and can resume if interrupted.
+
+<details>
+<summary><b>Sample output: diagnose</b></summary>
 
 ```
-VM won't boot
-    |
-    +-- Not sure what's wrong?
-    |   gce-rescue diagnose    (read-only, safe anytime)
-    |
-    +-- diagnose found a fixable issue (e.g. fstab)?
-    |   gce-rescue repair      (auto-fix, Linux only)
-    |
-    +-- Need manual access to the disk?
-    |   gce-rescue rescue      (enter rescue mode)
-    |   SSH/RDP in and fix
-    |   gce-rescue restore     (exit rescue mode)
-    |
-    +-- VM stuck from a previous rescue?
-        gce-rescue restore     (or re-run rescue to resume/rollback)
+$ gce-rescue diagnose my-vm --zone=us-central1-a
+Diagnosis: my-vm (us-central1-a)
+Status:    RUNNING
+OS:        Linux (debian-12-bookworm, x86_64, Free)
+Result:    Found 1 boot error(s)
+
+  [fstab_bad_uuid] Bad UUID in /etc/fstab (critical)
+    Line: UUID=abcd-1234  /data  ext4  defaults  0  2
+    Fix:  Remove or correct the fstab entry, then reboot
+
+  Recommended: gce-rescue repair my-vm --zone=us-central1-a
 ```
+
+</details>
 
 ### Flags
 
@@ -111,6 +149,48 @@ VM won't boot
 | **Safety Snapshots** | Backup snapshot before any changes (default) |
 | **ARM64 Support** | Automatic architecture detection |
 
+## Permissions
+
+`roles/compute.instanceAdmin.v1` includes all permissions needed for every command.
+
+| Command | Minimum Role |
+|---------|-------------|
+| `diagnose` | `roles/compute.viewer` |
+| `rescue`, `restore`, `repair` | `roles/compute.instanceAdmin.v1` |
+
+```bash
+gcloud projects add-iam-policy-binding PROJECT_ID \
+    --member="user:EMAIL" \
+    --role="roles/compute.instanceAdmin.v1"
+```
+
+<details>
+<summary><b>Full permissions matrix</b></summary>
+<br>
+
+| Permission | `diagnose` | `repair` | `rescue` | `restore` |
+|---|:---:|:---:|:---:|:---:|
+| `compute.projects.get` | x | x | x | x |
+| `compute.instances.get` | x | x | x | x |
+| `compute.instances.getSerialPortOutput` | x | x | x | |
+| `compute.instances.stop` | | x | x | x |
+| `compute.instances.start` | | x | x | x |
+| `compute.instances.attachDisk` | | x | x | x |
+| `compute.instances.detachDisk` | | x | x | x |
+| `compute.instances.setMetadata` | | x | x | x |
+| `compute.disks.create` | | x | x | |
+| `compute.disks.delete` | | x | x | x |
+| `compute.disks.get` | | x | x | x |
+| `compute.disks.createSnapshot` | | x* | x* | |
+| `compute.snapshots.create` | | x* | x* | |
+| `compute.snapshots.get` | | x* | x* | |
+| `compute.snapshots.list` | | x | | x |
+| `compute.snapshots.delete` | | x* | x* | |
+
+\* Skippable with `--no-snapshot`
+
+</details>
+
 ## V1 Legacy
 
 V1 is available as `gce-rescue-v1` for backward compatibility:
@@ -121,26 +201,14 @@ gce-rescue-v1 -n VM_NAME -z ZONE -p PROJECT
 
 See the [V1 documentation](gce_rescue/README.md) for details.
 
-## Authentication
-
-Uses Application Default Credentials (ADC):
+## Uninstall
 
 ```bash
-gcloud auth application-default login
+pip uninstall gce-rescue
+
+# Linux/macOS (if installed via install script)
+rm -rf ~/.gce-rescue
 ```
-
-More info: https://cloud.google.com/docs/authentication/provide-credentials-adc
-
-## Permissions
-
-Minimum IAM permissions required:
-
-| Operation | Permissions |
-|-----------|-------------|
-| Start/stop instance | `compute.instances.stop`, `compute.instances.start` |
-| Disk operations | `compute.instances.attachDisk`, `compute.instances.detachDisk`, `compute.disks.use`, `compute.images.useReadOnly` |
-| Create snapshot | `compute.snapshots.create`, `compute.disks.createSnapshot` |
-| Configure metadata | `compute.instances.setMetadata`, `compute.instances.setLabels` |
 
 ## Contact
 

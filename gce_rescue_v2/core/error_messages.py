@@ -280,17 +280,31 @@ SNAPSHOT_TIMEOUT = ErrorSuggestion(
 PERMISSION_DENIED = ErrorSuggestion(
     message="Permission denied",
     causes=[
-        "Missing required IAM permissions",
+        "Insufficient OAuth scopes (re-authenticate to fix)",
+        "Missing required IAM roles",
         "Service account doesn't have access",
-        "Project-level restrictions",
     ],
     suggestions=[
-        "Verify you have Compute Admin or equivalent role",
-        "Check if organization policies are blocking the action",
+        "Re-authenticate: gcloud auth application-default login",
+        "Required IAM role: roles/compute.instanceAdmin.v1",
     ],
     commands=[
-        "gcloud auth list",
-        "gcloud projects get-iam-policy {project} --flatten='bindings[].members' --filter='bindings.members:$(gcloud auth list --filter=status:ACTIVE --format=\"value(account)\")'",
+        "gcloud auth application-default login",
+        "gcloud projects get-iam-policy {project} --flatten='bindings[].members' --filter='bindings.members:$(gcloud auth list --filter=status:ACTIVE --format=\"value(account)\")' --format='table(bindings.role)'",
+    ]
+)
+
+INSUFFICIENT_SCOPES = ErrorSuggestion(
+    message="Insufficient authentication scopes",
+    causes=[
+        "gce-rescue cannot access Compute Engine APIs with your current credentials",
+        "Application default credentials were created without compute scopes",
+    ],
+    suggestions=[
+        "Re-authenticate to get fresh credentials with correct scopes",
+    ],
+    commands=[
+        "gcloud auth application-default login",
     ]
 )
 
@@ -298,17 +312,13 @@ CREDENTIALS_INVALID = ErrorSuggestion(
     message="Invalid or expired credentials",
     causes=[
         "Credentials have expired",
-        "Not logged in to gcloud",
-        "Application default credentials not set",
+        "Application default credentials not set or expired",
     ],
     suggestions=[
         "Re-authenticate with gcloud",
-        "Set up application default credentials",
     ],
     commands=[
-        "gcloud auth login",
         "gcloud auth application-default login",
-        "gcloud auth list",
     ]
 )
 
@@ -374,12 +384,16 @@ def get_error_suggestion(error_msg: str, operation: str = None) -> Optional[Erro
     """
     error_lower = error_msg.lower()
 
+    # Insufficient OAuth scopes (check before generic permission errors)
+    if 'insufficient authentication scopes' in error_lower or 'insufficientpermissions' in error_lower:
+        return INSUFFICIENT_SCOPES
+
     # Permission errors
     if 'permission' in error_lower or 'forbidden' in error_lower or '403' in error_lower:
         return PERMISSION_DENIED
 
     # Authentication errors
-    if 'credential' in error_lower or 'authentication' in error_lower or 'token' in error_lower:
+    if 'credential' in error_lower or 'token' in error_lower:
         return CREDENTIALS_INVALID
 
     # Not found errors

@@ -296,32 +296,61 @@ class DiagnoseOperation(BaseOperation):
             self._log_error(f"Failed to fetch serial console: {error_msg}")
 
             if e.resp.status == 403:
-                return OperationResult(
-                    operation_name=self.name,
-                    success=False,
-                    message="Serial console access is disabled",
-                    rollback_data={
-                        'vm_name': vm_name,
-                        'zone': self.zone,
-                        'status': vm_status,
-                        'os_type': os_type,
-                        'os_flavor': os_flavor,
-                        'architecture': architecture,
-                        'license_type': license_type,
-                        'diagnosis_status': 'unable_to_diagnose',
-                        'boot_errors': [],
-                        'recommendations': [
-                            "Serial console access is disabled for this VM or project",
-                            "Enable on VM: gcloud compute instances add-metadata "
-                            f"{vm_name} --zone={self.zone} "
-                            "--metadata serial-port-enable=TRUE",
-                            "Enable on project: gcloud compute project-info "
-                            "add-metadata --metadata serial-port-enable=TRUE",
-                            "Then wait a few minutes for logs to accumulate "
-                            "and try again"
-                        ]
-                    }
-                )
+                # Distinguish between OAuth scope errors and serial port access
+                error_lower = error_msg.lower()
+                if ('insufficient authentication scopes' in error_lower
+                        or 'insufficientPermissions' in error_msg):
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message="Insufficient authentication scopes",
+                        rollback_data={
+                            'vm_name': vm_name,
+                            'zone': self.zone,
+                            'status': vm_status,
+                            'os_type': os_type,
+                            'os_flavor': os_flavor,
+                            'architecture': architecture,
+                            'license_type': license_type,
+                            'diagnosis_status': 'unable_to_diagnose',
+                            'boot_errors': [],
+                            'recommendations': [
+                                "gce-rescue cannot access Compute Engine APIs "
+                                "with your current credentials",
+                                "Run: gcloud auth application-default login",
+                                "Then try again"
+                            ]
+                        }
+                    )
+                else:
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message="Serial console access is disabled",
+                        rollback_data={
+                            'vm_name': vm_name,
+                            'zone': self.zone,
+                            'status': vm_status,
+                            'os_type': os_type,
+                            'os_flavor': os_flavor,
+                            'architecture': architecture,
+                            'license_type': license_type,
+                            'diagnosis_status': 'unable_to_diagnose',
+                            'boot_errors': [],
+                            'recommendations': [
+                                "Serial console access is disabled for this VM "
+                                "or project",
+                                "Enable on VM: gcloud compute instances "
+                                "add-metadata "
+                                f"{vm_name} --zone={self.zone} "
+                                "--metadata serial-port-enable=TRUE",
+                                "Enable on project: gcloud compute project-info "
+                                "add-metadata --metadata serial-port-enable=TRUE",
+                                "Then wait a few minutes for logs to accumulate "
+                                "and try again"
+                            ]
+                        }
+                    )
             else:
                 return OperationResult(
                     operation_name=self.name,

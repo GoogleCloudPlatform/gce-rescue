@@ -22,11 +22,13 @@ class CredentialsValidator(BaseValidator):
     1. Credentials exist (user has authenticated)
     2. Credentials are valid (not expired)
     3. Credentials can be refreshed (if expired)
+    4. Credentials have Compute Engine API scopes
 
     Common failure reasons:
     - User hasn't run: gcloud auth application-default login
     - Credentials expired and can't be refreshed
     - No service account configured
+    - Credentials missing compute scopes
 
     Example:
         validator = CredentialsValidator(compute, project, zone)
@@ -36,7 +38,6 @@ class CredentialsValidator(BaseValidator):
             print("[OK] Credentials are valid")
         else:
             print(f"[X] {result.message}")
-            print(f"Fix: {result.details['fix']}")
     """
 
     @property
@@ -74,11 +75,41 @@ class CredentialsValidator(BaseValidator):
                         message="Credentials refresh failed",
                         details={
                             "error": str(e),
-                            "fix": "Check GOOGLE_APPLICATION_CREDENTIALS or run: gcloud auth application-default login"
+                            "fix": (
+                                "Check GOOGLE_APPLICATION_CREDENTIALS or "
+                                "run: gcloud auth application-default login"
+                            )
                         }
                     )
 
-            # Success! Credentials are valid
+            # Verify credentials actually have compute scopes by making
+            # a lightweight API call
+            try:
+                self.compute.projects().get(
+                    project=self.project
+                ).execute()
+            except Exception as e:
+                error_str = str(e)
+                if ('insufficient authentication scopes' in error_str.lower()
+                        or 'insufficientPermissions' in error_str):
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Insufficient authentication scopes",
+                        details={
+                            "fix": (
+                                "Your credentials don't include Compute "
+                                "Engine API scopes." + chr(10) +
+                                "      Re-authenticate with:" + chr(10) +
+                                "        $ gcloud auth login" + chr(10) +
+                                "        $ gcloud auth application-default login"
+                            ),
+                        }
+                    )
+                # Other errors (e.g. project not found) are OK here,
+                # they will be caught by later validators
+
+            # Success! Credentials are valid and have correct scopes
             return ValidationResult(
                 validator_name=self.name,
                 passed=True,

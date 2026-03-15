@@ -79,11 +79,9 @@ class ValidationResults:
         if not failures:
             return
 
-        print("\nPre-flight validation failed:")
-        print()
+        print("\nPre-flight validation failed:\n")
         for result in failures:
-            print(f"  [X] {result.validator_name}")
-            print(f"      {result.message}")
+            print(f"  {result.validator_name}: {result.message}")
 
             # Special handling for IAM permission failures
             if result.details and 'missing' in result.details:
@@ -103,7 +101,7 @@ class ValidationResults:
 
                 # Show how to grant
                 print()
-                print("      To grant access, run:")
+                print("      To grant access:")
                 print("        $ gcloud projects add-iam-policy-binding PROJECT_ID \\")
                 print("            --member=\"user:YOUR_EMAIL\" \\")
                 print("            --role=\"roles/compute.instanceAdmin.v1\"")
@@ -113,7 +111,7 @@ class ValidationResults:
 
             # Print general fix suggestions for other errors
             elif result.details and 'fix' in result.details:
-                print(f"      Fix: {result.details['fix']}")
+                print(f"      {result.details['fix']}")
 
             print()
 
@@ -246,12 +244,13 @@ class ValidationRunner:
         """
         self.validators.append(validator)
 
-    def run_all(self, logger=None) -> ValidationResults:
+    def run_all(self, logger=None, stop_on_failure: bool = True) -> ValidationResults:
         """
         Run all validators and collect results.
 
         Args:
             logger: Optional logger for debug output
+            stop_on_failure: Stop running validators after first failure
 
         Returns:
             ValidationResults with all results
@@ -280,5 +279,11 @@ class ValidationRunner:
                     logger.debug(f"[Validator]   {result.validator_name}...done.")
                 else:
                     logger.info(f"  {result.validator_name}...FAILED.")
+
+            # Stop early if this validator failed
+            if stop_on_failure and not result.passed:
+                if logger:
+                    logger.debug("[Validator] Stopping: fix this error first")
+                break
 
         return results
