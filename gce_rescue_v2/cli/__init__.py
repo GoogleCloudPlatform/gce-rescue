@@ -119,6 +119,8 @@ class CustomArgumentParser(argparse.ArgumentParser):
                 "",
                 "For detailed help:",
                 "  $ gce-rescue --help",
+                "",
+                "Looking for V1? It's available as: gce-rescue-v1",
                 ""
             ]
             self.exit(0, "\n".join(usage_lines) + "\n")
