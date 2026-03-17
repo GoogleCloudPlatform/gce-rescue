@@ -30,9 +30,10 @@ def tip_restore_disk(vm: Instance, snapshot=False) -> str:
   if not snapshot:
     snapshot_restore_msg = ''
   else:
+    disk_name = vm.disks['disk_name']
     snapshot_restore_msg = (f' Use the snapshot below '
     f'if you need to restore the modification made while the instance was '
-    f'in rescue mode.\n Snapshot name: {vm.disks["disk_name"]}-{vm.ts}\n'
+    f'in rescue mode.\n Snapshot name: {disk_name}-{vm.ts}\n'
     f' More information: '
     f'https://cloud.google.com/compute/docs/disks/restore-snapshot\n')
 

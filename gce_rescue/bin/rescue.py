@@ -18,6 +18,7 @@
 
 from datetime import datetime
 import logging
+import sys
 
 from gce_rescue.config import process_args, set_configs
 from gce_rescue import messages
@@ -25,8 +26,21 @@ from gce_rescue.gce import Instance
 from gce_rescue.tasks.actions import call_tasks
 from gce_rescue.utils import read_input, set_logging
 
+
+def show_v2_banner():
+  """Show banner promoting V2 availability."""
+  yellow = '\033[93m'
+  reset = '\033[0m'
+  msg = ('NOTICE: This is V1 (legacy). '
+         'V2 is now the default: gce-rescue --help')
+  banner = f"{yellow}{msg}{reset}"
+  print(banner, file=sys.stderr)
+
+
 def main():
   """ Main script function. """
+  show_v2_banner()
+
   parser = process_args()
   args = parser.parse_args()
   set_configs(args)

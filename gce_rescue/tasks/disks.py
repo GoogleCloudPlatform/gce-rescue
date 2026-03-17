@@ -42,17 +42,17 @@ def _create_rescue_disk(vm, source_disk: str) -> Dict:
       disk = vm.rescue_disk).execute()
   except googleapiclient.errors.HttpError as e:
     if e.status_code == 404:
-      _logger.info(f'Creating rescue disk {vm.rescue_disk}...')
+      _logger.info('Creating rescue disk %s...', vm.rescue_disk)
     else:
-      raise Exception(e) from e
+      raise googleapiclient.errors.HttpError(e.resp, e.content) from e
 
   if 'name' in chk_disk_exist.keys():
     if 'users' in chk_disk_exist.keys():
       disk_users = chk_disk_exist['users']
-      raise Exception(
+      raise RuntimeError(
         f'Disk {vm.rescue_disk} is currently in use: {disk_users}'
       )
-    _logger.info(f'Disk {vm.rescue_disk} already exist. Skipping...')
+    _logger.info('Disk %s already exist. Skipping...', vm.rescue_disk)
     return {}
 
   disk_body = {
@@ -105,7 +105,7 @@ def _delete_rescue_disk(vm, disk_name: str) -> Dict:
   Returns:
     operation-result: Dict
   """
-  _logger.info(f'Deleting disk {disk_name}...')
+  _logger.info('Deleting disk %s...', disk_name)
   operation = vm.compute.disks().delete(
     **vm.project_data,
     disk = disk_name).execute()
@@ -145,10 +145,10 @@ def attach_disk(
   if not boot:
     request = _set_disk_label(vm, disk_name)
     if request['status'] != 'DONE':
-      _logger.error(f'Unable to set label to disk {disk_name}.')
-      raise Exception(request)
+      _logger.error('Unable to set label to disk %s.', disk_name)
+      raise RuntimeError(f'Failed to set label: {request}')
     else:
-      _logger.info(f'Label configured successfully disk {disk_name}.')
+      _logger.info('Label configured successfully disk %s.', disk_name)
   attach_disk_body = {
     'boot': boot,
     'name': disk_name,
@@ -156,7 +156,7 @@ def attach_disk(
     'type': 'PERSISTENT',
     'source': f'projects/{vm.project}/zones/{vm.zone}/disks/{disk_name}'
   }
-  _logger.info(f'Attaching disk {disk_name}...')
+  _logger.info('Attaching disk %s...', disk_name)
   operation = vm.compute.instances().attachDisk(
     **vm.project_data,
     instance = vm.name,
@@ -171,7 +171,7 @@ def _detach_disk(vm, disk: str) -> Dict:
   https://cloud.google.com/compute/docs/reference/rest/v1/instances/detachDisk
   """
 
-  _logger.info(f'Detaching disk {disk} from {vm.name}...')
+  _logger.info('Detaching disk %s from %s...', disk, vm.name)
   operation = vm.compute.instances().detachDisk(
       **vm.project_data,
       instance = vm.name,
@@ -213,7 +213,7 @@ def create_rescue_disk(vm) -> None:
 def list_snapshot(vm) -> str:
   snapshot_name = f"{vm.disks['disk_name']}-{vm.ts}"
   try:
-    result = vm.compute.snapshots().get(
+    vm.compute.snapshots().get(
       snapshot=snapshot_name,
       project=vm.project
     ).execute()

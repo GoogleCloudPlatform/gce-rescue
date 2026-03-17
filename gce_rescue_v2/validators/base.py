@@ -1,0 +1,289 @@
+"""
+GCE Rescue - Base Validator
+
+This module provides the base class for all validators.
+Each validator checks one thing and returns pass/fail.
+
+Pattern: Create a new validator by inheriting from BaseValidator
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import List, Optional
+from googleapiclient import discovery
+import googleapiclient.http
+import google_auth_httplib2
+import httplib2
+
+
+@dataclass
+class ValidationResult:
+    """
+    Result from a single validation check.
+
+    Attributes:
+        validator_name: Name of the validator (for display)
+        passed: True if validation passed, False if failed
+        message: Human-readable message about the result
+        details: Optional dict with extra info (for debugging/fixes)
+    """
+    validator_name: str
+    passed: bool
+    message: str
+    details: Optional[dict] = None
+
+    def __str__(self):
+        """String representation of result."""
+        status = "[OK]" if self.passed else "[X]"
+        return f"{status} {self.validator_name}: {self.message}"
+
+
+class ValidationResults:
+    """
+    Collection of validation results.
+
+    Makes it easy to check if all validations passed and print results.
+    """
+
+    def __init__(self):
+        """Initialize empty results."""
+        self.results: List[ValidationResult] = []
+
+    def add(self, result: ValidationResult):
+        """Add a validation result."""
+        self.results.append(result)
+
+    def all_passed(self) -> bool:
+        """Check if all validations passed."""
+        return all(r.passed for r in self.results)
+
+    def get_failures(self) -> List[ValidationResult]:
+        """Get only failed validations."""
+        return [r for r in self.results if not r.passed]
+
+    def get_result(self, validator_name: str) -> Optional[ValidationResult]:
+        """Get result by validator name."""
+        for result in self.results:
+            if result.validator_name == validator_name:
+                return result
+        return None
+
+    def print_all(self):
+        """Print all validation results."""
+        for result in self.results:
+            print(f"  {result}")
+
+    def print_failures(self):
+        """Print only failed validations with details."""
+        failures = self.get_failures()
+        if not failures:
+            return
+
+        print("\nPre-flight validation failed:\n")
+        for result in failures:
+            print(f"  {result.validator_name}: {result.message}")
+
+            # Special handling for IAM permission failures
+            if result.details and 'missing' in result.details:
+                missing = result.details['missing']
+                if missing:
+                    print()
+                    print("      Missing permissions:")
+                    for perm in missing:
+                        print(f"        - {perm}")
+
+                # Show required roles
+                if 'required_roles' in result.details:
+                    print()
+                    print("      Required roles (grant one of these):")
+                    for role in result.details['required_roles']:
+                        print(f"        - {role}")
+
+                # Show how to grant
+                print()
+                print("      To grant access:")
+                print("        $ gcloud projects add-iam-policy-binding PROJECT_ID \\")
+                print("            --member=\"user:YOUR_EMAIL\" \\")
+                print("            --role=\"roles/compute.instanceAdmin.v1\"")
+                print()
+                print("      To check your current account:")
+                print("        $ gcloud auth list")
+
+            # Print general fix suggestions for other errors
+            elif result.details and 'fix' in result.details:
+                print(f"      {result.details['fix']}")
+
+            print()
+
+
+class BaseValidator(ABC):
+    """
+    Base class for all validators.
+
+    To create a new validator:
+    1. Inherit from this class
+    2. Implement the validate() method
+    3. Implement the name property
+
+    Example:
+        class MyValidator(BaseValidator):
+            @property
+            def name(self):
+                return "My Check"
+
+            def validate(self):
+                # Check something
+                if all_good:
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=True,
+                        message="Everything is good"
+                    )
+                else:
+                    return ValidationResult(
+                        validator_name=self.name,
+                        passed=False,
+                        message="Something is wrong",
+                        details={'fix': 'Do this to fix it'}
+                    )
+    """
+
+    def __init__(self, compute, project: str, zone: str, vm_name: str = None, tracking_label: str = None):
+        """
+        Initialize validator.
+
+        Args:
+            compute: GCP compute client (from google-api-python-client)
+            project: GCP project ID
+            zone: GCP zone (e.g., 'us-central1-a')
+            vm_name: Name of the VM to validate (optional for some validators)
+            tracking_label: Optional tracking label for usage analytics
+                Format: '{operation_type}-{action_group}-{action_detail}'
+                Example: 'rescue-val-iam'
+        """
+        self.compute = compute
+        self.project = project
+        self.zone = zone
+        self.vm_name = vm_name
+        self.tracking_label = tracking_label
+
+    def _create_tracked_client(self, user_agent: str):
+        """Create a compute client with a custom User-Agent for analytics.
+
+        Args:
+            user_agent: Full User-Agent string (from build_user_agent()).
+
+        Returns:
+            Compute API client with the custom User-Agent header.
+        """
+        credentials = self.compute._http.credentials
+
+        def _request_builder(http, *args, **kwargs):
+            headers = kwargs.setdefault('headers', {})
+            headers['user-agent'] = user_agent
+            auth_http = google_auth_httplib2.AuthorizedHttp(
+                credentials, http=httplib2.Http()
+            )
+            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+        return discovery.build(
+            'compute', 'v1', credentials=credentials,
+            cache_discovery=False, requestBuilder=_request_builder
+        )
+
+    @abstractmethod
+    def validate(self) -> ValidationResult:
+        """
+        Run the validation check.
+
+        This method must be implemented by each validator.
+
+        Returns:
+            ValidationResult with pass/fail and message
+        """
+        pass
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """
+        Human-readable name of this validator.
+
+        Used for display in validation results.
+        """
+        pass
+
+
+class ValidationRunner:
+    """
+    Runs multiple validators and collects results.
+
+    Example:
+        runner = ValidationRunner()
+        runner.add(CredentialsValidator(...))
+        runner.add(IAMPermissionsValidator(...))
+        runner.add(VMStateValidator(...))
+
+        results = runner.run_all()
+
+        if not results.all_passed():
+            results.print_failures()
+            return False
+    """
+
+    def __init__(self):
+        """Initialize empty validator list."""
+        self.validators: List[BaseValidator] = []
+
+    def add(self, validator: BaseValidator):
+        """
+        Add a validator to the chain.
+
+        Args:
+            validator: A validator instance
+        """
+        self.validators.append(validator)
+
+    def run_all(self, logger=None, stop_on_failure: bool = True) -> ValidationResults:
+        """
+        Run all validators and collect results.
+
+        Args:
+            logger: Optional logger for debug output
+            stop_on_failure: Stop running validators after first failure
+
+        Returns:
+            ValidationResults with all results
+        """
+        results = ValidationResults()
+
+        for validator in self.validators:
+            # Log what we're checking (DEBUG level)
+            if logger:
+                logger.debug(f"[Validator] Running: {validator.name}")
+
+            # Run the validator
+            result = validator.validate()
+
+            # Log result (DEBUG level)
+            if logger:
+                status = "PASS" if result.passed else "FAIL"
+                logger.debug(f"[Validator]   {status}: {result.message}")
+
+            # Add to results
+            results.add(result)
+
+            # Print result for user (DEBUG level for individual validators)
+            if logger:
+                if result.passed:
+                    logger.debug(f"[Validator]   {result.validator_name}...done.")
+                else:
+                    logger.info(f"  {result.validator_name}...FAILED.")
+
+            # Stop early if this validator failed
+            if stop_on_failure and not result.passed:
+                if logger:
+                    logger.debug("[Validator] Stopping: fix this error first")
+                break
+
+        return results

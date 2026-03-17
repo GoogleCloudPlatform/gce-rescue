@@ -1,0 +1,80 @@
+category: fstab
+fix_guidance: "sudo nano /mnt/sysroot/etc/fstab"
+auto_repair: true
+
+patterns:
+  - name: fstab_uuid_not_found
+    severity: critical
+    description: "UUID specified in /etc/fstab cannot be found"
+    regex:
+      - 'UUID=[\w-]+ does not exist'
+      - "can't find UUID=[\\w-]+"
+      - 'Timed out waiting for device.*UUID='
+      - 'Expecting device.*/dev/disk/by-uuid/'
+    fixes:
+      - "Comment out or fix the invalid UUID entry"
+
+  - name: fstab_device_timeout
+    severity: critical
+    description: "Device referenced in /etc/fstab timed out waiting"
+    regex:
+      - 'Timed out waiting for device.*/dev/\S+'
+      - 'Timed out waiting for device dev-\w+'
+    fixes:
+      - "Comment out or fix the invalid device entry"
+      - "Verify disk is attached: gcloud compute instances describe VM_NAME --zone=ZONE"
+
+  - name: fstab_device_not_exist
+    severity: critical
+    description: "Device specified in /etc/fstab does not exist"
+    regex:
+      - 'special device .* does not exist'
+      - 'mount: .*: special device .* does not exist'
+      - 'Device /dev/\S+ does not exist'
+    fixes:
+      - "Comment out or fix the invalid device entry"
+      - "Verify disk is attached: gcloud compute instances describe VM_NAME --zone=ZONE"
+
+  - name: fstab_mount_failed
+    severity: critical
+    description: "Failed to mount filesystem listed in /etc/fstab"
+    regex:
+      - 'Dependency failed for .*\.mount'
+      - 'Failed to mount .*\.mount'
+      - 'mount.*failed'
+      - 'systemd.*Failed to mount'
+    fixes:
+      - "Comment out or fix the problematic entry"
+      - "Verify filesystem type and mount options are correct"
+
+  - name: fstab_dependency_failed
+    severity: critical
+    description: "Mount point dependency failed (device not available)"
+    regex:
+      - 'Dependency failed for /[a-zA-Z]'
+      - 'Dependency failed for File System Check'
+    fixes:
+      - "Comment out or fix the problematic entry"
+
+  - name: fstab_emergency_mode
+    severity: critical
+    description: "System entered emergency mode due to boot failure"
+    regex:
+      - 'You are now being dropped into an emergency shell'
+      - 'You are in emergency mode'
+      - 'Welcome to emergency mode'
+      - 'Entering emergency mode'
+    fixes:
+      - "Review serial console for preceding error messages"
+
+  - name: fstab_fsck_failed
+    severity: critical
+    description: "Filesystem check (fsck) failed on a mounted partition"
+    regex:
+      - 'fsck.*failed'
+      - 'fsck exited with status code'
+      - 'FILE SYSTEM CHECK FAILED'
+      - 'UNEXPECTED INCONSISTENCY'
+    fixes:
+      - "Run filesystem check: fsck -y /dev/sdX (replace with actual device)"
+      - "If persistent, check disk health in GCP Console"

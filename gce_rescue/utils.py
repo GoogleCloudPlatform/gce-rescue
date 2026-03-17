@@ -66,7 +66,7 @@ class Tracker():
         sleep(0.001)
         self._print()
       except Exception as exc:
-        raise f'{exc}: {self._pivot.value} = {self.target}'
+        raise Exception(f'{exc}: {self._pivot.value} = {self.target}') from exc
 
     self._print()
     print('\r')
@@ -90,7 +90,7 @@ class Tracker():
 class ThreadHandler(Thread):
   """Handler for multithread tasks."""
 
-  def __init__(
+  def __init__(  # pylint: disable=too-many-positional-arguments
       self,
       group=None,
       target=None,
@@ -140,4 +140,3 @@ def read_input(msg: str) -> None:
   if input_answer.upper() != 'Y':
     print(f'got input: "{input_answer}". Aborting')
     sys.exit(1)
-    

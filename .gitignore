@@ -6,7 +6,7 @@ _pycache__/
 .cache/
 
 # Poetry, setuptools, PyPI distribution artifacts.
-/*.egg-info
+*.egg-info/
 .eggs/
 build/
 dist/
@@ -23,3 +23,9 @@ poetry.lock
 .vscode/
 .idea
 *.log
+vir-env/
+.env
+
+# Private/local files
+private-docs/
+docs/

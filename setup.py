@@ -19,7 +19,11 @@
 from setuptools import setup, find_packages
 from os import path
 
-from gce_rescue.config import VERSION
+# Import V2 version for beta releases, fallback to V1 for stable
+try:
+    from gce_rescue_v2.core.config import VERSION
+except ImportError:
+    from gce_rescue.config import VERSION
 
 my_pwd = path.abspath(path.dirname(__file__))
 
@@ -27,41 +31,59 @@ my_pwd = path.abspath(path.dirname(__file__))
 with open(path.join(my_pwd, 'README.md'), encoding='utf-8') as f:
   long_description_readme = f.read()
 
-# Get requirements
-with open(path.join(my_pwd, 'requirements.txt'), encoding='utf-8') as f:
-  list_requirements = f.readlines()
+# Combined dependencies for V1 + V2
+install_requires = [
+    # V1 dependencies
+    'absl-py>=2.3.0',
+    'google-api-python-client>=2.185.0',
+    'google-auth>=2.42.0',
+    # V2 additional dependencies
+    'google-auth-httplib2>=0.2.0',
+    'httplib2>=0.22.0',
+    'pyyaml>=6.0.1',
+]
 
 setup(
   name = 'gce-rescue',
   version = VERSION,
-  description='GCE Rescue - Boot your GCE VM in rescue mode.',
+  description='GCE Rescue - Rescue unbootable Google Compute Engine VMs.',
   url = 'https://github.com/googlecloudplatform/gce-rescue',
-  author = 'Halley de Souza',
+  author = 'GCE Rescue Team',
   author_email = 'gce-rescue-dev@google.com',
   license = 'Apache-2.0',
   long_description = long_description_readme,
   long_description_content_type = 'text/markdown',
-  install_requires = list_requirements,
+  install_requires = install_requires,
   zip_safe = False,
-  packages = find_packages(exclude=['test', '*_test.py']),
+  packages = find_packages(exclude=['test', '*_test.py']),  # Finds both gce_rescue and gce_rescue_v2
   package_dir = {'': '.'},
-  package_data = {'': ['startup-script.txt']},
+  package_data = {
+      '': ['startup-script.txt'],
+      'gce_rescue_v2': [
+          'startup_scripts/*.sh',
+          'startup_scripts/*.ps1',
+          'startup_scripts/fixes/*.sh',
+          'core/diagnose_rules/*.yaml',
+      ],
+  },
   include_package_data = True,
-  python_requires='>=3.7',
+  python_requires='>=3.9',
   entry_points={
         'console_scripts': [
-            'gce-rescue = gce_rescue.bin.rescue:main',
+            'gce-rescue = gce_rescue_v2.cli:main',            # V2 (GA)
+            'gce-rescue-v2 = gce_rescue_v2.cli:main',         # Deprecated alias
+            'gce-rescue-v1 = gce_rescue.bin.rescue:main',     # V1 (Legacy)
         ],
     },
   classifiers = [
+    'Development Status :: 5 - Production/Stable',
     'License :: OSI Approved :: Apache Software License',
     'Operating System :: OS Independent',
-    'Programming Language :: Python :: 3.7',
-    'Programming Language :: Python :: 3.8',
     'Programming Language :: Python :: 3.9',
     'Programming Language :: Python :: 3.10',
     'Programming Language :: Python :: 3.11',
     'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
     'Topic :: System :: Boot',
     'Topic :: System :: Boot :: Init',
     'Topic :: System :: Recovery Tools',

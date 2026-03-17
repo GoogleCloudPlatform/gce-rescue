@@ -23,9 +23,9 @@ _logger = logging.getLogger(__name__)
 def start_instance(vm: Instance) -> str:
   """Start instance."""
 
-  _logger.info(f'Starting {vm.name}...')
+  _logger.info('Starting %s...', vm.name)
   if vm.status == 'RUNNING':
-    _logger.info(f'{vm.name} is already runnning.')
+    _logger.info('%s is already runnning.', vm.name)
     return
 
   operation = vm.compute.instances().start(
@@ -40,9 +40,9 @@ def start_instance(vm: Instance) -> str:
 
 def stop_instance(vm: Instance) -> str:
   """Stop instance."""
-  _logger.info(f'Stopping {vm.name}...')
+  _logger.info('Stopping %s...', vm.name)
   if vm.status == 'TERMINATED':
-    _logger.info(f'{vm.name} is already stopped.')
+    _logger.info('%s is already stopped.', vm.name)
     return
 
   operation = vm.compute.instances().stop(

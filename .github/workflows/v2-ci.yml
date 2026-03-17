@@ -1,0 +1,90 @@
+name: V2 CI
+
+on:
+  push:
+    branches:
+      - v2-beta
+      - main
+      - 'feature/v2*'
+      - 'develop/v2*'
+  pull_request:
+    branches:
+      - v2-beta
+      - main
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov
+
+    - name: Install package
+      run: |
+        pip install -e .
+
+    - name: Run tests
+      run: |
+        python -m pytest gce_rescue_v2/tests/ -v --tb=short
+
+  cover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pytest-cov
+
+    - name: Install package
+      run: |
+        pip install -e .
+
+    - name: Run tests with coverage
+      run: |
+        python -m pytest gce_rescue_v2/tests/ --cov=gce_rescue_v2 --cov-report=term-missing --cov-fail-under=50
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install linters
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8
+
+    - name: Run flake8 (errors only)
+      run: |
+        cd gce_rescue_v2
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics

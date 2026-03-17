@@ -289,7 +289,7 @@ single-line-if-stmt=yes
 # separator` is used to allow tabulation in dicts, etc.: {1  : 1,\n222: 2}.
 # `trailing-comma` allows a space between comma and closing bracket: (a, ).
 # `empty-line` allows space-only lines.
-no-space-check=
+# Note: no-space-check option removed as it's deprecated in newer pylint versions
 
 # Maximum number of lines in a module
 max-module-lines=99999
@@ -442,6 +442,5 @@ valid-metaclass-classmethod-first-arg=mcs
 
 # Exceptions that will emit a warning when being caught. Defaults to
 # "Exception"
-overgeneral-exceptions=StandardError,
-                       Exception,
-                       BaseException
+overgeneral-exceptions=builtins.Exception,
+                       builtins.BaseException

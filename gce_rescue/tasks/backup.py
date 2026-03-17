@@ -46,7 +46,7 @@ def create_snapshot(vm) -> Dict:
     'name': snapshot_name,
     'storageLocations': [ region ]
   }
-  _logger.info(f'Creating snapshot {snapshot_body}... ')
+  _logger.info('Creating snapshot %s... ', snapshot_body)
   operation = vm.compute.disks().createSnapshot(
     **vm.project_data,
     disk = disk_name,
