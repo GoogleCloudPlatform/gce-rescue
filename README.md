@@ -1,6 +1,9 @@
 # GCE Rescue
 
-[![test badge](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml/badge.svg?branch=main&event=push)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml?query=branch%3Amain+event%3Apush)
+[![V2 CI](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/v2-ci.yml/badge.svg?branch=main)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/v2-ci.yml?query=branch%3Amain)
+[![PyPI version](https://img.shields.io/pypi/v/gce-rescue)](https://pypi.org/project/gce-rescue/)
+[![Python](https://img.shields.io/pypi/pyversions/gce-rescue)](https://pypi.org/project/gce-rescue/)
+[![License](https://img.shields.io/github/license/GoogleCloudPlatform/gce-rescue)](https://github.com/GoogleCloudPlatform/gce-rescue/blob/main/LICENSE)
 
 Rescue unbootable Google Compute Engine VMs by swapping disks on the same VM — no new instance created, same IP, no data loss. Creates a safety snapshot before any changes.
 
