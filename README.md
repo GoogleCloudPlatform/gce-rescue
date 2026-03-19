@@ -1,6 +1,9 @@
 # GCE Rescue
 
-[![test badge](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml/badge.svg?branch=main&event=push)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/test.yml?query=branch%3Amain+event%3Apush)
+[![V2 CI](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/v2-ci.yml/badge.svg?branch=main)](https://github.com/GoogleCloudPlatform/gce-rescue/actions/workflows/v2-ci.yml?query=branch%3Amain)
+[![PyPI version](https://img.shields.io/pypi/v/gce-rescue)](https://pypi.org/project/gce-rescue/)
+[![Python](https://img.shields.io/pypi/pyversions/gce-rescue)](https://pypi.org/project/gce-rescue/)
+[![License](https://img.shields.io/github/license/GoogleCloudPlatform/gce-rescue)](https://github.com/GoogleCloudPlatform/gce-rescue/blob/main/LICENSE)
 
 Rescue unbootable Google Compute Engine VMs by swapping disks on the same VM — no new instance created, same IP, no data loss. Creates a safety snapshot before any changes.
 
@@ -32,7 +35,19 @@ gce-rescue repair my-vm --zone=us-central1-a      # Auto-fix it
 Open <a href="https://shell.cloud.google.com" target="_blank">Cloud Shell</a> — Python, gcloud, and authentication are already set up.
 
 ```bash
-pip install git+https://github.com/GoogleCloudPlatform/gce-rescue.git
+pip install gce-rescue
+```
+
+Verify the installation:
+
+```bash
+gce-rescue -h
+```
+
+> If `gce-rescue` is not found after install, start a new shell session or run:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 <details>
@@ -68,42 +83,32 @@ pip install .
 
 </details>
 
-## Authentication
-
-| Environment | Setup |
-|---|---|
-| Cloud Shell | Pre-authenticated, nothing to do |
-| GCE VM (with service account) | Automatic via metadata server |
-| GCE VM (without compute scopes) | `gcloud auth application-default login` |
-| Local machine | `gcloud auth application-default login` |
-
-More info: [Application Default Credentials](https://cloud.google.com/docs/authentication/provide-credentials-adc)
-
 ## Usage
 
+**Start with diagnose** — understand what's wrong (safe, read-only)
+   ```bash
+   gce-rescue diagnose VM_NAME --zone=ZONE
+   ```
+
+**Auto-fix available?** — let repair handle it automatically
+   ```bash
+   gce-rescue repair VM_NAME --zone=ZONE
+   ```
+
+**Need manual access?** — enter rescue mode, fix it yourself
+   ```bash
+   gce-rescue rescue VM_NAME --zone=ZONE
+   
+   # SSH/RDP in, fix the issue on /mnt/sysroot
+
+   gce-rescue restore VM_NAME --zone=ZONE
+   ```
 | Command | What it does | Modifies VM? |
 |---------|-------------|:---:|
 | `diagnose` | Identifies boot errors from serial console output | No |
 | `repair` | Diagnoses and fixes boot issues automatically | Yes |
 | `rescue` | Provides a rescue environment for investigation via SSH/RDP | Yes |
 | `restore` | Reverses rescue, puts your fixed boot disk back | Yes |
-
-1. **Start with diagnose** — understand what's wrong (safe, read-only)
-   ```bash
-   gce-rescue diagnose VM_NAME --zone=ZONE
-   ```
-
-2. **Auto-fix available?** — let repair handle it automatically
-   ```bash
-   gce-rescue repair VM_NAME --zone=ZONE
-   ```
-
-3. **Need manual access?** — enter rescue mode, fix it yourself
-   ```bash
-   gce-rescue rescue VM_NAME --zone=ZONE
-   # SSH/RDP in, fix the issue on /mnt/sysroot
-   gce-rescue restore VM_NAME --zone=ZONE
-   ```
 
 All operations create a snapshot before changes, roll back automatically on
 failure, and can resume if interrupted.
@@ -126,6 +131,17 @@ Result:    Found 1 boot error(s)
 ```
 
 </details>
+
+## Authentication
+
+| Environment | Setup |
+|---|---|
+| Cloud Shell | Pre-authenticated, nothing to do |
+| GCE VM (with service account) | Automatic via metadata server |
+| GCE VM (without compute scopes) | `gcloud auth application-default login` |
+| Local machine | `gcloud auth application-default login` |
+
+More info: [Application Default Credentials](https://cloud.google.com/docs/authentication/provide-credentials-adc)
 
 ### Flags
 
