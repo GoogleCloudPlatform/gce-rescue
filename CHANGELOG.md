@@ -5,6 +5,14 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-05-21
+
+### Fixed
+- Test failures under sandboxed test environments (e.g., Bazel/Forge): CLI handlers were writing log files to the working directory, which is read-only under sandboxed runners. An autouse fixture in `gce_rescue_v2/tests/conftest.py` redirects to `TEST_TMPDIR` when set (#88).
+
+### Changed
+- Post-GA README and CI workflow updates (#83).
+
 ## [2.0.0] - 2026-03-04
 
 ### GA Release
