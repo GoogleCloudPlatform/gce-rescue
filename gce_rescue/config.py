@@ -25,6 +25,7 @@ config = {
   'version': VERSION,
   'debug': False,
   'skip-snapshot': False,
+  'rescue-image': None,
   'startup-script-file': os.path.join(dirname, 'startup-script.txt'),
   'source_guests': {
     'x86_64':[
@@ -59,9 +60,16 @@ def process_args():
                       help='Don\'t ask for confirmation.')
   parser.add_argument('--skip-snapshot', action='store_true',
                       help='Skip backing up the disk using a snapshot.')
+  parser.add_argument('--rescue-image', metavar='IMAGE_URL', default=None,
+                      help='Custom rescue disk image URL. Overrides the default'
+                           ' OS/arch-based image selection. Accepts a specific'
+                           ' image URL (projects/PROJECT/global/images/IMAGE)'
+                           ' or an image family URL'
+                           ' (projects/PROJECT/global/images/family/FAMILY).')
   return parser
 
 
 def set_configs(user_args):
   config['debug'] = getattr(user_args, 'debug')
   config['skip-snapshot'] = getattr(user_args, 'skip_snapshot')
+  config['rescue-image'] = getattr(user_args, 'rescue_image', None)

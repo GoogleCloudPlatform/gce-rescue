@@ -37,7 +37,7 @@ class CustomArgumentParser(argparse.ArgumentParser):
     """Custom ArgumentParser with cleaner error messages."""
 
     # Flags specific to each command (for helpful error messages)
-    RESCUE_ONLY_FLAGS = ['--snapshot', '--no-snapshot']
+    RESCUE_ONLY_FLAGS = ['--snapshot', '--no-snapshot', '--rescue-image']
     RESTORE_ONLY_FLAGS = ['--keep-rescue-disk']
     REPAIR_ONLY_FLAGS = []  # repair uses same flags as rescue for now
 
@@ -216,6 +216,14 @@ EXAMPLES
     Rescue without snapshot (faster but riskier):
         $ gce-rescue rescue my-vm --zone=us-central1-a --no-snapshot
 
+    Rescue with a custom image:
+        $ gce-rescue rescue my-vm --zone=us-central1-a \\
+            --rescue-image=projects/my-project/global/images/my-rescue-image
+
+    Rescue with a custom image family:
+        $ gce-rescue rescue my-vm --zone=us-central1-a \\
+            --rescue-image=projects/debian-cloud/global/images/family/debian-11
+
 AFTER RESCUE
     Linux VMs:
         $ gcloud compute ssh my-vm --zone=us-central1-a
@@ -392,6 +400,20 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         help='Skip snapshot creation (faster but riskier)'
     )
 
+    image_group = parser.add_argument_group('IMAGE FLAGS')
+    image_group.add_argument(
+        '--rescue-image',
+        metavar='IMAGE_URL',
+        dest='rescue_image',
+        default=None,
+        help=(
+            'Custom rescue disk image URL. Overrides the default OS/arch-based'
+            ' image selection. Accepts a specific image URL'
+            ' (projects/PROJECT/global/images/IMAGE) or an image family URL'
+            ' (projects/PROJECT/global/images/family/FAMILY).'
+        )
+    )
+
 
 def _add_repair_args(parser: argparse.ArgumentParser):
     """Add repair-specific arguments."""
@@ -407,6 +429,20 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         dest='snapshot',
         action='store_false',
         help='Skip snapshot creation (faster but riskier)'
+    )
+
+    image_group = parser.add_argument_group('IMAGE FLAGS')
+    image_group.add_argument(
+        '--rescue-image',
+        metavar='IMAGE_URL',
+        dest='rescue_image',
+        default=None,
+        help=(
+            'Custom rescue disk image URL. Overrides the default OS/arch-based'
+            ' image selection. Accepts a specific image URL'
+            ' (projects/PROJECT/global/images/IMAGE) or an image family URL'
+            ' (projects/PROJECT/global/images/family/FAMILY).'
+        )
     )
 
 
@@ -442,6 +478,10 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # Snapshot setting (only configurable rescue option in beta)
     if hasattr(args, 'snapshot'):
         config.create_snapshot = args.snapshot
+
+    # Custom rescue image (overrides auto OS/arch detection)
+    if hasattr(args, 'rescue_image') and args.rescue_image:
+        config.custom_rescue_image = args.rescue_image
 
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):
