@@ -525,6 +525,8 @@ class RepairOrchestrator:
             (r'dev-disk-by-partuuid-([\w-]+)\.device', 1),
             # Raw device like /dev/sdb1
             (r'/dev/(sd[a-z]+\d*)', 1),
+            # Raw NVMe devices (e.g. /dev/nvme0n1, /dev/nvme1n1p2)
+            (r'/dev/(nvme\d+n\d+(?:p\d+)?)', 1),
             # Systemd unit name -> mount point (e.g., "mnt-data.mount" -> /mnt/data)
             (r'for ([\w.-]+)\.mount', 1),
             # Disk label from /dev/disk/by-label/xxx
