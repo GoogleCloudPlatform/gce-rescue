@@ -553,27 +553,37 @@ class RescueOrchestrator:
                         context_updates={'rescue_disk_name': rescue_disk_name}
                     )
                 else:
-                    if self.os_type == OS_TYPE_WINDOWS:
+                    if self.config.custom_rescue_image:
+                        # User-supplied image URL (overrides OS/arch auto-selection)
+                        source_image = self.config.custom_rescue_image
+                        rescue_disk_size = self.config.rescue_disk_size_gb
+                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, custom image: {source_image})...")
+                    elif self.os_type == OS_TYPE_WINDOWS:
                         rescue_image_project = self.config.windows_rescue_image_project
                         rescue_image_family = self.config.windows_rescue_image_family
                         rescue_disk_size = self.config.windows_rescue_disk_size_gb
+                        source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
+                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
                     elif self.architecture == ARCH_ARM64:
                         # ARM64 Linux (T2A instances)
                         rescue_image_project = self.config.arm64_rescue_image_project
                         rescue_image_family = self.config.arm64_rescue_image_family
                         rescue_disk_size = self.config.rescue_disk_size_gb
+                        source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
+                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
                     else:
                         # x86_64 Linux (default)
                         rescue_image_project = self.config.rescue_image_project
                         rescue_image_family = self.config.rescue_image_family
                         rescue_disk_size = self.config.rescue_disk_size_gb
+                        source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
+                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
 
-                    self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
                     result = create_disk.execute(
                         disk_name=rescue_disk_name,
                         size_gb=rescue_disk_size,
                         disk_type=self.config.rescue_disk_type,
-                        source_image=f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}',
+                        source_image=source_image,
                         timeout=self.config.disk_create_timeout,
                         tracking_label=self._ua('disk-create-rescue')
                     )

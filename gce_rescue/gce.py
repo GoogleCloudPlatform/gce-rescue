@@ -49,6 +49,10 @@ def guess_guest(data: Dict) -> str:
   different OS for recovery disk.
      Default: projects/debian-cloud/global/images/family/debian-11"""
 
+  custom_image = get_config('rescue-image')
+  if custom_image:
+    return custom_image
+
   guests = get_config('source_guests')
   for disk in data['disks']:
     if disk['boot']:

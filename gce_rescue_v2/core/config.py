@@ -86,6 +86,11 @@ class RescueConfig:
     rescue_disk_size_gb: int = 10
     rescue_disk_type: str = 'pd-balanced'
 
+    # Custom rescue image (overrides all auto-selection when set)
+    # Accepts full image URL: projects/PROJECT/global/images/IMAGE
+    # or family URL: projects/PROJECT/global/images/family/FAMILY
+    custom_rescue_image: Optional[str] = None
+
     # Linux rescue image (default)
     rescue_image_family: str = 'debian-12'  # Use newer kernel for XFS/Btrfs compatibility
     rescue_image_project: str = 'debian-cloud'

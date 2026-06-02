@@ -478,3 +478,79 @@ def test_rescue_rollback_clears_checkpoint(stub_rescue, monkeypatch):
     orch = _make_orch()
     assert orch.execute() is False
     clear_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Custom rescue image tests
+# ---------------------------------------------------------------------------
+
+def test_custom_rescue_image_used_when_set(stub_rescue, monkeypatch):
+    """When custom_rescue_image is set, CreateDiskOperation receives it directly."""
+    captured = SimpleNamespace(source_image=None)
+
+    def _capture_create_disk(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.source_image = source_image
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture_create_disk)
+
+    custom_image = "projects/my-proj/global/images/my-hardened-image"
+    config = RescueConfig(create_snapshot=False, custom_rescue_image=custom_image)
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    assert captured.source_image == custom_image
+
+
+def test_custom_rescue_image_overrides_os_arch_selection(stub_rescue, monkeypatch):
+    """custom_rescue_image takes precedence over OS/arch auto-selection (Windows VM)."""
+    captured = SimpleNamespace(source_image=None)
+
+    def _capture_create_disk(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.source_image = source_image
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture_create_disk)
+
+    # Simulate a Windows VM
+    def _fake_get_disk_info_windows(self):
+        self.vm_info = {"disks": [{"boot": True,
+                                   "source": "projects/p/zones/z/disks/original-boot",
+                                   "deviceName": "sda"}]}
+        self.os_type = "windows"
+        self.architecture = "x86_64"
+        self.original_disk_name = "original-boot"
+        self.original_device_name = "sda"
+
+    monkeypatch.setattr(RescueOrchestrator, "_get_original_disk_info", _fake_get_disk_info_windows)
+
+    custom_image = "projects/my-proj/global/images/family/debian-11"
+    config = RescueConfig(create_snapshot=False, custom_rescue_image=custom_image)
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    # Must use the custom image, not the windows-2022 default
+    assert captured.source_image == custom_image
+    assert "windows" not in captured.source_image
+
+
+def test_no_custom_image_uses_default_auto_selection(stub_rescue, monkeypatch):
+    """Without custom_rescue_image, the default Debian image family URL is used."""
+    captured = SimpleNamespace(source_image=None)
+
+    def _capture_create_disk(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.source_image = source_image
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture_create_disk)
+
+    config = RescueConfig(create_snapshot=False)  # custom_rescue_image=None by default
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    # Should use the default debian-12 family URL
+    assert "debian-cloud" in captured.source_image
+    assert "debian-12" in captured.source_image
