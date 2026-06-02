@@ -769,3 +769,54 @@ class TestHandleRepair:
         args = _parse_args("repair")
         exit_code = cli.handle_repair(args)
         assert exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# TestRescueImageFlag
+# ---------------------------------------------------------------------------
+
+class TestRescueImageFlag:
+    """Tests for the --rescue-image CLI flag."""
+
+    def setup_method(self):
+        self.parser = cli.create_parser()
+
+    # --- Parsing ---
+
+    def test_rescue_image_accepted_by_rescue_command(self):
+        """--rescue-image is a valid flag for the rescue subcommand."""
+        args = self.parser.parse_args([
+            "rescue", "vm-1", "--zone", "us-central1-a",
+            "--rescue-image", "projects/my-proj/global/images/my-image",
+        ])
+        assert args.rescue_image == "projects/my-proj/global/images/my-image"
+
+    def test_rescue_image_accepted_by_repair_command(self):
+        """--rescue-image is a valid flag for the repair subcommand."""
+        args = self.parser.parse_args([
+            "repair", "vm-1", "--zone", "us-central1-a",
+            "--rescue-image", "projects/my-proj/global/images/family/debian-11",
+        ])
+        assert args.rescue_image == "projects/my-proj/global/images/family/debian-11"
+
+    def test_rescue_image_defaults_to_none(self):
+        """When --rescue-image is omitted, rescue_image is None."""
+        args = self.parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a"])
+        assert args.rescue_image is None
+
+    # --- args_to_rescue_config wiring ---
+
+    def test_rescue_image_populates_config(self):
+        """args_to_rescue_config copies --rescue-image into RescueConfig.custom_rescue_image."""
+        args = self.parser.parse_args([
+            "rescue", "vm-1", "--zone", "us-central1-a",
+            "--rescue-image", "projects/my-proj/global/images/my-image",
+        ])
+        config = cli.args_to_rescue_config(args)
+        assert config.custom_rescue_image == "projects/my-proj/global/images/my-image"
+
+    def test_no_rescue_image_leaves_config_none(self):
+        """Without the flag, RescueConfig.custom_rescue_image stays None."""
+        args = self.parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a"])
+        config = cli.args_to_rescue_config(args)
+        assert config.custom_rescue_image is None
