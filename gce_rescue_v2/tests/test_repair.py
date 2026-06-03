@@ -563,6 +563,20 @@ class TestExtractFstabTargets:
         targets = orch._extract_fstab_targets(diagnosis)
         assert 'sdb1' in targets
 
+    def test_extract_nvme_device_path(self):
+        """Should extract raw NVMe device like /dev/nvme0n2 from systemd timeout logs."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Timed out waiting for device nvme0n2.device - /dev/nvme0n2.',
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert 'nvme0n2' in targets
+
+
     def test_extract_mount_from_systemd_unit(self):
         """Should extract mount point from systemd unit name."""
         orch = self._make_orchestrator()
