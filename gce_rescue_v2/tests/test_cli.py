@@ -583,6 +583,122 @@ class TestHandleRescue:
         exit_code = cli.handle_rescue(args)
         assert exit_code == 1
 
+    def _setup_rescue_with_image(self, monkeypatch, validate_returns=(50, None)):
+        """Variant of _setup_rescue with mockable image pre-flight outcome.
+
+        validate_returns: (size_gb, error_message) tuple returned by the
+            mocked preflight.validate_custom_rescue_image helper.
+        """
+        captured_config = {}
+
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+        _mock_auth(monkeypatch)
+        monkeypatch.setattr(
+            preflight, "_validate_vm_exists",
+            lambda c, p, z, vm, user_agent=None: (
+                True,
+                {"disks": [{"boot": True, "licenses": ["debian-12"]}],
+                 "status": "RUNNING", "metadata": {"items": []}},
+                None,
+            ),
+        )
+        monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: [])
+        # Mock the shared image pre-flight helper directly (the unit under
+        # test here is the CLI handler, not the helper).
+        monkeypatch.setattr(
+            preflight, "validate_custom_rescue_image",
+            lambda *a, **kw: validate_returns,
+        )
+
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                captured_config['config'] = kwargs.get('config')
+                self.os_type = 'linux'
+                self.snapshot_name = None
+                self.verification_succeeded = True
+            def validate(self): return True
+            def execute(self): return True
+
+        monkeypatch.setattr(
+            "gce_rescue_v2.cli.rescue.RescueOrchestrator", FakeOrchestrator
+        )
+        return captured_config
+
+    def test_handle_rescue_invalid_rescue_image_url(self, monkeypatch, capsys):
+        """Bad --rescue-image URL is rejected with clean error, exit 1."""
+        self._setup_rescue_with_image(
+            monkeypatch,
+            validate_returns=(None, "Unrecognized rescue image URL format: oops"),
+        )
+        args = _parse_args("rescue", extra=["--rescue-image", "oops"])
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 1
+        assert "Unrecognized rescue image URL format" in capsys.readouterr().err
+
+    def test_handle_rescue_rescue_image_not_found(self, monkeypatch, capsys):
+        """Non-existent rescue image (404) shows clean error, exit 1."""
+        self._setup_rescue_with_image(
+            monkeypatch,
+            validate_returns=(None, "Rescue image not found: projects/my-proj/global/images/does-not-exist"),
+        )
+        args = _parse_args(
+            "rescue",
+            extra=["--rescue-image", "projects/my-proj/global/images/does-not-exist"],
+        )
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 1
+        assert "not found" in capsys.readouterr().err.lower()
+
+    def test_handle_rescue_resolved_size_flows_to_config(self, monkeypatch):
+        """Successful image pre-check passes resolved size into RescueConfig."""
+        captured_config = self._setup_rescue_with_image(
+            monkeypatch, validate_returns=(50, None),
+        )
+        args = _parse_args(
+            "rescue",
+            extra=["--rescue-image", "projects/debian-cloud/global/images/family/debian-12"],
+        )
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 0
+        assert captured_config['config'].custom_rescue_image_size_gb == 50
+
+    def test_handle_rescue_blocks_linux_vm_windows_image(self, monkeypatch, capsys):
+        """Linux VM + Windows custom image is rejected (issue #101)."""
+        self._setup_rescue_with_image(
+            monkeypatch,
+            validate_returns=(None,
+                "--rescue-image OS mismatch: VM is linux, but image is windows.\n"
+                "      Rescue image OS must match the VM's OS family."),
+        )
+        args = _parse_args(
+            "rescue",
+            extra=["--rescue-image", "projects/windows-cloud/global/images/family/windows-2019"],
+        )
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "OS mismatch" in err
+        assert "linux" in err.lower() and "windows" in err.lower()
+
+    def test_handle_rescue_blocks_arch_mismatch(self, monkeypatch, capsys):
+        """x86 VM + ARM64 custom image is rejected (issue #101)."""
+        self._setup_rescue_with_image(
+            monkeypatch,
+            validate_returns=(None,
+                "--rescue-image architecture mismatch: VM is x86_64, but image is arm64.\n"
+                "      Rescue image architecture must match the VM's."),
+        )
+        args = _parse_args(
+            "rescue",
+            extra=["--rescue-image", "projects/debian-cloud/global/images/family/debian-12-arm64"],
+        )
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 1
+        err = capsys.readouterr().err
+        assert "architecture mismatch" in err
+        assert "x86_64" in err and "arm64" in err
+
 
 class TestHandleRestore:
     """Tests for handle_restore CLI handler."""
@@ -769,6 +885,73 @@ class TestHandleRepair:
         args = _parse_args("repair")
         exit_code = cli.handle_repair(args)
         assert exit_code == 1
+
+    # --- --rescue-image pre-flight (issue #102) ---
+
+    def test_handle_repair_rescue_image_invalid_blocks_pre_flight(
+        self, monkeypatch, capsys,
+    ):
+        """Bad --rescue-image URL is blocked by shared pre-flight helper."""
+        self._setup_repair_base(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(
+            preflight, "validate_custom_rescue_image",
+            lambda *a, **kw: (None, "Unrecognized rescue image URL format: oops"),
+        )
+
+        Fake = self._make_fake_repair_orch()
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        args = _parse_args("repair", extra=["--rescue-image", "oops"])
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 1
+        assert "Unrecognized rescue image URL format" in capsys.readouterr().err
+
+    def test_handle_repair_rescue_image_size_mutated_onto_orchestrator(
+        self, monkeypatch,
+    ):
+        """Successful pre-flight mutates orchestrator.config.custom_rescue_image_size_gb."""
+        self._setup_repair_base(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(
+            preflight, "validate_custom_rescue_image",
+            lambda *a, **kw: (50, None),  # resolved 50 GB, no error
+        )
+
+        captured = {}
+
+        class FakeRepairOrch:
+            _suppress_header = False
+            def __init__(self, **kwargs):
+                # Save instance so we can inspect config mutation
+                self.config = kwargs.get('config')
+                captured['orch'] = self
+            def validate(self): return True
+            def diagnose(self):
+                return {"instance_name": "vm-1", "zone": "us-central1-a",
+                        "boot_errors": [], "boot_status": "healthy"}
+            def get_fixable_categories(self, d): return []
+            def get_unfixable_categories(self, d): return []
+            def _extract_fstab_targets(self, d): return []
+            def execute(self, d):
+                return {"status": "success", "fixed_count": 0,
+                        "fix_lines": [], "error": None,
+                        "snapshot_name": "s", "duration_seconds": 1}
+
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", FakeRepairOrch
+        )
+
+        args = _parse_args(
+            "repair",
+            extra=["--rescue-image", "projects/debian-cloud/global/images/family/debian-12"],
+        )
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 0
+        # Confirm the mutation happened on the orchestrator's config
+        assert captured['orch'].config.custom_rescue_image_size_gb == 50
 
 
 # ---------------------------------------------------------------------------

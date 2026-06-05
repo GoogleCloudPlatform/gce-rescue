@@ -407,9 +407,11 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         dest='rescue_image',
         default=None,
         help=(
-            'Custom rescue disk image URL. Overrides the default OS/arch-based'
-            ' image selection. Accepts a specific image URL'
-            ' (projects/PROJECT/global/images/IMAGE) or an image family URL'
+            'Custom rescue disk image URL. Image OS family (linux/windows)'
+            ' and architecture (x86_64/arm64) must match the target VM,'
+            ' otherwise the rescue is blocked at pre-flight. Accepts a'
+            ' specific image URL (projects/PROJECT/global/images/IMAGE)'
+            ' or an image family URL'
             ' (projects/PROJECT/global/images/family/FAMILY).'
         )
     )
@@ -438,9 +440,11 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         dest='rescue_image',
         default=None,
         help=(
-            'Custom rescue disk image URL. Overrides the default OS/arch-based'
-            ' image selection. Accepts a specific image URL'
-            ' (projects/PROJECT/global/images/IMAGE) or an image family URL'
+            'Custom rescue disk image URL. Image OS family (linux/windows)'
+            ' and architecture (x86_64/arm64) must match the target VM,'
+            ' otherwise the rescue is blocked at pre-flight. Accepts a'
+            ' specific image URL (projects/PROJECT/global/images/IMAGE)'
+            ' or an image family URL'
             ' (projects/PROJECT/global/images/family/FAMILY).'
         )
     )
@@ -482,6 +486,9 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # Custom rescue image (overrides auto OS/arch detection)
     if hasattr(args, 'rescue_image') and args.rescue_image:
         config.custom_rescue_image = args.rescue_image
+        # Pre-resolved disk size from CLI pre-flight (avoids orchestrator re-lookup)
+        if getattr(args, 'custom_rescue_image_size_gb', None) is not None:
+            config.custom_rescue_image_size_gb = args.custom_rescue_image_size_gb
 
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):

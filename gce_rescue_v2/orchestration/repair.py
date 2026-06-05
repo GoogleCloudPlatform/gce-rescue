@@ -248,6 +248,9 @@ class RepairOrchestrator:
             rescue_config = RescueConfig()
             rescue_config.create_snapshot = self.config.create_snapshot
             rescue_config.force = self.config.force
+            # Propagate custom rescue image settings (issue #102)
+            rescue_config.custom_rescue_image = self.config.custom_rescue_image
+            rescue_config.custom_rescue_image_size_gb = self.config.custom_rescue_image_size_gb
 
             rescue = RescueOrchestrator(
                 compute=self.compute, project=self.project, zone=self.zone,
