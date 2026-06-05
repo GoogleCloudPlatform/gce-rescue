@@ -5,6 +5,14 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-06-05
+
+### Added
+- `--rescue-image` flag for `rescue` and `repair` subcommands: supply a custom rescue disk image URL (specific image or family form). The image must match the target VM's OS family (linux/windows) and architecture (x86_64/arm64). Useful for restricted-image org policies, hardened or pre-configured rescue environments, and recovery with a specific kernel/toolset (#94, contributed by @SureshkumarRamakrishnan; #103).
+
+### Fixed
+- fstab repair correctly extracts targets for NVMe boot disks (`/dev/nvme0n1p1`-style device paths). Affects users on machine types with NVMe boot disks (e.g. C3, C4) (#98, #100).
+
 ## [2.0.1] - 2026-05-21
 
 ### Fixed
