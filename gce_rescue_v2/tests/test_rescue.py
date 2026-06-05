@@ -147,6 +147,12 @@ def stub_rescue(monkeypatch):
     monkeypatch.setattr(RescueOrchestrator, "_is_disk_attached", lambda self, n: False)
     monkeypatch.setattr(RescueOrchestrator, "_get_vm_status", lambda self: "TERMINATED")
     monkeypatch.setattr(RescueOrchestrator, "_generate_startup_script", lambda self: "echo test")
+    # Default custom-image size lookup returns 10GB (Linux default); individual
+    # tests override this to verify size-handling logic.
+    monkeypatch.setattr(
+        RescueOrchestrator, "get_custom_image_disk_size",
+        staticmethod(lambda compute, url: 10),
+    )
 
     # Stub _get_original_disk_info to set disk/os info without API call
     def _fake_get_disk_info(self):
@@ -554,3 +560,97 @@ def test_no_custom_image_uses_default_auto_selection(stub_rescue, monkeypatch):
     # Should use the default debian-12 family URL
     assert "debian-cloud" in captured.source_image
     assert "debian-12" in captured.source_image
+
+
+# ---------------------------------------------------------------------------
+# Custom image disk-size handling (issue #95)
+# ---------------------------------------------------------------------------
+
+def test_custom_image_disk_size_honors_image_requirement(stub_rescue, monkeypatch):
+    """Custom image requiring 50GB (e.g. Windows) creates a 50GB rescue disk."""
+    captured = SimpleNamespace(size_gb=None)
+
+    def _capture(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.size_gb = size_gb
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture)
+
+    # Image reports 50GB required
+    monkeypatch.setattr(
+        RescueOrchestrator, "get_custom_image_disk_size",
+        staticmethod(lambda compute, url: 50),
+    )
+
+    config = RescueConfig(
+        create_snapshot=False,
+        custom_rescue_image="projects/windows-cloud/global/images/family/windows-2019",
+    )
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    assert captured.size_gb == 50
+
+
+def test_custom_image_disk_size_never_below_default(stub_rescue, monkeypatch):
+    """Image requiring less than 10GB is bumped up to the Linux default."""
+    captured = SimpleNamespace(size_gb=None)
+
+    def _capture(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.size_gb = size_gb
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture)
+
+    # Tiny image reports only 5GB
+    monkeypatch.setattr(
+        RescueOrchestrator, "get_custom_image_disk_size",
+        staticmethod(lambda compute, url: 5),
+    )
+
+    config = RescueConfig(
+        create_snapshot=False,
+        custom_rescue_image="projects/my-proj/global/images/tiny-image",
+    )
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    # max(5, 10) == 10
+    assert captured.size_gb == 10
+
+
+def test_custom_image_invalid_url_aborts_before_disk_creation(stub_rescue, monkeypatch):
+    """Bad URL format raises ValueError; orchestrator aborts without creating a disk.
+
+    Note: stop/detach/snapshot run before this check (they're steps 1-3); rollback
+    handles cleanup. The point is to prevent the cryptic GCP API error and the
+    pointless attempt to create a disk with an unparseable source_image.
+    """
+    create_called = SimpleNamespace(value=False)
+    rollback_called = SimpleNamespace(value=False)
+
+    def _track_create(self, *args, **kwargs):
+        create_called.value = True
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+
+    monkeypatch.setattr(CreateDiskOperation, "execute", _track_create)
+    monkeypatch.setattr(
+        RescueOrchestrator, "_rollback",
+        lambda self: setattr(rollback_called, "value", True)
+    )
+
+    # Image lookup raises ValueError for bad URL
+    def _raise_invalid(compute, url):
+        raise ValueError(f"Unrecognized rescue image URL format: {url}")
+    monkeypatch.setattr(
+        RescueOrchestrator, "get_custom_image_disk_size",
+        staticmethod(_raise_invalid),
+    )
+
+    config = RescueConfig(create_snapshot=False, custom_rescue_image="oops")
+    orch = _make_orch(config)
+    assert orch.execute() is False
+    assert create_called.value is False  # disk creation never attempted
+    assert rollback_called.value is True  # cleanup ran

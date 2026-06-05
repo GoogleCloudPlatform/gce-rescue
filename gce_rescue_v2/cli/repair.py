@@ -223,7 +223,8 @@ def handle_repair(args: argparse.Namespace) -> int:
     logger.debug(f"Log file: {log_file}")
     logger.debug(f"VM: {args.instance_name}, Zone: {args.zone}, Project: {project}")
 
-    # Create repair orchestrator
+    # Create repair orchestrator. Custom-image resolved size (if any) is
+    # mutated onto orchestrator.config after the pre-flight check below.
     from ..orchestration.repair import RepairOrchestrator
     from . import args_to_rescue_config
     config = args_to_rescue_config(args)
@@ -277,6 +278,20 @@ def handle_repair(args: argparse.Namespace) -> int:
                   f"instancesDetail/zones/{args.zone}/instances/{args.instance_name}"
                   f"/console?project={project}&port=1", file=sys.stderr)
             return 1
+
+        # Validate --rescue-image BEFORE any destructive ops. Same shared
+        # helper used by handle_rescue. Resolved size is mutated onto the
+        # orchestrator's config so the inner rescue phase uses it.
+        if getattr(args, 'rescue_image', None):
+            from . import preflight as _preflight
+            size_gb, err = _preflight.validate_custom_rescue_image(
+                compute, vm, args.rescue_image,
+                session_id=session_id, command='repair', mode=mode,
+            )
+            if err:
+                print(f"{error_prefix()} {err}", file=sys.stderr)
+                return 1
+            orchestrator.config.custom_rescue_image_size_gb = size_gb
 
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])

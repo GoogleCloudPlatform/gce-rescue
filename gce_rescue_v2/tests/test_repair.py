@@ -195,6 +195,50 @@ class TestRepairOrchestrator:
         assert result['status'] == 'no_fix'
         assert result['fixed_count'] == 0
 
+    def test_execute_propagates_custom_rescue_image_to_inner_rescue(self):
+        """Repair must pass --rescue-image fields through to inner rescue (issue #102)."""
+        from unittest.mock import patch, MagicMock
+        from gce_rescue_v2.core.config import RescueConfig
+
+        compute = _make_compute()
+        outer_config = RescueConfig(
+            create_snapshot=True,
+            custom_rescue_image="projects/debian-cloud/global/images/family/debian-12",
+            custom_rescue_image_size_gb=20,
+        )
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1',
+            config=outer_config, logger=_make_logger(),
+        )
+
+        diagnosis = {
+            'boot_errors': [{'category': 'fstab', 'severity': 'error',
+                             'detected_pattern': 'UUID=bad'}]
+        }
+
+        captured = {}
+
+        # Capture the RescueConfig passed to the inner RescueOrchestrator
+        def _fake_rescue_ctor(**kwargs):
+            captured['rescue_config'] = kwargs.get('config')
+            mock = MagicMock()
+            mock.execute.return_value = False  # short-circuit, we only care about config
+            return mock
+
+        with patch(
+            'gce_rescue_v2.orchestration.repair.RescueOrchestrator',
+            side_effect=_fake_rescue_ctor,
+        ):
+            # Bypass fix-script generation to avoid extra setup
+            with patch.object(orch, '_generate_repair_script', return_value="#!/bin/bash"):
+                orch.execute(diagnosis)
+
+        # The inner rescue_config must carry the custom image fields
+        assert captured['rescue_config'].custom_rescue_image == (
+            "projects/debian-cloud/global/images/family/debian-12"
+        )
+        assert captured['rescue_config'].custom_rescue_image_size_gb == 20
+
 
 # ---------------------------------------------------------------------------
 # TestRepairCLI

@@ -482,6 +482,9 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # Custom rescue image (overrides auto OS/arch detection)
     if hasattr(args, 'rescue_image') and args.rescue_image:
         config.custom_rescue_image = args.rescue_image
+        # Pre-resolved disk size from CLI pre-flight (avoids orchestrator re-lookup)
+        if getattr(args, 'custom_rescue_image_size_gb', None) is not None:
+            config.custom_rescue_image_size_gb = args.custom_rescue_image_size_gb
 
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):
