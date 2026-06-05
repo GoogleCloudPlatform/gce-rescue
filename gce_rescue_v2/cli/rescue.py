@@ -103,6 +103,20 @@ def handle_rescue(args: argparse.Namespace) -> int:
                   f" --quiet --force", file=sys.stderr)
             return 1
 
+        # Validate --rescue-image BEFORE confirmation (fast-fail on bad URL,
+        # non-existent image, or OS/arch mismatch; no destructive operations
+        # performed). Shared helper used by both rescue and repair handlers.
+        args.custom_rescue_image_size_gb = None
+        if getattr(args, 'rescue_image', None):
+            size_gb, err = preflight.validate_custom_rescue_image(
+                compute, vm_info, args.rescue_image,
+                session_id=session_id, command='rescue', mode=mode,
+            )
+            if err:
+                print(f"{error_prefix()} {err}", file=sys.stderr)
+                return 1
+            args.custom_rescue_image_size_gb = size_gb
+
     # Interactive confirmation (unless --quiet or resuming)
     if not args.quiet and not resuming:
         lines_printed = 0

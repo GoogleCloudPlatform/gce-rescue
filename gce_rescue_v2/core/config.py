@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # Version for usage tracking (SemVer: MAJOR.MINOR.PATCH-PRERELEASE)
-VERSION = '2.0.1'
+VERSION = '2.1.0'
 
 
 def _sanitize_ua_value(value: str) -> str:
@@ -85,6 +85,14 @@ class RescueConfig:
     # Rescue disk settings
     rescue_disk_size_gb: int = 10
     rescue_disk_type: str = 'pd-balanced'
+
+    # Custom rescue image (overrides all auto-selection when set)
+    # Accepts full image URL: projects/PROJECT/global/images/IMAGE
+    # or family URL: projects/PROJECT/global/images/family/FAMILY
+    custom_rescue_image: Optional[str] = None
+    # Disk size required by custom_rescue_image, pre-resolved by CLI to avoid
+    # a redundant API lookup in the orchestrator. If None, orchestrator looks it up.
+    custom_rescue_image_size_gb: Optional[int] = None
 
     # Linux rescue image (default)
     rescue_image_family: str = 'debian-12'  # Use newer kernel for XFS/Btrfs compatibility
