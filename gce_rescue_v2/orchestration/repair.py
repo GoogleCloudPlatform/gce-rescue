@@ -248,6 +248,9 @@ class RepairOrchestrator:
             rescue_config = RescueConfig()
             rescue_config.create_snapshot = self.config.create_snapshot
             rescue_config.force = self.config.force
+            # Propagate custom rescue image settings (issue #102)
+            rescue_config.custom_rescue_image = self.config.custom_rescue_image
+            rescue_config.custom_rescue_image_size_gb = self.config.custom_rescue_image_size_gb
 
             rescue = RescueOrchestrator(
                 compute=self.compute, project=self.project, zone=self.zone,
@@ -525,6 +528,8 @@ class RepairOrchestrator:
             (r'dev-disk-by-partuuid-([\w-]+)\.device', 1),
             # Raw device like /dev/sdb1
             (r'/dev/(sd[a-z]+\d*)', 1),
+            # Raw NVMe devices (e.g. /dev/nvme0n1, /dev/nvme1n1p2)
+            (r'/dev/(nvme\d+n\d+(?:p\d+)?)', 1),
             # Systemd unit name -> mount point (e.g., "mnt-data.mount" -> /mnt/data)
             (r'for ([\w.-]+)\.mount', 1),
             # Disk label from /dev/disk/by-label/xxx

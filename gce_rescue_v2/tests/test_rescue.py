@@ -147,6 +147,12 @@ def stub_rescue(monkeypatch):
     monkeypatch.setattr(RescueOrchestrator, "_is_disk_attached", lambda self, n: False)
     monkeypatch.setattr(RescueOrchestrator, "_get_vm_status", lambda self: "TERMINATED")
     monkeypatch.setattr(RescueOrchestrator, "_generate_startup_script", lambda self: "echo test")
+    # Default custom-image size lookup returns 10GB (Linux default); individual
+    # tests override this to verify size-handling logic.
+    monkeypatch.setattr(
+        RescueOrchestrator, "get_custom_image_disk_size",
+        staticmethod(lambda compute, url: 10),
+    )
 
     # Stub _get_original_disk_info to set disk/os info without API call
     def _fake_get_disk_info(self):
@@ -478,3 +484,173 @@ def test_rescue_rollback_clears_checkpoint(stub_rescue, monkeypatch):
     orch = _make_orch()
     assert orch.execute() is False
     clear_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Custom rescue image tests
+# ---------------------------------------------------------------------------
+
+def test_custom_rescue_image_used_when_set(stub_rescue, monkeypatch):
+    """When custom_rescue_image is set, CreateDiskOperation receives it directly."""
+    captured = SimpleNamespace(source_image=None)
+
+    def _capture_create_disk(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.source_image = source_image
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture_create_disk)
+
+    custom_image = "projects/my-proj/global/images/my-hardened-image"
+    config = RescueConfig(create_snapshot=False, custom_rescue_image=custom_image)
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    assert captured.source_image == custom_image
+
+
+def test_custom_rescue_image_overrides_os_arch_selection(stub_rescue, monkeypatch):
+    """custom_rescue_image takes precedence over OS/arch auto-selection (Windows VM)."""
+    captured = SimpleNamespace(source_image=None)
+
+    def _capture_create_disk(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.source_image = source_image
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture_create_disk)
+
+    # Simulate a Windows VM
+    def _fake_get_disk_info_windows(self):
+        self.vm_info = {"disks": [{"boot": True,
+                                   "source": "projects/p/zones/z/disks/original-boot",
+                                   "deviceName": "sda"}]}
+        self.os_type = "windows"
+        self.architecture = "x86_64"
+        self.original_disk_name = "original-boot"
+        self.original_device_name = "sda"
+
+    monkeypatch.setattr(RescueOrchestrator, "_get_original_disk_info", _fake_get_disk_info_windows)
+
+    custom_image = "projects/my-proj/global/images/family/debian-11"
+    config = RescueConfig(create_snapshot=False, custom_rescue_image=custom_image)
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    # Must use the custom image, not the windows-2022 default
+    assert captured.source_image == custom_image
+    assert "windows" not in captured.source_image
+
+
+def test_no_custom_image_uses_default_auto_selection(stub_rescue, monkeypatch):
+    """Without custom_rescue_image, the default Debian image family URL is used."""
+    captured = SimpleNamespace(source_image=None)
+
+    def _capture_create_disk(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.source_image = source_image
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture_create_disk)
+
+    config = RescueConfig(create_snapshot=False)  # custom_rescue_image=None by default
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    # Should use the default debian-12 family URL
+    assert "debian-cloud" in captured.source_image
+    assert "debian-12" in captured.source_image
+
+
+# ---------------------------------------------------------------------------
+# Custom image disk-size handling (issue #95)
+# ---------------------------------------------------------------------------
+
+def test_custom_image_disk_size_honors_image_requirement(stub_rescue, monkeypatch):
+    """Custom image requiring 50GB (e.g. Windows) creates a 50GB rescue disk."""
+    captured = SimpleNamespace(size_gb=None)
+
+    def _capture(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.size_gb = size_gb
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture)
+
+    # Image reports 50GB required
+    monkeypatch.setattr(
+        RescueOrchestrator, "get_custom_image_disk_size",
+        staticmethod(lambda compute, url: 50),
+    )
+
+    config = RescueConfig(
+        create_snapshot=False,
+        custom_rescue_image="projects/windows-cloud/global/images/family/windows-2019",
+    )
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    assert captured.size_gb == 50
+
+
+def test_custom_image_disk_size_never_below_default(stub_rescue, monkeypatch):
+    """Image requiring less than 10GB is bumped up to the Linux default."""
+    captured = SimpleNamespace(size_gb=None)
+
+    def _capture(self, disk_name, size_gb, disk_type, source_image, **kwargs):
+        captured.size_gb = size_gb
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+    monkeypatch.setattr(CreateDiskOperation, "execute", _capture)
+
+    # Tiny image reports only 5GB
+    monkeypatch.setattr(
+        RescueOrchestrator, "get_custom_image_disk_size",
+        staticmethod(lambda compute, url: 5),
+    )
+
+    config = RescueConfig(
+        create_snapshot=False,
+        custom_rescue_image="projects/my-proj/global/images/tiny-image",
+    )
+    orch = _make_orch(config)
+    assert orch.execute() is True
+    # max(5, 10) == 10
+    assert captured.size_gb == 10
+
+
+def test_custom_image_invalid_url_aborts_before_disk_creation(stub_rescue, monkeypatch):
+    """Bad URL format raises ValueError; orchestrator aborts without creating a disk.
+
+    Note: stop/detach/snapshot run before this check (they're steps 1-3); rollback
+    handles cleanup. The point is to prevent the cryptic GCP API error and the
+    pointless attempt to create a disk with an unparseable source_image.
+    """
+    create_called = SimpleNamespace(value=False)
+    rollback_called = SimpleNamespace(value=False)
+
+    def _track_create(self, *args, **kwargs):
+        create_called.value = True
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK", rollback_data={}
+        )
+
+    monkeypatch.setattr(CreateDiskOperation, "execute", _track_create)
+    monkeypatch.setattr(
+        RescueOrchestrator, "_rollback",
+        lambda self: setattr(rollback_called, "value", True)
+    )
+
+    # Image lookup raises ValueError for bad URL
+    def _raise_invalid(compute, url):
+        raise ValueError(f"Unrecognized rescue image URL format: {url}")
+    monkeypatch.setattr(
+        RescueOrchestrator, "get_custom_image_disk_size",
+        staticmethod(_raise_invalid),
+    )
+
+    config = RescueConfig(create_snapshot=False, custom_rescue_image="oops")
+    orch = _make_orch(config)
+    assert orch.execute() is False
+    assert create_called.value is False  # disk creation never attempted
+    assert rollback_called.value is True  # cleanup ran

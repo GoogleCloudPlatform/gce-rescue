@@ -42,6 +42,75 @@ def _create_tracked_client(compute, user_agent: str):
         return compute
 
 
+def validate_custom_rescue_image(
+    compute, vm_info, image_url, session_id, command, mode,
+) -> tuple:
+    """Pre-flight validation of --rescue-image (URL, existence, OS, arch).
+
+    Performs a single Compute API call (tagged for analytics) and checks:
+        - URL format is parseable
+        - Image exists and is accessible (HTTP 403/404 handled cleanly)
+        - Image OS family matches VM OS family
+        - Image architecture matches VM architecture
+
+    Used by both handle_rescue and handle_repair so the validation logic
+    stays consistent across subcommands.
+
+    Args:
+        compute: Compute API client (will be wrapped for analytics).
+        vm_info: VM resource dict (from _validate_vm_exists).
+        image_url: User-supplied --rescue-image value.
+        session_id: Session id for analytics tagging.
+        command: 'rescue' or 'repair' (analytics).
+        mode: 'interactive' or 'auto' (analytics).
+
+    Returns:
+        (size_gb, None) on success, (None, error_message) on failure.
+    """
+    from ..utils.os_detection import detect_os_type, detect_architecture
+    from ..orchestration.rescue import RescueOrchestrator
+    from ..core.config import build_user_agent
+    from googleapiclient.errors import HttpError
+
+    ua = build_user_agent(
+        session_id=session_id, command=command, mode=mode,
+        step='image-preflight-custom',
+    )
+    tracked = _create_tracked_client(compute, ua)
+
+    try:
+        image_dict = RescueOrchestrator.fetch_custom_image(tracked, image_url)
+    except ValueError as e:
+        return None, str(e)
+    except HttpError as e:
+        if e.resp.status == 404:
+            return None, f"Rescue image not found: {image_url}"
+        elif e.resp.status == 403:
+            return None, f"No permission to access rescue image: {image_url}"
+        else:
+            return None, f"Failed to inspect rescue image ({image_url}): {e}"
+
+    vm_os = detect_os_type(vm_info)
+    image_os = RescueOrchestrator.get_custom_image_os(image_dict)
+    if image_os != vm_os:
+        return None, (
+            f"--rescue-image OS mismatch: VM is {vm_os}, "
+            f"but image is {image_os}.\n"
+            f"      Rescue image OS must match the VM's OS family."
+        )
+
+    vm_arch = detect_architecture(vm_info)
+    image_arch = RescueOrchestrator.get_custom_image_architecture(image_dict)
+    if image_arch != vm_arch:
+        return None, (
+            f"--rescue-image architecture mismatch: VM is {vm_arch}, "
+            f"but image is {image_arch}.\n"
+            f"      Rescue image architecture must match the VM's."
+        )
+
+    return int(image_dict.get('diskSizeGb', 0)), None
+
+
 def get_gcloud_config(key: str) -> Optional[str]:
     """
     Read configuration from gcloud config.

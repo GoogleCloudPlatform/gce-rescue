@@ -7,9 +7,16 @@ Provides:
 - sample_rescue_config: RescueConfig with test values
 """
 
+import os
 import pytest
 from unittest.mock import Mock, MagicMock
 from gce_rescue_v2.core.config import RescueConfig
+
+@pytest.fixture(autouse=True, scope='session')
+def change_to_tmpdir():
+    """Change to TEST_TMPDIR if running under the Bazel sandbox."""
+    if 'TEST_TMPDIR' in os.environ:
+        os.chdir(os.environ['TEST_TMPDIR'])
 
 @pytest.fixture
 def mock_compute():

@@ -103,6 +103,7 @@ pip install .
 
    gce-rescue restore VM_NAME --zone=ZONE
    ```
+
 | Command | What it does | Modifies VM? |
 |---------|-------------|:---:|
 | `diagnose` | Identifies boot errors from serial console output | No |
@@ -150,6 +151,7 @@ More info: [Application Default Credentials](https://cloud.google.com/docs/authe
 | `--zone` | GCP zone (required) |
 | `--project` | GCP project (default: current gcloud config) |
 | `--no-snapshot` | Skip safety snapshot (faster) |
+| `--rescue-image` | Custom rescue disk image URL (must match VM's OS family + architecture). Useful for restricted-image org policies or hardened rescue environments. Available for `rescue` and `repair`. |
 | `--quiet` | No confirmation prompts (for automation) |
 | `--format` | Output format: `json`, `yaml`, `table` |
 
