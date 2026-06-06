@@ -268,6 +268,39 @@ class RescueOrchestrator:
         if self.logger:
             self.logger.error(message)
 
+    def _create_tracked_compute(self, user_agent: str):
+        """Wrap self.compute with a custom User-Agent header for analytics.
+
+        Mirrors BaseOperation._create_tracked_client; kept here so the
+        orchestrator can tag its own (non-operation) API calls.
+        """
+        try:
+            from googleapiclient import discovery
+            import googleapiclient.http
+            import google_auth_httplib2
+            import httplib2
+
+            if not isinstance(getattr(self.compute, '_http', None),
+                              google_auth_httplib2.AuthorizedHttp):
+                return self.compute  # likely a test mock — no wrapping
+
+            credentials = self.compute._http.credentials
+
+            def _request_builder(http, *args, **kwargs):
+                headers = kwargs.setdefault('headers', {})
+                headers['user-agent'] = user_agent
+                auth_http = google_auth_httplib2.AuthorizedHttp(
+                    credentials, http=httplib2.Http()
+                )
+                return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+
+            return discovery.build(
+                'compute', 'v1', credentials=credentials,
+                cache_discovery=False, requestBuilder=_request_builder
+            )
+        except Exception:
+            return self.compute
+
     def _ua(self, step: str) -> str:
         """Build User-Agent string for the given step."""
         return build_user_agent(
@@ -329,6 +362,90 @@ class RescueOrchestrator:
             return True
         except Exception:
             return False
+
+    @staticmethod
+    def fetch_custom_image(compute, image_url: str) -> dict:
+        """Look up a custom rescue image and return its full metadata dict.
+
+        Accepts two URL forms:
+            projects/PROJECT/global/images/IMAGE
+            projects/PROJECT/global/images/family/FAMILY
+
+        Returns:
+            The image resource dict (includes diskSizeGb, guestOsFeatures,
+            licenses, architecture, etc.).
+
+        Raises:
+            ValueError: If the URL cannot be parsed into a known form.
+            HttpError: If the API call fails (image not found, no permission, etc.).
+        """
+        _format_error = (
+            f"Unrecognized rescue image URL format: {image_url}\n"
+            "Expected:\n"
+            "  projects/PROJECT/global/images/IMAGE\n"
+            "  projects/PROJECT/global/images/family/FAMILY"
+        )
+
+        parts = image_url.split('/')
+        # Just enough validation to know which API endpoint to call
+        try:
+            if parts[0] != 'projects' or parts[2] != 'global' or parts[3] != 'images':
+                raise ValueError(_format_error)
+        except IndexError:
+            raise ValueError(_format_error)
+
+        project = parts[1]
+
+        if len(parts) == 6 and parts[4] == 'family':
+            return compute.images().getFromFamily(
+                project=project, family=parts[5]
+            ).execute()
+        elif len(parts) == 5:
+            return compute.images().get(
+                project=project, image=parts[4]
+            ).execute()
+        else:
+            raise ValueError(_format_error)
+
+    @staticmethod
+    def get_custom_image_disk_size(compute, image_url: str) -> int:
+        """Look up minimum disk size required by a custom rescue image.
+
+        Thin wrapper over fetch_custom_image for callers that only need size.
+        """
+        return int(
+            RescueOrchestrator.fetch_custom_image(compute, image_url)
+            .get('diskSizeGb', 0)
+        )
+
+    @staticmethod
+    def get_custom_image_os(image: dict) -> str:
+        """Return 'windows' or 'linux' for an image resource dict.
+
+        Detection (most reliable first):
+            - guestOsFeatures contains type='WINDOWS' -> windows
+            - licenses contains 'windows-' substring -> windows
+            - otherwise -> linux
+        """
+        features = image.get('guestOsFeatures') or []
+        if any((f.get('type') or '') == 'WINDOWS' for f in features):
+            return OS_TYPE_WINDOWS
+        licenses = image.get('licenses') or []
+        if any('windows' in (lic or '').lower() for lic in licenses):
+            return OS_TYPE_WINDOWS
+        return OS_TYPE_LINUX
+
+    @staticmethod
+    def get_custom_image_architecture(image: dict) -> str:
+        """Return 'x86_64' or 'arm64' for an image resource dict.
+
+        Reads the explicit `architecture` field (GCP populates this for
+        ARM64 images). Defaults to x86_64 when unset/unknown.
+        """
+        arch = (image.get('architecture') or '').upper()
+        if arch == 'ARM64':
+            return 'arm64'
+        return 'x86_64'
 
     def _get_vm_status(self) -> str:
         """Get current VM status."""
@@ -553,27 +670,64 @@ class RescueOrchestrator:
                         context_updates={'rescue_disk_name': rescue_disk_name}
                     )
                 else:
-                    if self.os_type == OS_TYPE_WINDOWS:
+                    if self.config.custom_rescue_image:
+                        # User-supplied image URL (overrides OS/arch auto-selection)
+                        source_image = self.config.custom_rescue_image
+                        # Prefer CLI-pre-resolved size; fall back to lookup if absent
+                        # (defensive for direct API users who skipped the CLI pre-flight).
+                        if self.config.custom_rescue_image_size_gb is not None:
+                            image_required_gb = self.config.custom_rescue_image_size_gb
+                        else:
+                            # Direct-API path: tag lookup so analytics can
+                            # distinguish from CLI-driven preflight.
+                            tracked = self._create_tracked_compute(
+                                self._ua('image-lookup-custom')
+                            )
+                            try:
+                                image_required_gb = self.get_custom_image_disk_size(
+                                    tracked, source_image
+                                )
+                            except ValueError as e:
+                                self._log_error(str(e))
+                                self._finish_progress(False)
+                                self._rollback()
+                                return False
+                            except Exception as e:
+                                self._log_error(f"Failed to inspect custom rescue image: {e}")
+                                self._finish_progress(False)
+                                self._rollback()
+                                return False
+                        rescue_disk_size = max(image_required_gb, self.config.rescue_disk_size_gb)
+                        self._log_debug(
+                            f"Creating rescue disk ({rescue_disk_size}GB, custom image: {source_image}, "
+                            f"image requires {image_required_gb}GB)..."
+                        )
+                    elif self.os_type == OS_TYPE_WINDOWS:
                         rescue_image_project = self.config.windows_rescue_image_project
                         rescue_image_family = self.config.windows_rescue_image_family
                         rescue_disk_size = self.config.windows_rescue_disk_size_gb
+                        source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
+                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
                     elif self.architecture == ARCH_ARM64:
                         # ARM64 Linux (T2A instances)
                         rescue_image_project = self.config.arm64_rescue_image_project
                         rescue_image_family = self.config.arm64_rescue_image_family
                         rescue_disk_size = self.config.rescue_disk_size_gb
+                        source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
+                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
                     else:
                         # x86_64 Linux (default)
                         rescue_image_project = self.config.rescue_image_project
                         rescue_image_family = self.config.rescue_image_family
                         rescue_disk_size = self.config.rescue_disk_size_gb
+                        source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
+                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
 
-                    self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
                     result = create_disk.execute(
                         disk_name=rescue_disk_name,
                         size_gb=rescue_disk_size,
                         disk_type=self.config.rescue_disk_type,
-                        source_image=f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}',
+                        source_image=source_image,
                         timeout=self.config.disk_create_timeout,
                         tracking_label=self._ua('disk-create-rescue')
                     )
