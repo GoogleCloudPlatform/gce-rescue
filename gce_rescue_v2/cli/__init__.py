@@ -527,7 +527,9 @@ def read_fix_script(path: str) -> str:
         raise ValueError(f"--fix-script: could not read {path}: {e}") from e
     if not content.strip():
         raise ValueError(f"--fix-script: file is empty: {path}")
-    return content
+    # Normalize Windows line endings: the script runs on the rescue VM, where
+    # bash treats stray \r as part of the command and fails confusingly.
+    return content.replace('\r\n', '\n')
 
 
 def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:

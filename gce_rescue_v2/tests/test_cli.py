@@ -1059,6 +1059,12 @@ class TestFixScriptFlag:
         with pytest.raises(ValueError, match="empty"):
             cli.read_fix_script(str(empty))
 
+    def test_read_fix_script_normalizes_crlf(self, tmp_path):
+        """Windows CRLF line endings are normalized to LF (script runs in bash)."""
+        script = tmp_path / "fix.sh"
+        script.write_bytes(b"echo one\r\necho two\r\n")
+        assert cli.read_fix_script(str(script)) == "echo one\necho two\n"
+
 
 class TestFixScriptRepairPath:
     """--fix-script on repair: diagnosis bypass and confirmation flow."""
