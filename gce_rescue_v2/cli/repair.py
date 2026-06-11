@@ -6,6 +6,7 @@ import sys
 import uuid
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 from ..core.config import build_user_agent
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
@@ -174,6 +175,67 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if error:
             print(f"  {error}", file=sys.stderr)
         return 1
+
+
+def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
+                           project: str, fix_script: str) -> int:
+    """Run repair with a custom fix script (--fix-script), skipping diagnosis.
+
+    Shows the supplied script and the repair plan, asks for confirmation
+    (skipped with --quiet), then runs rescue -> custom fix -> restore.
+    """
+    script_lines = fix_script.splitlines()
+    script_name = Path(args.fix_script).name
+
+    if not args.quiet:
+        print(f"Repair: {args.instance_name} ({args.zone})")
+        print("")
+        print(f"  Custom fix script: {args.fix_script} "
+              f"({len(script_lines)} lines)")
+        preview = script_lines[:15]
+        for line in preview:
+            print(f"    | {line}")
+        if len(script_lines) > len(preview):
+            print(f"    | ... ({len(script_lines) - len(preview)} more lines)")
+        print("")
+        print("  Repair plan:")
+        step = 1
+        if getattr(args, 'snapshot', True):
+            print(f"    {step}. Create backup snapshot of boot disk")
+            step += 1
+        print(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
+        step += 1
+        print(f"    {step}. Run the custom fix script against the affected disk")
+        step += 1
+        print(f"    {step}. Restore original boot disk and start VM")
+        print("")
+        print("  Diagnosis is skipped: the script runs exactly as provided.")
+        print("")
+
+        try:
+            response = input("  Proceed? [y/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 0
+        if response not in ('y', 'yes'):
+            print("\nAborted by user.")
+            return 0
+        print("")
+
+    # Concise repair header
+    print(f"Repairing instance [{args.instance_name}]:")
+    print(f"  Fix:    Custom script ({script_name})")
+    plan_parts = []
+    if getattr(args, 'snapshot', True):
+        plan_parts.append("Snapshot")
+    plan_parts.extend(["Rescue", "Custom fix", "Restore"])
+    print(f"  Plan:   {' -> '.join(plan_parts)}")
+    print("")
+
+    orchestrator._suppress_header = True
+    result = orchestrator.execute_custom()
+    return _show_repair_results(result, args.instance_name,
+                                zone=args.zone, project=project)
 
 
 def handle_repair(args: argparse.Namespace) -> int:
@@ -395,6 +457,11 @@ def handle_repair(args: argparse.Namespace) -> int:
         spinner.stop()
     if not valid:
         return 1
+
+    # Custom fix script (--fix-script): skip diagnosis, run the supplied fix
+    if config.fix_script:
+        return _run_custom_fix_script(args, orchestrator, project,
+                                      config.fix_script)
 
     # Diagnose
     spinner = _Spinner("Analyzing serial console output")

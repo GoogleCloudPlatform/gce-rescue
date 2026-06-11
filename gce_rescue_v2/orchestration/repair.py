@@ -295,6 +295,32 @@ class RepairOrchestrator:
         repair_script = self._generate_repair_script(diagnosis)
         self._log_debug(f"Generated repair script ({len(repair_script)} bytes)")
 
+        return self._run_repair_flow(repair_script)
+
+    def execute_custom(self) -> Dict[str, Any]:
+        """Execute repair with the custom fix script from config (--fix-script).
+
+        Skips diagnosis entirely: the engineer supplied the fix, so the flow is
+        rescue (mount + custom script) -> parse results -> restore -> verify.
+
+        Returns:
+            Dict with keys: status, fixed_count, fix_lines, error,
+            snapshot_name, duration_seconds
+        """
+        repair_script = self._generate_custom_fix_script(self.config.fix_script)
+        self._log_debug(
+            f"Generated custom repair script ({len(repair_script)} bytes)"
+        )
+
+        return self._run_repair_flow(repair_script)
+
+    def _run_repair_flow(self, repair_script: str) -> Dict[str, Any]:
+        """Run the repair flow with the given startup script.
+
+        Shared by diagnosis-driven repair (execute) and custom fix scripts
+        (execute_custom): rescue with the script embedded -> parse repair
+        results from serial console -> restore -> post-restore boot check.
+        """
         # Initialize progress display
         self._init_progress()
         start_time = time.time()
