@@ -70,3 +70,36 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
     combined += 'log "=== Startup script completed successfully ==="\n'
 
     return combined
+
+
+def compose_startup_script_windows(base_script: str,
+                                   fix_scripts: List[str]) -> str:
+    """Combine the Windows mount script with fix script(s) (PowerShell).
+
+    Unlike the Linux script, the Windows mount script has content AFTER its
+    completion marker (RDP credentials, desktop instructions), so instead of
+    relocating the marker to the end, the fix script(s) are INSERTED directly
+    before the marker line. Verification still only succeeds after the fixes
+    have run, and the post-marker content is preserved.
+
+    Args:
+        base_script: rescue_mount_windows.ps1 content, placeholders resolved.
+        fix_scripts: PowerShell fix script bodies to insert.
+
+    Returns:
+        The combined startup script.
+    """
+    marker_line = f'Write-Log "{RESCUE_COMPLETE_MARKER}"'
+
+    fix_block = '# === GCE Repair Fix Scripts ===\n'
+    fix_block += 'Write-Log "=== Starting repair fixes ==="\n\n'
+    for fix_script in fix_scripts:
+        fix_block += fix_script + '\n\n'
+    fix_block += 'Write-Log "=== Repair fixes completed ==="\n\n'
+
+    if marker_line in base_script:
+        return base_script.replace(marker_line, fix_block + marker_line, 1)
+
+    # Fallback: marker not found in base script — append fixes + marker so
+    # verification still gates on fix completion.
+    return base_script + '\n' + fix_block + marker_line + '\n'

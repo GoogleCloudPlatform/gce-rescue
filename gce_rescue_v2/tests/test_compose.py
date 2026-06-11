@@ -3,6 +3,7 @@
 from gce_rescue_v2.orchestration.compose import (
     RESCUE_COMPLETE_MARKER,
     compose_startup_script,
+    compose_startup_script_windows,
     strip_shebang,
 )
 
@@ -88,3 +89,49 @@ class TestComposeStartupScript:
         # Marker still after the LAST fix
         assert script.rindex(f'echo "{RESCUE_COMPLETE_MARKER}"') > \
             script.index('second fix')
+
+
+# Minimal stand-in for rescue_mount_windows.ps1: mount + marker + trailing
+# content (RDP credentials) that must be preserved after composition.
+BASE_SCRIPT_WINDOWS = (
+    'Write-Log "mounting disk"\n'
+    'Set-Partition -NewDriveLetter D\n'
+    f'Write-Log "{RESCUE_COMPLETE_MARKER}"\n'
+    'Write-Log "RDP CONNECTION CREDENTIALS"\n'
+    'Write-Log "Password: hunter2"\n'
+)
+
+
+class TestComposeStartupScriptWindows:
+    """Windows composition: fix inserted BEFORE the marker, tail preserved."""
+
+    def test_fix_inserted_before_marker(self):
+        fix = 'Remove-Item D:\\Windows\\bad-driver.sys'
+        script = compose_startup_script_windows(BASE_SCRIPT_WINDOWS, [fix])
+        marker_pos = script.index(f'Write-Log "{RESCUE_COMPLETE_MARKER}"')
+        assert script.index(fix) < marker_pos
+
+    def test_mount_logic_runs_before_fix(self):
+        fix = 'Write-Log "fixing"'
+        script = compose_startup_script_windows(BASE_SCRIPT_WINDOWS, [fix])
+        assert script.index('Set-Partition') < script.index(fix)
+
+    def test_post_marker_content_preserved(self):
+        """RDP credentials etc. after the marker must survive composition."""
+        script = compose_startup_script_windows(BASE_SCRIPT_WINDOWS, ['fix'])
+        marker_pos = script.index(f'Write-Log "{RESCUE_COMPLETE_MARKER}"')
+        assert 'RDP CONNECTION CREDENTIALS' in script
+        assert script.index('RDP CONNECTION CREDENTIALS') > marker_pos
+
+    def test_single_marker_emission(self):
+        """The marker is not duplicated by composition."""
+        script = compose_startup_script_windows(BASE_SCRIPT_WINDOWS, ['fix'])
+        assert script.count(f'Write-Log "{RESCUE_COMPLETE_MARKER}"') == 1
+
+    def test_marker_missing_falls_back_to_append(self):
+        """If the base has no marker, fixes + marker are appended at the end."""
+        base = 'Write-Log "mount only"\n'
+        script = compose_startup_script_windows(base, ['fix body'])
+        assert 'fix body' in script
+        assert script.rindex(f'Write-Log "{RESCUE_COMPLETE_MARKER}"') > \
+            script.index('fix body')

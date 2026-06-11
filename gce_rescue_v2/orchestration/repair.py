@@ -152,17 +152,26 @@ class RepairOrchestrator:
             results.print_failures()
             return False
 
-        # Check Linux-only
+        # Diagnosis-driven repair is Linux-only; Windows is supported only
+        # with a custom fix script (--fix-script)
         from ..utils.os_detection import detect_os_type
         compute = self._create_tracked_client(self._ua('val-os'))
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
         os_type = detect_os_type(vm_info)
-        if os_type == 'windows':
-            self._log_error("Repair is only supported for Linux VMs.")
+        if os_type == 'windows' and not self.config.fix_script:
+            self._log_error("Automated repair is only supported for Linux VMs.")
             print("", file=sys.stderr)
-            print("For Windows VMs, use rescue mode for manual repair:", file=sys.stderr)
+            print("For Windows VMs, supply a custom fix script:", file=sys.stderr)
+            print(
+                f"  $ gce-rescue repair {self.vm_name} "
+                f"--zone={self.zone} --project={self.project} "
+                f"--fix-script=FIX.ps1",
+                file=sys.stderr
+            )
+            print("", file=sys.stderr)
+            print("Or use rescue mode for manual repair:", file=sys.stderr)
             print(
                 f"  $ gce-rescue rescue {self.vm_name} "
                 f"--zone={self.zone} --project={self.project}",
@@ -249,23 +258,27 @@ class RepairOrchestrator:
         Skips diagnosis entirely: the engineer supplied the fix, so the flow is
         rescue (mount + custom script) -> parse results -> restore -> verify.
 
+        The fix script is propagated onto the inner rescue config (instead of
+        a full startup-script override) so the rescue orchestrator composes it
+        per-OS — bash for Linux, PowerShell for Windows — with all placeholders
+        (disk name, Windows rescue password) resolved as usual.
+
         Returns:
             Dict with keys: status, fixed_count, fix_lines, error,
             snapshot_name, duration_seconds
         """
-        repair_script = self._generate_custom_fix_script(self.config.fix_script)
-        self._log_debug(
-            f"Generated custom repair script ({len(repair_script)} bytes)"
-        )
+        return self._run_repair_flow(fix_script=self.config.fix_script)
 
-        return self._run_repair_flow(repair_script)
+    def _run_repair_flow(self, repair_script: Optional[str] = None,
+                         fix_script: Optional[str] = None) -> Dict[str, Any]:
+        """Run the repair flow with the given fix payload.
 
-    def _run_repair_flow(self, repair_script: str) -> Dict[str, Any]:
-        """Run the repair flow with the given startup script.
-
-        Shared by diagnosis-driven repair (execute) and custom fix scripts
-        (execute_custom): rescue with the script embedded -> parse repair
-        results from serial console -> restore -> post-restore boot check.
+        Shared by diagnosis-driven repair (execute), which passes a fully
+        composed startup script as repair_script, and custom fix scripts
+        (execute_custom), which pass fix_script for per-OS composition inside
+        the rescue orchestrator. Flow: rescue with the fix embedded -> parse
+        repair results from serial console -> restore -> post-restore boot
+        check.
         """
         # Initialize progress display
         self._init_progress()
@@ -280,6 +293,9 @@ class RepairOrchestrator:
             # Propagate custom rescue image settings (issue #102)
             rescue_config.custom_rescue_image = self.config.custom_rescue_image
             rescue_config.custom_rescue_image_size_gb = self.config.custom_rescue_image_size_gb
+            # Custom fix script (--fix-script): composed per-OS by the rescue
+            # orchestrator's startup-script generation
+            rescue_config.fix_script = fix_script
 
             rescue = RescueOrchestrator(
                 compute=self.compute, project=self.project, zone=self.zone,
@@ -664,18 +680,6 @@ class RepairOrchestrator:
         targets = self._extract_fstab_targets(diagnosis)
 
         return compose_startup_script(base_script, fix_scripts, targets)
-
-    def _generate_custom_fix_script(self, fix_script_content: str) -> str:
-        """Generate combined startup script: rescue_mount.sh + custom fix script.
-
-        Used by --fix-script: the engineer supplies the fix, so diagnosis is
-        skipped and no REPAIR_TARGETS are injected (the script is
-        self-contained).
-        """
-        base_script = self._load_base_script()
-        fix_body = strip_shebang(fix_script_content)
-        return compose_startup_script(base_script, [fix_body],
-                                      repair_targets=None)
 
     def _get_fix_script(self, category: str) -> str:
         """Load fix script template for a category.

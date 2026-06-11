@@ -320,14 +320,20 @@ def handle_repair(args: argparse.Namespace) -> int:
         spinner.stop()
 
     if vm:
-        # Linux-only check (before any spinners or prompts)
+        # Diagnosis-driven repair is Linux-only; Windows requires a custom
+        # fix script (--fix-script). Checked before any spinners or prompts.
         from ..utils.os_detection import detect_os_type
         os_type = detect_os_type(vm)
-        if os_type == 'windows':
-            print(f"{error_prefix()} Repair is only supported for Linux VMs.",
-                  file=sys.stderr)
+        if os_type == 'windows' and not config.fix_script:
+            print(f"{error_prefix()} Automated repair is only supported for"
+                  f" Linux VMs.", file=sys.stderr)
             print("", file=sys.stderr)
-            print("For Windows VMs, use rescue mode for manual repair:", file=sys.stderr)
+            print("For Windows VMs, supply a custom fix script (PowerShell):",
+                  file=sys.stderr)
+            print(f"  $ gce-rescue repair {args.instance_name} --zone={args.zone}"
+                  f" --project={project} --fix-script=FIX.ps1", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("Or use rescue mode for manual repair:", file=sys.stderr)
             print(f"  $ gce-rescue rescue {args.instance_name} --zone={args.zone}"
                   f" --project={project}", file=sys.stderr)
             print("", file=sys.stderr)

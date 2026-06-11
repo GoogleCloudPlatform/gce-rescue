@@ -701,10 +701,22 @@ class TestFixScriptComposition:
                                        override='OVERRIDE')
         assert orch._generate_startup_script() == 'OVERRIDE'
 
-    def test_windows_fix_script_not_composed(self):
-        """Windows VMs do not get the fix script appended (Phase 2)."""
-        orch = self._make_orchestrator(fix_script='echo fix',
+    def test_windows_fix_script_inserted_before_marker(self):
+        """Windows: fix script is inserted BEFORE the completion marker."""
+        fix = 'Remove-Item D:\\Windows\\bad-driver.sys'
+        orch = self._make_orchestrator(fix_script=fix, os_type='windows')
+        script = orch._generate_startup_script()
+        assert fix in script
+        marker_pos = script.index('Write-Log "GCE-RESCUE-COMPLETE"')
+        assert script.index(fix) < marker_pos
+        # Post-marker content (RDP credentials) is preserved
+        assert 'RDP CONNECTION CREDENTIALS' in script
+        assert script.index('RDP CONNECTION CREDENTIALS') > marker_pos
+
+    def test_windows_fix_script_placeholders_resolved(self):
+        """Windows composition still resolves disk + password placeholders."""
+        orch = self._make_orchestrator(fix_script='Write-Log "fix"',
                                        os_type='windows')
         script = orch._generate_startup_script()
-        assert 'GCE Repair Fix Scripts' not in script
-        assert 'echo fix' not in script
+        assert 'DISK_NAME_PLACEHOLDER' not in script
+        assert 'PASSWORD_PLACEHOLDER' not in script
