@@ -1058,3 +1058,97 @@ class TestFixScriptFlag:
         empty.write_text("   \n")
         with pytest.raises(ValueError, match="empty"):
             cli.read_fix_script(str(empty))
+
+
+class TestFixScriptRepairPath:
+    """--fix-script on repair: diagnosis bypass and confirmation flow."""
+
+    SUCCESS_RESULT = {
+        "status": "unknown", "fixed_count": 0, "fix_lines": [],
+        "error": None, "snapshot_name": "snap-1", "duration_seconds": 10,
+        "boot_verified": True, "boot_errors_after": [],
+    }
+
+    def _setup_base(self, monkeypatch):
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+        mock_compute = _mock_auth(monkeypatch)
+        monkeypatch.setattr(preflight, "_create_tracked_client",
+                            lambda c, label: mock_compute)
+        mock_compute.instances.return_value.get.return_value.execute.return_value = {
+            "status": "RUNNING",
+            "disks": [{"boot": True, "source": "disk", "deviceName": "sda"}],
+            "metadata": {"items": []},
+        }
+        return mock_compute
+
+    def _make_fake_orch(self, result=None):
+        calls = {"execute_custom": 0, "diagnose": 0}
+        outer_result = result or self.SUCCESS_RESULT
+
+        class FakeOrch:
+            _suppress_header = False
+            call_log = calls
+
+            def __init__(self, **kwargs):
+                self.config = kwargs.get("config")
+
+            def validate(self):
+                return True
+
+            def diagnose(self):
+                calls["diagnose"] += 1
+                raise AssertionError("diagnose must be bypassed with --fix-script")
+
+            def execute_custom(self):
+                calls["execute_custom"] += 1
+                return outer_result
+
+        return FakeOrch
+
+    def test_repair_fix_script_bypasses_diagnosis(self, monkeypatch, tmp_path):
+        """--fix-script runs execute_custom and never calls diagnose."""
+        self._setup_base(monkeypatch)
+        Fake = self._make_fake_orch()
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        script = tmp_path / "fix.sh"
+        script.write_text("echo custom-fix\n")
+        args = _parse_args("repair", extra=["--fix-script", str(script)])
+
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 0
+        assert Fake.call_log["execute_custom"] == 1
+        assert Fake.call_log["diagnose"] == 0
+
+    def test_confirmation_abort_does_not_execute(self, monkeypatch, tmp_path):
+        """Answering 'n' at the confirmation never touches the VM."""
+        from gce_rescue_v2.cli.repair import _run_custom_fix_script
+
+        orch = Mock()
+        args = _parse_args("repair", extra=["--fix-script", "/tmp/fix.sh"])
+        args.quiet = False
+        monkeypatch.setattr("builtins.input", lambda *a: "n")
+
+        exit_code = _run_custom_fix_script(args, orch, "test-proj",
+                                           "echo fix\n")
+        assert exit_code == 0
+        orch.execute_custom.assert_not_called()
+
+    def test_confirmation_yes_executes(self, monkeypatch, tmp_path):
+        """Answering 'y' proceeds to execute_custom."""
+        from gce_rescue_v2.cli.repair import _run_custom_fix_script
+
+        orch = Mock()
+        orch.execute_custom.return_value = dict(self.SUCCESS_RESULT)
+        args = _parse_args("repair", extra=["--fix-script", "/tmp/fix.sh"])
+        args.quiet = False
+        monkeypatch.setattr("builtins.input", lambda *a: "y")
+
+        exit_code = _run_custom_fix_script(args, orch, "test-proj",
+                                           "echo fix\n")
+        assert exit_code == 0
+        orch.execute_custom.assert_called_once()
+        assert orch._suppress_header is True

@@ -1453,3 +1453,74 @@ class TestFindRescueSnapshot:
         orch._create_tracked_client = lambda label: compute
 
         assert orch._find_rescue_snapshot() is None
+
+
+# ---------------------------------------------------------------------------
+# TestCustomFixScript
+# ---------------------------------------------------------------------------
+
+class TestCustomFixScript:
+    """Custom fix script path (--fix-script): orchestrator side."""
+
+    def _make_orchestrator(self, fix_script='echo custom-fix'):
+        vm_info = {
+            'status': 'TERMINATED',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/test-boot-disk',
+                'deviceName': 'test-boot-disk',
+                'licenses': ['projects/debian-cloud/global/licenses/debian-12'],
+            }],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info)
+        config = RescueConfig()
+        config.fix_script = fix_script
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', config=config,
+            logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        return orch
+
+    def test_custom_script_contains_fix_body(self):
+        """Generated script embeds the supplied fix after the mount part."""
+        orch = self._make_orchestrator('touch /mnt/sysroot/etc/fixed')
+        script = orch._generate_custom_fix_script(orch.config.fix_script)
+        assert 'touch /mnt/sysroot/etc/fixed' in script
+        assert 'test-boot-disk' in script
+        assert 'DISK_NAME_PLACEHOLDER' not in script
+
+    def test_custom_script_no_repair_targets(self):
+        """Custom scripts are self-contained: no REPAIR_TARGETS injected."""
+        orch = self._make_orchestrator()
+        script = orch._generate_custom_fix_script(orch.config.fix_script)
+        assert 'REPAIR_TARGETS' not in script
+
+    def test_custom_script_marker_after_fix(self):
+        """Completion marker must fire only after the custom fix has run."""
+        fix = 'sed -i "s/bad/good/" /mnt/sysroot/etc/fstab'
+        orch = self._make_orchestrator(fix)
+        script = orch._generate_custom_fix_script(fix)
+        marker_pos = script.rindex(f'echo "{RESCUE_COMPLETE_MARKER}"')
+        assert marker_pos > script.index(fix)
+
+    def test_custom_script_shebang_stripped(self):
+        """A shebang in the supplied script is removed (base has one)."""
+        orch = self._make_orchestrator()
+        script = orch._generate_custom_fix_script('#!/bin/bash\necho fix')
+        assert script.count('#!/bin/bash') == 1  # only the base script's
+
+    def test_execute_custom_runs_shared_flow(self):
+        """execute_custom composes the script and delegates to the flow."""
+        orch = self._make_orchestrator('echo custom-fix')
+        sentinel = {'status': 'success', 'fixed_count': 1, 'fix_lines': [],
+                    'error': None, 'snapshot_name': 's', 'duration_seconds': 1}
+        with patch.object(orch, '_generate_custom_fix_script',
+                          return_value='SCRIPT') as gen, \
+             patch.object(orch, '_run_repair_flow',
+                          return_value=sentinel) as flow:
+            result = orch.execute_custom()
+        gen.assert_called_once_with('echo custom-fix')
+        flow.assert_called_once_with('SCRIPT')
+        assert result is sentinel
