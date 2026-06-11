@@ -56,6 +56,63 @@ RESTORE_SUBSTEP_LABELS = {
 }
 
 
+def strip_shebang(script: str) -> str:
+    """Remove a leading shebang line (already present in the base script)."""
+    if script.startswith('#!'):
+        parts = script.split('\n', 1)
+        return parts[1] if len(parts) > 1 else ''
+    return script
+
+
+def compose_startup_script(base_script: str, fix_scripts: List[str],
+                           repair_targets: Optional[List[str]] = None) -> str:
+    """Combine the base mount script with fix script(s) into one startup script.
+
+    The base script's GCE-RESCUE-COMPLETE marker is relocated to the very end
+    so the orchestrator's verification (and any restore that follows) only
+    proceeds after ALL fix scripts have finished — never mid-fix.
+
+    Args:
+        base_script: The mount script, with disk placeholder already resolved.
+        fix_scripts: Fix script bodies to append (shebangs already stripped).
+        repair_targets: Identifiers extracted from diagnosis for targeted
+            fixing. Pass a list (possibly empty) to inject the REPAIR_TARGETS
+            variable for diagnosis-driven fixes; pass None for self-contained
+            (custom) fix scripts that need no targets.
+
+    Returns:
+        The combined startup script.
+    """
+    # Remove the completion marker line (re-added at the very end)
+    combined = base_script.replace(
+        f'echo "{RESCUE_COMPLETE_MARKER}" >&2',
+        f'# GCE-RESCUE-COMPLETE marker moved to end (repair mode)'
+    )
+
+    combined += '\n'
+    combined += '\n# === GCE Repair Fix Scripts ===\n'
+    combined += 'log "=== Starting repair fixes ==="\n\n'
+
+    # Inject REPAIR_TARGETS variable for targeted fstab fixing (diagnosis mode)
+    if repair_targets is not None:
+        if repair_targets:
+            targets_str = '\n'.join(repair_targets)
+            combined += '# Repair targets extracted from diagnosis\n'
+            combined += f'REPAIR_TARGETS="{targets_str}"\n\n'
+        else:
+            combined += '# No specific repair targets extracted from diagnosis\n'
+            combined += 'REPAIR_TARGETS=""\n\n'
+
+    for fix_script in fix_scripts:
+        combined += fix_script + '\n\n'
+
+    combined += 'log "=== Repair fixes completed ==="\n'
+    combined += f'echo "{RESCUE_COMPLETE_MARKER}" >&2\n'
+    combined += 'log "=== Startup script completed successfully ==="\n'
+
+    return combined
+
+
 class RepairOrchestrator:
     """Orchestrates diagnose -> rescue (with fix) -> restore."""
 
@@ -572,11 +629,15 @@ class RepairOrchestrator:
 
         return targets
 
-    def _generate_repair_script(self, diagnosis: Dict[str, Any]) -> str:
-        """Generate combined startup script: rescue_mount.sh + fix script(s).
+    def _load_base_script(self) -> str:
+        """Load rescue_mount.sh with the disk placeholder resolved.
 
-        Loads rescue_mount.sh, replaces the completion marker with a comment,
-        appends fix script(s), then appends the completion marker at the end.
+        Looks up the VM's boot disk name via the API, validates it, and
+        substitutes it into the base mount script.
+
+        Raises:
+            ValueError: If the boot disk cannot be determined or has an
+                invalid name.
         """
         # Load base rescue mount script
         script_dir = Path(__file__).parent.parent / 'startup_scripts'
@@ -604,14 +665,15 @@ class RepairOrchestrator:
             raise ValueError(f"Disk name contains invalid characters: {original_disk}")
 
         # Replace disk placeholder
-        base_script = base_script.replace('DISK_NAME_PLACEHOLDER', original_disk)
+        return base_script.replace('DISK_NAME_PLACEHOLDER', original_disk)
 
-        # Remove the completion marker line (we'll add it at the very end)
-        # The marker is: echo "GCE-RESCUE-COMPLETE" >&2
-        base_script = base_script.replace(
-            f'echo "{RESCUE_COMPLETE_MARKER}" >&2',
-            f'# GCE-RESCUE-COMPLETE marker moved to end (repair mode)'
-        )
+    def _generate_repair_script(self, diagnosis: Dict[str, Any]) -> str:
+        """Generate combined startup script: rescue_mount.sh + fix script(s).
+
+        Loads rescue_mount.sh, appends the fix script(s) selected from
+        diagnosis, and relocates the completion marker to the very end.
+        """
+        base_script = self._load_base_script()
 
         # Get fix scripts for fixable categories
         fixable = self.get_fixable_categories(diagnosis)
@@ -629,28 +691,19 @@ class RepairOrchestrator:
         # Extract repair targets from diagnosis for targeted fixing
         targets = self._extract_fstab_targets(diagnosis)
 
-        # Combine: base script + targets + fix scripts + completion marker
-        combined = base_script + '\n'
-        combined += '\n# === GCE Repair Fix Scripts ===\n'
-        combined += 'log "=== Starting repair fixes ==="\n\n'
+        return compose_startup_script(base_script, fix_scripts, targets)
 
-        # Inject REPAIR_TARGETS variable for targeted fstab fixing
-        if targets:
-            targets_str = '\n'.join(targets)
-            combined += '# Repair targets extracted from diagnosis\n'
-            combined += f'REPAIR_TARGETS="{targets_str}"\n\n'
-        else:
-            combined += '# No specific repair targets extracted from diagnosis\n'
-            combined += 'REPAIR_TARGETS=""\n\n'
+    def _generate_custom_fix_script(self, fix_script_content: str) -> str:
+        """Generate combined startup script: rescue_mount.sh + custom fix script.
 
-        for fix_script in fix_scripts:
-            combined += fix_script + '\n\n'
-
-        combined += 'log "=== Repair fixes completed ==="\n'
-        combined += f'echo "{RESCUE_COMPLETE_MARKER}" >&2\n'
-        combined += 'log "=== Startup script completed successfully ==="\n'
-
-        return combined
+        Used by --fix-script: the engineer supplies the fix, so diagnosis is
+        skipped and no REPAIR_TARGETS are injected (the script is
+        self-contained).
+        """
+        base_script = self._load_base_script()
+        fix_body = strip_shebang(fix_script_content)
+        return compose_startup_script(base_script, [fix_body],
+                                      repair_targets=None)
 
     def _get_fix_script(self, category: str) -> str:
         """Load fix script template for a category.
