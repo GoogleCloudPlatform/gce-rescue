@@ -1065,6 +1065,13 @@ class TestFixScriptFlag:
         script.write_bytes(b"echo one\r\necho two\r\n")
         assert cli.read_fix_script(str(script)) == "echo one\necho two\n"
 
+    def test_read_fix_script_too_large_raises(self, tmp_path):
+        """Scripts over the metadata size budget fail at pre-flight."""
+        big = tmp_path / "big.sh"
+        big.write_text("# x\n" * (cli.MAX_FIX_SCRIPT_BYTES // 4 + 1))
+        with pytest.raises(ValueError, match="too large"):
+            cli.read_fix_script(str(big))
+
 
 class TestFixScriptRepairPath:
     """--fix-script on repair: diagnosis bypass and confirmation flow."""

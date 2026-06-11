@@ -506,6 +506,11 @@ def validate_args(args: argparse.Namespace) -> bool:
     return True
 
 
+# The combined startup script is delivered via VM metadata, which caps values
+# at 256 KB. Leave headroom for the mount script and composition overhead.
+MAX_FIX_SCRIPT_BYTES = 200 * 1024
+
+
 def read_fix_script(path: str) -> str:
     """Read and validate a custom fix script file, returning its content.
 
@@ -516,7 +521,8 @@ def read_fix_script(path: str) -> str:
         The script content.
 
     Raises:
-        ValueError: If the file does not exist, cannot be read, or is empty.
+        ValueError: If the file does not exist, cannot be read, is empty, or
+            exceeds the metadata size budget.
     """
     script_path = Path(path)
     if not script_path.is_file():
@@ -527,6 +533,13 @@ def read_fix_script(path: str) -> str:
         raise ValueError(f"--fix-script: could not read {path}: {e}") from e
     if not content.strip():
         raise ValueError(f"--fix-script: file is empty: {path}")
+    size = len(content.encode('utf-8'))
+    if size > MAX_FIX_SCRIPT_BYTES:
+        raise ValueError(
+            f"--fix-script: file is too large ({size} bytes, max "
+            f"{MAX_FIX_SCRIPT_BYTES}). The script is delivered via VM "
+            f"metadata (256 KB limit); reduce the script size."
+        )
     # Normalize Windows line endings: the script runs on the rescue VM, where
     # bash treats stray \r as part of the command and fails confusingly.
     return content.replace('\r\n', '\n')
