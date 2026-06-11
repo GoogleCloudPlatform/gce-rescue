@@ -654,3 +654,69 @@ def test_custom_image_invalid_url_aborts_before_disk_creation(stub_rescue, monke
     assert orch.execute() is False
     assert create_called.value is False  # disk creation never attempted
     assert rollback_called.value is True  # cleanup ran
+
+
+class TestFixScriptComposition:
+    """--fix-script composition inside _generate_startup_script."""
+
+    def _make_orchestrator(self, fix_script=None, os_type='linux',
+                           override=None):
+        from gce_rescue_v2.core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS
+        config = RescueConfig()
+        config.fix_script = fix_script
+        orch = RescueOrchestrator(
+            compute=object(), project='p', zone='z', vm_name='vm-1',
+            config=config, startup_script_override=override,
+        )
+        orch.os_type = OS_TYPE_WINDOWS if os_type == 'windows' else OS_TYPE_LINUX
+        orch.original_disk_name = 'vm-boot-disk'
+        return orch
+
+    def test_linux_fix_script_composed(self):
+        """Linux + fix script: fix body embedded, marker relocated after it."""
+        fix = 'touch /mnt/sysroot/etc/fixed'
+        orch = self._make_orchestrator(fix_script=fix)
+        script = orch._generate_startup_script()
+        assert fix in script
+        assert script.rindex('echo "GCE-RESCUE-COMPLETE"') > script.index(fix)
+        assert 'REPAIR_TARGETS' not in script
+
+    def test_disk_placeholder_resolved_before_composition(self):
+        """Composed script has the real disk name, not the placeholder."""
+        orch = self._make_orchestrator(fix_script='echo fix')
+        script = orch._generate_startup_script()
+        assert 'DISK_NAME_PLACEHOLDER' not in script
+        assert 'vm-boot-disk' in script
+
+    def test_no_fix_script_unchanged(self):
+        """Without --fix-script the mount script is not modified."""
+        orch = self._make_orchestrator()
+        script = orch._generate_startup_script()
+        assert 'GCE Repair Fix Scripts' not in script
+        assert script.count('echo "GCE-RESCUE-COMPLETE"') == 1
+
+    def test_override_takes_precedence(self):
+        """startup_script_override (repair path) wins over fix_script."""
+        orch = self._make_orchestrator(fix_script='echo fix',
+                                       override='OVERRIDE')
+        assert orch._generate_startup_script() == 'OVERRIDE'
+
+    def test_windows_fix_script_inserted_before_marker(self):
+        """Windows: fix script is inserted BEFORE the completion marker."""
+        fix = 'Remove-Item D:\\Windows\\bad-driver.sys'
+        orch = self._make_orchestrator(fix_script=fix, os_type='windows')
+        script = orch._generate_startup_script()
+        assert fix in script
+        marker_pos = script.index('Write-Log "GCE-RESCUE-COMPLETE"')
+        assert script.index(fix) < marker_pos
+        # Post-marker content (RDP credentials) is preserved
+        assert 'RDP CONNECTION CREDENTIALS' in script
+        assert script.index('RDP CONNECTION CREDENTIALS') > marker_pos
+
+    def test_windows_fix_script_placeholders_resolved(self):
+        """Windows composition still resolves disk + password placeholders."""
+        orch = self._make_orchestrator(fix_script='Write-Log "fix"',
+                                       os_type='windows')
+        script = orch._generate_startup_script()
+        assert 'DISK_NAME_PLACEHOLDER' not in script
+        assert 'PASSWORD_PLACEHOLDER' not in script
