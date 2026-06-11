@@ -426,9 +426,9 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         help=(
             'Path to a custom fix script to run against the affected (broken)'
             ' disk after it is mounted in rescue mode. The disk is mounted at'
-            ' /mnt/sysroot (Linux). On "repair", this skips diagnosis and'
-            ' applies your script instead of an auto-generated fix. Currently'
-            ' supported for Linux VMs.'
+            ' /mnt/sysroot (Linux, bash script) or D:\\ (Windows, PowerShell'
+            ' script). The script runs after the mount completes; the VM'
+            ' stays in rescue mode for inspection.'
         )
     )
 
@@ -474,9 +474,9 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         help=(
             'Path to a custom fix script to run against the affected (broken)'
             ' disk after it is mounted in rescue mode. The disk is mounted at'
-            ' /mnt/sysroot (Linux). Skips diagnosis and applies your script'
-            ' instead of an auto-generated fix. Currently supported for Linux'
-            ' VMs.'
+            ' /mnt/sysroot (Linux, bash script) or D:\\ (Windows, PowerShell'
+            ' script). Skips diagnosis and applies your script instead of an'
+            ' auto-generated fix, then restores the VM and verifies boot.'
         )
     )
 
