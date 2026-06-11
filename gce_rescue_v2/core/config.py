@@ -94,6 +94,12 @@ class RescueConfig:
     # a redundant API lookup in the orchestrator. If None, orchestrator looks it up.
     custom_rescue_image_size_gb: Optional[int] = None
 
+    # Custom fix script (from --fix-script). Holds the script CONTENT, not the
+    # path: the CLI reads and validates the file, then stores its text here so
+    # the orchestrator stays I/O-free. When set, repair skips diagnosis and runs
+    # this script against the affected disk after mount.
+    fix_script: Optional[str] = None
+
     # Linux rescue image (default)
     rescue_image_family: str = 'debian-12'  # Use newer kernel for XFS/Btrfs compatibility
     rescue_image_project: str = 'debian-cloud'

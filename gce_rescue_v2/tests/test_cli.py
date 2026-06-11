@@ -1003,3 +1003,58 @@ class TestRescueImageFlag:
         args = self.parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a"])
         config = cli.args_to_rescue_config(args)
         assert config.custom_rescue_image is None
+
+
+class TestFixScriptFlag:
+    """Tests for the --fix-script flag wiring on rescue and repair."""
+
+    def setup_method(self):
+        self.parser = cli.create_parser()
+
+    def _write_script(self, tmp_path, content="echo fixing\n"):
+        script = tmp_path / "fix.sh"
+        script.write_text(content)
+        return str(script)
+
+    def test_fix_script_parsed_on_rescue(self, tmp_path):
+        """rescue accepts --fix-script and stores the path on args."""
+        path = self._write_script(tmp_path)
+        args = self.parser.parse_args([
+            "rescue", "vm-1", "--zone", "us-central1-a", "--fix-script", path,
+        ])
+        assert args.fix_script == path
+
+    def test_fix_script_parsed_on_repair(self, tmp_path):
+        """repair accepts --fix-script and stores the path on args."""
+        path = self._write_script(tmp_path)
+        args = self.parser.parse_args([
+            "repair", "vm-1", "--zone", "us-central1-a", "--fix-script", path,
+        ])
+        assert args.fix_script == path
+
+    def test_fix_script_content_populates_config(self, tmp_path):
+        """args_to_rescue_config reads the file and stores its content on config."""
+        path = self._write_script(tmp_path, content="echo hello\n")
+        args = self.parser.parse_args([
+            "repair", "vm-1", "--zone", "us-central1-a", "--fix-script", path,
+        ])
+        config = cli.args_to_rescue_config(args)
+        assert config.fix_script == "echo hello\n"
+
+    def test_no_fix_script_leaves_config_none(self):
+        """Without the flag, RescueConfig.fix_script stays None."""
+        args = self.parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a"])
+        config = cli.args_to_rescue_config(args)
+        assert config.fix_script is None
+
+    def test_read_fix_script_missing_file_raises(self):
+        """read_fix_script raises ValueError for a non-existent path."""
+        with pytest.raises(ValueError, match="file not found"):
+            cli.read_fix_script("/nonexistent/path/to/fix.sh")
+
+    def test_read_fix_script_empty_file_raises(self, tmp_path):
+        """read_fix_script raises ValueError for an empty file."""
+        empty = tmp_path / "empty.sh"
+        empty.write_text("   \n")
+        with pytest.raises(ValueError, match="empty"):
+            cli.read_fix_script(str(empty))
