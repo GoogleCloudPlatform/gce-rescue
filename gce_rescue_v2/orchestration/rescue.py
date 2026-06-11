@@ -11,6 +11,7 @@ Coordinates the rescue workflow:
 
 import time
 from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX, build_user_agent
+from .compose import compose_startup_script, strip_shebang
 from ..utils.os_detection import (
     detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64,
     get_rescue_disk_type, detect_os_flavor
@@ -1030,6 +1031,14 @@ class RescueOrchestrator:
                 # Replace password placeholder for Windows
                 if self.os_type == OS_TYPE_WINDOWS and self.windows_rescue_password:
                     script = script.replace('PASSWORD_PLACEHOLDER', self.windows_rescue_password)
+                # Append custom fix script (--fix-script) after the mount part.
+                # The completion marker is relocated to the end so verification
+                # only succeeds after the fix has run. Linux only (Phase 1).
+                if self.config.fix_script and self.os_type != OS_TYPE_WINDOWS:
+                    script = compose_startup_script(
+                        script, [strip_shebang(self.config.fix_script)],
+                        repair_targets=None
+                    )
                 return script
 
         # Fallback: inline script if template not found

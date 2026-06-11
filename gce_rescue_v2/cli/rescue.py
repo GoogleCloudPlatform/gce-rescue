@@ -117,6 +117,21 @@ def handle_rescue(args: argparse.Namespace) -> int:
                 return 1
             args.custom_rescue_image_size_gb = size_gb
 
+        # --fix-script is Linux-only for now (fail fast, before any
+        # destructive operation)
+        if getattr(args, 'fix_script', None):
+            from ..utils.os_detection import detect_os_type
+            if detect_os_type(vm_info) == OS_TYPE_WINDOWS:
+                print(f"{error_prefix()} --fix-script is only supported for"
+                      f" Linux VMs.", file=sys.stderr)
+                print("", file=sys.stderr)
+                print("For Windows VMs, use rescue mode and apply the fix"
+                      " manually over RDP:", file=sys.stderr)
+                print(f"  $ gce-rescue rescue {args.instance_name}"
+                      f" --zone={args.zone} --project={project}",
+                      file=sys.stderr)
+                return 1
+
     # Interactive confirmation (unless --quiet or resuming)
     if not args.quiet and not resuming:
         lines_printed = 0
@@ -143,6 +158,10 @@ def handle_rescue(args: argparse.Namespace) -> int:
         lines_printed += 1
         print(" - Start the VM and attach original disk as secondary for repair.")
         lines_printed += 1
+        if getattr(args, 'fix_script', None):
+            print(f" - Run the custom fix script [{args.fix_script}] against"
+                  f" the mounted disk.")
+            lines_printed += 1
 
         if has_local_ssd:
             print(f" - {warning_prefix()} Data on Local SSDs"
@@ -218,6 +237,8 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
         mount_path = "D:\\" if orchestrator.os_type == OS_TYPE_WINDOWS else "/mnt/sysroot"
         logger.info(f"Affected disk mounted at: {mount_path}")
+        if config.fix_script and orchestrator.verification_succeeded:
+            logger.info(f"Custom fix script completed: {args.fix_script}")
         if orchestrator.snapshot_name:
             logger.info(f"Backup snapshot: {orchestrator.snapshot_name}")
         logger.info("")

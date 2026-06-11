@@ -31,15 +31,18 @@ from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
 from ..core.fix_catalog import SUPPORTED_FIX_CATEGORIES
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
+# Composition helpers shared with the rescue orchestrator (re-exported here
+# for backward compatibility; RESCUE_COMPLETE_MARKER is the marker used by
+# the rescue startup script).
+from .compose import (
+    RESCUE_COMPLETE_MARKER, compose_startup_script, strip_shebang,
+)
 from .rescue import RescueOrchestrator
 from .restore import RestoreOrchestrator
 
 # Marker prefixes emitted by fix scripts to serial console
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
 REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
-
-# Completion marker used by rescue startup script
-RESCUE_COMPLETE_MARKER = 'GCE-RESCUE-COMPLETE'
 
 # Maps raw rescue/restore step labels to user-friendly display names
 RESCUE_SUBSTEP_LABELS = {
@@ -54,63 +57,6 @@ RESTORE_SUBSTEP_LABELS = {
     'Restoring affected disk': 'Restoring boot disk',
     'Starting': 'Starting VM',
 }
-
-
-def strip_shebang(script: str) -> str:
-    """Remove a leading shebang line (already present in the base script)."""
-    if script.startswith('#!'):
-        parts = script.split('\n', 1)
-        return parts[1] if len(parts) > 1 else ''
-    return script
-
-
-def compose_startup_script(base_script: str, fix_scripts: List[str],
-                           repair_targets: Optional[List[str]] = None) -> str:
-    """Combine the base mount script with fix script(s) into one startup script.
-
-    The base script's GCE-RESCUE-COMPLETE marker is relocated to the very end
-    so the orchestrator's verification (and any restore that follows) only
-    proceeds after ALL fix scripts have finished — never mid-fix.
-
-    Args:
-        base_script: The mount script, with disk placeholder already resolved.
-        fix_scripts: Fix script bodies to append (shebangs already stripped).
-        repair_targets: Identifiers extracted from diagnosis for targeted
-            fixing. Pass a list (possibly empty) to inject the REPAIR_TARGETS
-            variable for diagnosis-driven fixes; pass None for self-contained
-            (custom) fix scripts that need no targets.
-
-    Returns:
-        The combined startup script.
-    """
-    # Remove the completion marker line (re-added at the very end)
-    combined = base_script.replace(
-        f'echo "{RESCUE_COMPLETE_MARKER}" >&2',
-        f'# GCE-RESCUE-COMPLETE marker moved to end (repair mode)'
-    )
-
-    combined += '\n'
-    combined += '\n# === GCE Repair Fix Scripts ===\n'
-    combined += 'log "=== Starting repair fixes ==="\n\n'
-
-    # Inject REPAIR_TARGETS variable for targeted fstab fixing (diagnosis mode)
-    if repair_targets is not None:
-        if repair_targets:
-            targets_str = '\n'.join(repair_targets)
-            combined += '# Repair targets extracted from diagnosis\n'
-            combined += f'REPAIR_TARGETS="{targets_str}"\n\n'
-        else:
-            combined += '# No specific repair targets extracted from diagnosis\n'
-            combined += 'REPAIR_TARGETS=""\n\n'
-
-    for fix_script in fix_scripts:
-        combined += fix_script + '\n\n'
-
-    combined += 'log "=== Repair fixes completed ==="\n'
-    combined += f'echo "{RESCUE_COMPLETE_MARKER}" >&2\n'
-    combined += 'log "=== Startup script completed successfully ==="\n'
-
-    return combined
 
 
 class RepairOrchestrator:
