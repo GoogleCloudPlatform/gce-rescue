@@ -5,6 +5,11 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-06-12
+
+### Added
+- `--fix-script` flag for `rescue` and `repair`: run a custom fix script (bash on Linux, PowerShell on Windows) against the affected disk after it is mounted in rescue mode. On `repair` this skips diagnosis and applies the supplied fix, followed by automatic restore and boot verification; on `rescue` the VM stays in rescue mode for inspection after the fix runs. Designed for large-scale events where many VMs share one known fix (e.g. a faulty driver or agent update that leaves a fleet unbootable) and for one-off repairs the fix catalog does not cover. The script is validated at pre-flight (existence, size vs the metadata limit, CRLF normalization) and previewed in the confirmation prompt; `--quiet` skips the prompt for automation. Scripts may optionally emit `GCE-REPAIR-RESULT:`/`GCE-REPAIR-LINE:` markers for a per-VM fix summary. Validated end-to-end on Linux and Windows (#110, #63).
+
 ## [2.1.0] - 2026-06-05
 
 ### Added
