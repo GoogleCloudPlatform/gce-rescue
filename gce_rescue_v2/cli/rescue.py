@@ -143,6 +143,10 @@ def handle_rescue(args: argparse.Namespace) -> int:
         lines_printed += 1
         print(" - Start the VM and attach original disk as secondary for repair.")
         lines_printed += 1
+        if getattr(args, 'fix_script', None):
+            print(f" - Run the custom fix script [{args.fix_script}] against"
+                  f" the mounted disk.")
+            lines_printed += 1
 
         if has_local_ssd:
             print(f" - {warning_prefix()} Data on Local SSDs"
@@ -218,6 +222,8 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
         mount_path = "D:\\" if orchestrator.os_type == OS_TYPE_WINDOWS else "/mnt/sysroot"
         logger.info(f"Affected disk mounted at: {mount_path}")
+        if config.fix_script and orchestrator.verification_succeeded:
+            logger.info(f"Custom fix script completed: {args.fix_script}")
         if orchestrator.snapshot_name:
             logger.info(f"Backup snapshot: {orchestrator.snapshot_name}")
         logger.info("")

@@ -14,6 +14,7 @@ Current standalone usage:
 
 import argparse
 import sys
+from pathlib import Path
 from ..core.config import RescueConfig, RestoreConfig, VERSION
 from ..utils.colors import error_prefix
 
@@ -416,6 +417,21 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         )
     )
 
+    fix_group = parser.add_argument_group('FIX SCRIPT FLAGS')
+    fix_group.add_argument(
+        '--fix-script',
+        metavar='PATH',
+        dest='fix_script',
+        default=None,
+        help=(
+            'Path to a custom fix script to run against the affected (broken)'
+            ' disk after it is mounted in rescue mode. The disk is mounted at'
+            ' /mnt/sysroot (Linux, bash script) or D:\\ (Windows, PowerShell'
+            ' script). The script runs after the mount completes; the VM'
+            ' stays in rescue mode for inspection.'
+        )
+    )
+
 
 def _add_repair_args(parser: argparse.ArgumentParser):
     """Add repair-specific arguments."""
@@ -449,6 +465,21 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         )
     )
 
+    fix_group = parser.add_argument_group('FIX SCRIPT FLAGS')
+    fix_group.add_argument(
+        '--fix-script',
+        metavar='PATH',
+        dest='fix_script',
+        default=None,
+        help=(
+            'Path to a custom fix script to run against the affected (broken)'
+            ' disk after it is mounted in rescue mode. The disk is mounted at'
+            ' /mnt/sysroot (Linux, bash script) or D:\\ (Windows, PowerShell'
+            ' script). Skips diagnosis and applies your script instead of an'
+            ' auto-generated fix, then restores the VM and verifies boot.'
+        )
+    )
+
 
 def _add_restore_args(parser: argparse.ArgumentParser):
     """Add restore-specific arguments."""
@@ -475,6 +506,45 @@ def validate_args(args: argparse.Namespace) -> bool:
     return True
 
 
+# The combined startup script is delivered via VM metadata, which caps values
+# at 256 KB. Leave headroom for the mount script and composition overhead.
+MAX_FIX_SCRIPT_BYTES = 200 * 1024
+
+
+def read_fix_script(path: str) -> str:
+    """Read and validate a custom fix script file, returning its content.
+
+    Args:
+        path: Filesystem path to the fix script (from --fix-script).
+
+    Returns:
+        The script content.
+
+    Raises:
+        ValueError: If the file does not exist, cannot be read, is empty, or
+            exceeds the metadata size budget.
+    """
+    script_path = Path(path)
+    if not script_path.is_file():
+        raise ValueError(f"--fix-script: file not found: {path}")
+    try:
+        content = script_path.read_text(encoding='utf-8')
+    except OSError as e:
+        raise ValueError(f"--fix-script: could not read {path}: {e}") from e
+    if not content.strip():
+        raise ValueError(f"--fix-script: file is empty: {path}")
+    size = len(content.encode('utf-8'))
+    if size > MAX_FIX_SCRIPT_BYTES:
+        raise ValueError(
+            f"--fix-script: file is too large ({size} bytes, max "
+            f"{MAX_FIX_SCRIPT_BYTES}). The script is delivered via VM "
+            f"metadata (256 KB limit); reduce the script size."
+        )
+    # Normalize Windows line endings: the script runs on the rescue VM, where
+    # bash treats stray \r as part of the command and fails confusingly.
+    return content.replace('\r\n', '\n')
+
+
 def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     """Convert arguments to RescueConfig."""
     config = RescueConfig()
@@ -489,6 +559,11 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
         # Pre-resolved disk size from CLI pre-flight (avoids orchestrator re-lookup)
         if getattr(args, 'custom_rescue_image_size_gb', None) is not None:
             config.custom_rescue_image_size_gb = args.custom_rescue_image_size_gb
+
+    # Custom fix script: read the file and store its CONTENT on the config so
+    # the orchestrator stays I/O-free. Invalid paths fail fast here.
+    if getattr(args, 'fix_script', None):
+        config.fix_script = read_fix_script(args.fix_script)
 
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):

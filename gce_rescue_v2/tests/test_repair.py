@@ -1453,3 +1453,113 @@ class TestFindRescueSnapshot:
         orch._create_tracked_client = lambda label: compute
 
         assert orch._find_rescue_snapshot() is None
+
+
+# ---------------------------------------------------------------------------
+# TestCustomFixScript
+# ---------------------------------------------------------------------------
+
+class TestCustomFixScript:
+    """Custom fix script path (--fix-script): orchestrator side."""
+
+    def _make_orchestrator(self, fix_script='echo custom-fix'):
+        vm_info = {
+            'status': 'TERMINATED',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/test-boot-disk',
+                'deviceName': 'test-boot-disk',
+                'licenses': ['projects/debian-cloud/global/licenses/debian-12'],
+            }],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info)
+        config = RescueConfig()
+        config.fix_script = fix_script
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', config=config,
+            logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        return orch
+
+    def test_execute_custom_propagates_fix_script(self):
+        """execute_custom hands the fix script to the shared flow (no
+        startup-script override; composition happens per-OS in rescue)."""
+        orch = self._make_orchestrator('echo custom-fix')
+        sentinel = {'status': 'success', 'fixed_count': 1, 'fix_lines': [],
+                    'error': None, 'snapshot_name': 's', 'duration_seconds': 1}
+        with patch.object(orch, '_run_repair_flow',
+                          return_value=sentinel) as flow:
+            result = orch.execute_custom()
+        flow.assert_called_once_with(fix_script='echo custom-fix')
+        assert result is sentinel
+
+    def test_run_repair_flow_sets_fix_script_on_rescue_config(self):
+        """The inner rescue config carries the fix script for composition."""
+        orch = self._make_orchestrator('echo custom-fix')
+        captured = {}
+
+        class FakeRescue:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def execute(self):
+                return False  # stop the flow right after construction
+
+            snapshot_name = None
+
+        with patch('gce_rescue_v2.orchestration.repair.RescueOrchestrator',
+                   FakeRescue):
+            orch._init_progress = lambda: None
+            orch._update_progress = lambda phase: None
+            orch._finish_progress = lambda ok=True: None
+            orch._run_repair_flow(fix_script='echo custom-fix')
+
+        assert captured['config'].fix_script == 'echo custom-fix'
+        assert captured['startup_script_override'] is None
+
+    def test_validate_windows_blocked_without_fix_script(self):
+        """Windows VMs are blocked unless a custom fix script is supplied."""
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/win-disk',
+                'deviceName': 'win-disk',
+                'licenses': ['projects/windows-cloud/global/licenses/windows-server-2022'],
+            }],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info)
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        with patch('gce_rescue_v2.validators.ValidationRunner') as runner_cls:
+            runner_cls.return_value.run_all.return_value.all_passed.return_value = True
+            assert orch.validate() is False
+
+    def test_validate_windows_allowed_with_fix_script(self):
+        """Windows VMs pass validation when --fix-script is supplied."""
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/win-disk',
+                'deviceName': 'win-disk',
+                'licenses': ['projects/windows-cloud/global/licenses/windows-server-2022'],
+            }],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info)
+        config = RescueConfig()
+        config.fix_script = 'Write-Log "custom fix"'
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', config=config,
+            logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        with patch('gce_rescue_v2.validators.ValidationRunner') as runner_cls:
+            runner_cls.return_value.run_all.return_value.all_passed.return_value = True
+            assert orch.validate() is True

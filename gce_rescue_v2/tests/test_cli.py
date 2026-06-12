@@ -1003,3 +1003,165 @@ class TestRescueImageFlag:
         args = self.parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a"])
         config = cli.args_to_rescue_config(args)
         assert config.custom_rescue_image is None
+
+
+class TestFixScriptFlag:
+    """Tests for the --fix-script flag wiring on rescue and repair."""
+
+    def setup_method(self):
+        self.parser = cli.create_parser()
+
+    def _write_script(self, tmp_path, content="echo fixing\n"):
+        script = tmp_path / "fix.sh"
+        script.write_text(content)
+        return str(script)
+
+    def test_fix_script_parsed_on_rescue(self, tmp_path):
+        """rescue accepts --fix-script and stores the path on args."""
+        path = self._write_script(tmp_path)
+        args = self.parser.parse_args([
+            "rescue", "vm-1", "--zone", "us-central1-a", "--fix-script", path,
+        ])
+        assert args.fix_script == path
+
+    def test_fix_script_parsed_on_repair(self, tmp_path):
+        """repair accepts --fix-script and stores the path on args."""
+        path = self._write_script(tmp_path)
+        args = self.parser.parse_args([
+            "repair", "vm-1", "--zone", "us-central1-a", "--fix-script", path,
+        ])
+        assert args.fix_script == path
+
+    def test_fix_script_content_populates_config(self, tmp_path):
+        """args_to_rescue_config reads the file and stores its content on config."""
+        path = self._write_script(tmp_path, content="echo hello\n")
+        args = self.parser.parse_args([
+            "repair", "vm-1", "--zone", "us-central1-a", "--fix-script", path,
+        ])
+        config = cli.args_to_rescue_config(args)
+        assert config.fix_script == "echo hello\n"
+
+    def test_no_fix_script_leaves_config_none(self):
+        """Without the flag, RescueConfig.fix_script stays None."""
+        args = self.parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a"])
+        config = cli.args_to_rescue_config(args)
+        assert config.fix_script is None
+
+    def test_read_fix_script_missing_file_raises(self):
+        """read_fix_script raises ValueError for a non-existent path."""
+        with pytest.raises(ValueError, match="file not found"):
+            cli.read_fix_script("/nonexistent/path/to/fix.sh")
+
+    def test_read_fix_script_empty_file_raises(self, tmp_path):
+        """read_fix_script raises ValueError for an empty file."""
+        empty = tmp_path / "empty.sh"
+        empty.write_text("   \n")
+        with pytest.raises(ValueError, match="empty"):
+            cli.read_fix_script(str(empty))
+
+    def test_read_fix_script_normalizes_crlf(self, tmp_path):
+        """Windows CRLF line endings are normalized to LF (script runs in bash)."""
+        script = tmp_path / "fix.sh"
+        script.write_bytes(b"echo one\r\necho two\r\n")
+        assert cli.read_fix_script(str(script)) == "echo one\necho two\n"
+
+    def test_read_fix_script_too_large_raises(self, tmp_path):
+        """Scripts over the metadata size budget fail at pre-flight."""
+        big = tmp_path / "big.sh"
+        big.write_text("# x\n" * (cli.MAX_FIX_SCRIPT_BYTES // 4 + 1))
+        with pytest.raises(ValueError, match="too large"):
+            cli.read_fix_script(str(big))
+
+
+class TestFixScriptRepairPath:
+    """--fix-script on repair: diagnosis bypass and confirmation flow."""
+
+    SUCCESS_RESULT = {
+        "status": "unknown", "fixed_count": 0, "fix_lines": [],
+        "error": None, "snapshot_name": "snap-1", "duration_seconds": 10,
+        "boot_verified": True, "boot_errors_after": [],
+    }
+
+    def _setup_base(self, monkeypatch):
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+        mock_compute = _mock_auth(monkeypatch)
+        monkeypatch.setattr(preflight, "_create_tracked_client",
+                            lambda c, label: mock_compute)
+        mock_compute.instances.return_value.get.return_value.execute.return_value = {
+            "status": "RUNNING",
+            "disks": [{"boot": True, "source": "disk", "deviceName": "sda"}],
+            "metadata": {"items": []},
+        }
+        return mock_compute
+
+    def _make_fake_orch(self, result=None):
+        calls = {"execute_custom": 0, "diagnose": 0}
+        outer_result = result or self.SUCCESS_RESULT
+
+        class FakeOrch:
+            _suppress_header = False
+            call_log = calls
+
+            def __init__(self, **kwargs):
+                self.config = kwargs.get("config")
+
+            def validate(self):
+                return True
+
+            def diagnose(self):
+                calls["diagnose"] += 1
+                raise AssertionError("diagnose must be bypassed with --fix-script")
+
+            def execute_custom(self):
+                calls["execute_custom"] += 1
+                return outer_result
+
+        return FakeOrch
+
+    def test_repair_fix_script_bypasses_diagnosis(self, monkeypatch, tmp_path):
+        """--fix-script runs execute_custom and never calls diagnose."""
+        self._setup_base(monkeypatch)
+        Fake = self._make_fake_orch()
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        script = tmp_path / "fix.sh"
+        script.write_text("echo custom-fix\n")
+        args = _parse_args("repair", extra=["--fix-script", str(script)])
+
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 0
+        assert Fake.call_log["execute_custom"] == 1
+        assert Fake.call_log["diagnose"] == 0
+
+    def test_confirmation_abort_does_not_execute(self, monkeypatch, tmp_path):
+        """Answering 'n' at the confirmation never touches the VM."""
+        from gce_rescue_v2.cli.repair import _run_custom_fix_script
+
+        orch = Mock()
+        args = _parse_args("repair", extra=["--fix-script", "/tmp/fix.sh"])
+        args.quiet = False
+        monkeypatch.setattr("builtins.input", lambda *a: "n")
+
+        exit_code = _run_custom_fix_script(args, orch, "test-proj",
+                                           "echo fix\n")
+        assert exit_code == 0
+        orch.execute_custom.assert_not_called()
+
+    def test_confirmation_yes_executes(self, monkeypatch, tmp_path):
+        """Answering 'y' proceeds to execute_custom."""
+        from gce_rescue_v2.cli.repair import _run_custom_fix_script
+
+        orch = Mock()
+        orch.execute_custom.return_value = dict(self.SUCCESS_RESULT)
+        args = _parse_args("repair", extra=["--fix-script", "/tmp/fix.sh"])
+        args.quiet = False
+        monkeypatch.setattr("builtins.input", lambda *a: "y")
+
+        exit_code = _run_custom_fix_script(args, orch, "test-proj",
+                                           "echo fix\n")
+        assert exit_code == 0
+        orch.execute_custom.assert_called_once()
+        assert orch._suppress_header is True

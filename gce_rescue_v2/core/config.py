@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # Version for usage tracking (SemVer: MAJOR.MINOR.PATCH-PRERELEASE)
-VERSION = '2.1.0'
+VERSION = '2.2.0'
 
 
 def _sanitize_ua_value(value: str) -> str:
@@ -93,6 +93,12 @@ class RescueConfig:
     # Disk size required by custom_rescue_image, pre-resolved by CLI to avoid
     # a redundant API lookup in the orchestrator. If None, orchestrator looks it up.
     custom_rescue_image_size_gb: Optional[int] = None
+
+    # Custom fix script (from --fix-script). Holds the script CONTENT, not the
+    # path: the CLI reads and validates the file, then stores its text here so
+    # the orchestrator stays I/O-free. When set, repair skips diagnosis and runs
+    # this script against the affected disk after mount.
+    fix_script: Optional[str] = None
 
     # Linux rescue image (default)
     rescue_image_family: str = 'debian-12'  # Use newer kernel for XFS/Btrfs compatibility

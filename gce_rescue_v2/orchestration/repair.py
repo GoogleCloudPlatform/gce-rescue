@@ -31,15 +31,18 @@ from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
 from ..core.fix_catalog import SUPPORTED_FIX_CATEGORIES
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
+# Composition helpers shared with the rescue orchestrator (re-exported here
+# for backward compatibility; RESCUE_COMPLETE_MARKER is the marker used by
+# the rescue startup script).
+from .compose import (
+    RESCUE_COMPLETE_MARKER, compose_startup_script, strip_shebang,
+)
 from .rescue import RescueOrchestrator
 from .restore import RestoreOrchestrator
 
 # Marker prefixes emitted by fix scripts to serial console
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
 REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
-
-# Completion marker used by rescue startup script
-RESCUE_COMPLETE_MARKER = 'GCE-RESCUE-COMPLETE'
 
 # Maps raw rescue/restore step labels to user-friendly display names
 RESCUE_SUBSTEP_LABELS = {
@@ -149,17 +152,26 @@ class RepairOrchestrator:
             results.print_failures()
             return False
 
-        # Check Linux-only
+        # Diagnosis-driven repair is Linux-only; Windows is supported only
+        # with a custom fix script (--fix-script)
         from ..utils.os_detection import detect_os_type
         compute = self._create_tracked_client(self._ua('val-os'))
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
         os_type = detect_os_type(vm_info)
-        if os_type == 'windows':
-            self._log_error("Repair is only supported for Linux VMs.")
+        if os_type == 'windows' and not self.config.fix_script:
+            self._log_error("Automated repair is only supported for Linux VMs.")
             print("", file=sys.stderr)
-            print("For Windows VMs, use rescue mode for manual repair:", file=sys.stderr)
+            print("For Windows VMs, supply a custom fix script:", file=sys.stderr)
+            print(
+                f"  $ gce-rescue repair {self.vm_name} "
+                f"--zone={self.zone} --project={self.project} "
+                f"--fix-script=FIX.ps1",
+                file=sys.stderr
+            )
+            print("", file=sys.stderr)
+            print("Or use rescue mode for manual repair:", file=sys.stderr)
             print(
                 f"  $ gce-rescue rescue {self.vm_name} "
                 f"--zone={self.zone} --project={self.project}",
@@ -238,6 +250,36 @@ class RepairOrchestrator:
         repair_script = self._generate_repair_script(diagnosis)
         self._log_debug(f"Generated repair script ({len(repair_script)} bytes)")
 
+        return self._run_repair_flow(repair_script)
+
+    def execute_custom(self) -> Dict[str, Any]:
+        """Execute repair with the custom fix script from config (--fix-script).
+
+        Skips diagnosis entirely: the engineer supplied the fix, so the flow is
+        rescue (mount + custom script) -> parse results -> restore -> verify.
+
+        The fix script is propagated onto the inner rescue config (instead of
+        a full startup-script override) so the rescue orchestrator composes it
+        per-OS — bash for Linux, PowerShell for Windows — with all placeholders
+        (disk name, Windows rescue password) resolved as usual.
+
+        Returns:
+            Dict with keys: status, fixed_count, fix_lines, error,
+            snapshot_name, duration_seconds
+        """
+        return self._run_repair_flow(fix_script=self.config.fix_script)
+
+    def _run_repair_flow(self, repair_script: Optional[str] = None,
+                         fix_script: Optional[str] = None) -> Dict[str, Any]:
+        """Run the repair flow with the given fix payload.
+
+        Shared by diagnosis-driven repair (execute), which passes a fully
+        composed startup script as repair_script, and custom fix scripts
+        (execute_custom), which pass fix_script for per-OS composition inside
+        the rescue orchestrator. Flow: rescue with the fix embedded -> parse
+        repair results from serial console -> restore -> post-restore boot
+        check.
+        """
         # Initialize progress display
         self._init_progress()
         start_time = time.time()
@@ -251,6 +293,9 @@ class RepairOrchestrator:
             # Propagate custom rescue image settings (issue #102)
             rescue_config.custom_rescue_image = self.config.custom_rescue_image
             rescue_config.custom_rescue_image_size_gb = self.config.custom_rescue_image_size_gb
+            # Custom fix script (--fix-script): composed per-OS by the rescue
+            # orchestrator's startup-script generation
+            rescue_config.fix_script = fix_script
 
             rescue = RescueOrchestrator(
                 compute=self.compute, project=self.project, zone=self.zone,
@@ -572,11 +617,15 @@ class RepairOrchestrator:
 
         return targets
 
-    def _generate_repair_script(self, diagnosis: Dict[str, Any]) -> str:
-        """Generate combined startup script: rescue_mount.sh + fix script(s).
+    def _load_base_script(self) -> str:
+        """Load rescue_mount.sh with the disk placeholder resolved.
 
-        Loads rescue_mount.sh, replaces the completion marker with a comment,
-        appends fix script(s), then appends the completion marker at the end.
+        Looks up the VM's boot disk name via the API, validates it, and
+        substitutes it into the base mount script.
+
+        Raises:
+            ValueError: If the boot disk cannot be determined or has an
+                invalid name.
         """
         # Load base rescue mount script
         script_dir = Path(__file__).parent.parent / 'startup_scripts'
@@ -604,14 +653,15 @@ class RepairOrchestrator:
             raise ValueError(f"Disk name contains invalid characters: {original_disk}")
 
         # Replace disk placeholder
-        base_script = base_script.replace('DISK_NAME_PLACEHOLDER', original_disk)
+        return base_script.replace('DISK_NAME_PLACEHOLDER', original_disk)
 
-        # Remove the completion marker line (we'll add it at the very end)
-        # The marker is: echo "GCE-RESCUE-COMPLETE" >&2
-        base_script = base_script.replace(
-            f'echo "{RESCUE_COMPLETE_MARKER}" >&2',
-            f'# GCE-RESCUE-COMPLETE marker moved to end (repair mode)'
-        )
+    def _generate_repair_script(self, diagnosis: Dict[str, Any]) -> str:
+        """Generate combined startup script: rescue_mount.sh + fix script(s).
+
+        Loads rescue_mount.sh, appends the fix script(s) selected from
+        diagnosis, and relocates the completion marker to the very end.
+        """
+        base_script = self._load_base_script()
 
         # Get fix scripts for fixable categories
         fixable = self.get_fixable_categories(diagnosis)
@@ -629,28 +679,7 @@ class RepairOrchestrator:
         # Extract repair targets from diagnosis for targeted fixing
         targets = self._extract_fstab_targets(diagnosis)
 
-        # Combine: base script + targets + fix scripts + completion marker
-        combined = base_script + '\n'
-        combined += '\n# === GCE Repair Fix Scripts ===\n'
-        combined += 'log "=== Starting repair fixes ==="\n\n'
-
-        # Inject REPAIR_TARGETS variable for targeted fstab fixing
-        if targets:
-            targets_str = '\n'.join(targets)
-            combined += '# Repair targets extracted from diagnosis\n'
-            combined += f'REPAIR_TARGETS="{targets_str}"\n\n'
-        else:
-            combined += '# No specific repair targets extracted from diagnosis\n'
-            combined += 'REPAIR_TARGETS=""\n\n'
-
-        for fix_script in fix_scripts:
-            combined += fix_script + '\n\n'
-
-        combined += 'log "=== Repair fixes completed ==="\n'
-        combined += f'echo "{RESCUE_COMPLETE_MARKER}" >&2\n'
-        combined += 'log "=== Startup script completed successfully ==="\n'
-
-        return combined
+        return compose_startup_script(base_script, fix_scripts, targets)
 
     def _get_fix_script(self, category: str) -> str:
         """Load fix script template for a category.
