@@ -793,6 +793,17 @@ class RepairOrchestrator:
             ).execute()
             serial_output = serial_response.get('contents', '')
 
+            boot_markers = ["Booting Linux", "Linux version", "Starting GRUB", "systemd[1]: Starting"]
+            last_boot_index = 0
+            for marker in boot_markers:
+                idx = serial_output.rfind(marker)  # Find the latest occurrence from the end
+                if idx > last_boot_index:
+                    last_boot_index = idx
+            
+            # If a modern boot marker was identified, strip out the pre-repair crash history
+            if last_boot_index > 0:
+                serial_output = serial_output[last_boot_index:]
+
             if not serial_output or len(serial_output.strip()) < 50:
                 sys.stdout.write("\r" + " " * 60 + "\r")
                 sys.stdout.flush()

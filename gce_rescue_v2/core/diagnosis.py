@@ -357,11 +357,12 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         )
 
         if boot_completed:
+            has_critical = any(err.severity == 'critical' for err in detected_errors)
             has_emergency = any(
                 'emergency mode' in e.description.lower()
                 for e in detected_errors
             )
-            if not has_emergency:
+            if not has_emergency and not has_critical:
                 logger.debug(
                     f"VM booted successfully (success at pos {last_success_pos}, "
                     f"last error at pos {last_error_pos}) — clearing "

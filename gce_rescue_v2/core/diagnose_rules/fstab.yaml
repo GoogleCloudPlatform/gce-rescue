@@ -9,10 +9,12 @@ patterns:
     regex:
       - 'UUID=[\w-]+ does not exist'
       - "can't find UUID=[\\w-]+"
+      - "can't find PARTUUID=[\\w-]+"
       - 'Timed out waiting for device.*UUID='
       - 'Expecting device.*/dev/disk/by-uuid/'
+      - 'Expecting device.*/dev/disk/by-partuuid/'
     fixes:
-      - "Comment out or fix the invalid UUID entry"
+      - "Comment out or fix the invalid UUID/PARTUUID entry"
 
   - name: fstab_device_timeout
     severity: critical
@@ -41,6 +43,7 @@ patterns:
     regex:
       - 'Dependency failed for .*\.mount'
       - 'Failed to mount .*\.mount'
+      - 'Failed to start systemd-remount-fs\.service'
       - 'mount.*failed'
       - 'systemd.*Failed to mount'
     fixes:
