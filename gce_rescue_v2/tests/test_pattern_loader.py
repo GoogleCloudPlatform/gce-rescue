@@ -234,7 +234,7 @@ class TestShippedPatterns:
 
     def test_fstab_patterns_present(self):
         fstab_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'fstab']
-        assert len(fstab_patterns) == 7
+        assert len(fstab_patterns) == 8
 
     def test_all_patterns_have_valid_severity(self):
         for pattern in BOOT_ERROR_PATTERNS:
