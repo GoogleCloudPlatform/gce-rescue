@@ -125,7 +125,14 @@ class RescueConfig:
     vm_start_timeout: int = 300  # 5 minutes
     disk_create_timeout: int = 300  # 5 minutes
     operation_timeout: int = 600  # 10 minutes
-    startup_verification_timeout: int = 120  # 2 minutes for startup script completion
+    # Startup-script verification (poll serial console for the completion marker).
+    # Linux/general default; Windows boots slower and the Windows mount script can
+    # wait up to 5 min just to detect the affected disk, so it gets a higher default.
+    startup_verification_timeout: int = 300  # 5 minutes (Linux/general)
+    windows_startup_verification_timeout: int = 600  # 10 minutes (Windows)
+    # Explicit override from the --verification-timeout CLI flag. When set, it wins
+    # over the OS-aware defaults above.
+    verification_timeout_override: Optional[int] = None
 
     # Logging settings
     log_level: str = 'INFO'
@@ -140,6 +147,26 @@ class RescueConfig:
     preserve_rescue_disk: bool = False  # Keep rescue disk after restore
     skip_health_check: bool = False  # Skip health checks
     force: bool = False  # Force operation (e.g., stop VM with Local SSDs)
+
+    def effective_verification_timeout(self, os_type: Optional[str]) -> int:
+        """Resolve the startup-script verification timeout for this run.
+
+        An explicit --verification-timeout override always wins. Otherwise the
+        timeout is OS-aware: Windows gets a longer budget than Linux because it
+        boots slower and its mount script can spend minutes detecting the disk.
+
+        Args:
+            os_type: Detected OS of the target VM (OS_TYPE_WINDOWS / OS_TYPE_LINUX
+                or None if not yet detected).
+
+        Returns:
+            Timeout in seconds.
+        """
+        if self.verification_timeout_override is not None:
+            return self.verification_timeout_override
+        if os_type == OS_TYPE_WINDOWS:
+            return self.windows_startup_verification_timeout
+        return self.startup_verification_timeout
 
 
 @dataclass

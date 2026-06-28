@@ -161,6 +161,7 @@ More info: [Application Default Credentials](https://cloud.google.com/docs/authe
 | `--no-snapshot` | Skip safety snapshot (faster) |
 | `--rescue-image` | Custom rescue disk image URL (must match VM's OS family + architecture). Useful for restricted-image org policies or hardened rescue environments. Available for `rescue` and `repair`. |
 | `--fix-script` | Path to a custom fix script (bash on Linux, PowerShell on Windows) to run against the affected disk after it is mounted — skips diagnosis. With `repair` the VM is restored and boot-verified afterwards; with `rescue` it stays in rescue mode for inspection. The affected disk is mounted at `/mnt/sysroot` on Linux; on Windows its partitions get drive letters from `D:` onward (iterate non-`C:` volumes rather than assuming `D:`). |
+| `--verification-timeout` | Seconds to wait for the rescue VM startup script to complete (serial console marker). Overrides the OS-aware default (Linux: 300, Windows: 600). Raise it for slow-booting VMs. Available for `rescue` and `repair`. |
 | `--quiet` | No confirmation prompts (for automation) |
 | `--format` | Output format: `json`, `yaml`, `table` |
 

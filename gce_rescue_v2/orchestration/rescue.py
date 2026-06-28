@@ -934,7 +934,7 @@ class RescueOrchestrator:
                 verify_startup = VerifyStartupOperation(self.compute, self.project, self.zone, self.logger)
                 result = verify_startup.execute(
                     vm_name=self.vm_name,
-                    timeout=self.config.startup_verification_timeout,
+                    timeout=self.config.effective_verification_timeout(self.os_type),
                     tracking_label=self._ua('vm-verify-startup')
                 )
                 self.verification_succeeded = result.success
