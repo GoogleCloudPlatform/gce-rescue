@@ -168,6 +168,29 @@ class RescueConfig:
             return self.windows_startup_verification_timeout
         return self.startup_verification_timeout
 
+    def default_rescue_image(self, os_type: Optional[str],
+                             architecture: Optional[str]) -> tuple:
+        """Resolve the default rescue image (project, family) for a target VM.
+
+        Single source of truth for default-image selection, shared by the
+        rescue orchestrator (disk creation) and the pre-flight reachability
+        check. Custom images (--rescue-image) bypass this entirely.
+
+        Args:
+            os_type: OS_TYPE_WINDOWS / OS_TYPE_LINUX (or None).
+            architecture: 'arm64' / 'x86_64' (matches os_detection.ARCH_*).
+
+        Returns:
+            (project, family) tuple.
+        """
+        if os_type == OS_TYPE_WINDOWS:
+            return self.windows_rescue_image_project, self.windows_rescue_image_family
+        # 'arm64' mirrors os_detection.ARCH_ARM64 (not imported to avoid a cycle:
+        # os_detection imports from this module).
+        if architecture == 'arm64':
+            return self.arm64_rescue_image_project, self.arm64_rescue_image_family
+        return self.rescue_image_project, self.rescue_image_family
+
 
 @dataclass
 class RestoreConfig:

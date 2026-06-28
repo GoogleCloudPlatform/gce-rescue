@@ -111,6 +111,64 @@ def validate_custom_rescue_image(
     return int(image_dict.get('diskSizeGb', 0)), None
 
 
+def validate_default_rescue_image(
+    compute, vm_info, config, session_id, command, mode,
+) -> Optional[str]:
+    """Pre-flight reachability check for the DEFAULT rescue image (issue #122).
+
+    When no --rescue-image is given, the rescue disk is created from a public
+    image (debian-cloud / windows-cloud). If an org policy restricts public
+    images (constraints/compute.trustedImageProjects), the disk creation fails
+    mid-operation, AFTER the VM has been stopped. This catches that up front
+    with an actionable message, before any destructive step.
+
+    Resolves the default image for the VM's OS/arch (same selection the rescue
+    orchestrator uses) and confirms it's accessible.
+
+    Args:
+        compute: Compute API client (will be wrapped for analytics).
+        vm_info: VM resource dict (from _validate_vm_exists).
+        config: RescueConfig (provides default_rescue_image()).
+        session_id, command, mode: analytics tagging.
+
+    Returns:
+        None if the default image is reachable, else an error message string.
+    """
+    from ..utils.os_detection import detect_os_type, detect_architecture
+    from ..orchestration.rescue import RescueOrchestrator
+    from ..core.config import build_user_agent
+    from googleapiclient.errors import HttpError
+
+    os_type = detect_os_type(vm_info)
+    architecture = detect_architecture(vm_info)
+    project, family = config.default_rescue_image(os_type, architecture)
+    image_url = f'projects/{project}/global/images/family/{family}'
+
+    ua = build_user_agent(
+        session_id=session_id, command=command, mode=mode,
+        step='image-preflight-default',
+    )
+    tracked = _create_tracked_client(compute, ua)
+
+    try:
+        RescueOrchestrator.fetch_custom_image(tracked, image_url)
+        return None
+    except HttpError as e:
+        if e.resp.status in (403, 404):
+            return (
+                f"Cannot access the default rescue image ({image_url}).\n"
+                f"      This project may restrict public images"
+                f" (constraints/compute.trustedImageProjects).\n"
+                f"      Specify an approved image with --rescue-image, e.g.:\n"
+                f"        --rescue-image=projects/PROJECT/global/images/family/FAMILY"
+            )
+        # Other errors (transient/5xx/etc.): don't block the operation on a
+        # pre-flight hiccup; the orchestrator will surface real failures.
+        return None
+    except Exception:
+        return None
+
+
 def get_gcloud_config(key: str) -> Optional[str]:
     """
     Read configuration from gcloud config.

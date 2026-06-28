@@ -15,7 +15,7 @@ from .compose import (
     compose_startup_script, compose_startup_script_windows, strip_shebang,
 )
 from ..utils.os_detection import (
-    detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64,
+    detect_os_type, get_os_display_name, detect_architecture,
     get_rescue_disk_type, detect_os_flavor
 )
 from ..validators import (
@@ -705,24 +705,19 @@ class RescueOrchestrator:
                             f"Creating rescue disk ({rescue_disk_size}GB, custom image: {source_image}, "
                             f"image requires {image_required_gb}GB)..."
                         )
-                    elif self.os_type == OS_TYPE_WINDOWS:
-                        rescue_image_project = self.config.windows_rescue_image_project
-                        rescue_image_family = self.config.windows_rescue_image_family
-                        rescue_disk_size = self.config.windows_rescue_disk_size_gb
-                        source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
-                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
-                    elif self.architecture == ARCH_ARM64:
-                        # ARM64 Linux (T2A instances)
-                        rescue_image_project = self.config.arm64_rescue_image_project
-                        rescue_image_family = self.config.arm64_rescue_image_family
-                        rescue_disk_size = self.config.rescue_disk_size_gb
-                        source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
-                        self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
                     else:
-                        # x86_64 Linux (default)
-                        rescue_image_project = self.config.rescue_image_project
-                        rescue_image_family = self.config.rescue_image_family
-                        rescue_disk_size = self.config.rescue_disk_size_gb
+                        # Default image, by OS/arch. Single source of truth shared
+                        # with the pre-flight reachability check (issue #122).
+                        rescue_image_project, rescue_image_family = (
+                            self.config.default_rescue_image(
+                                self.os_type, self.architecture
+                            )
+                        )
+                        rescue_disk_size = (
+                            self.config.windows_rescue_disk_size_gb
+                            if self.os_type == OS_TYPE_WINDOWS
+                            else self.config.rescue_disk_size_gb
+                        )
                         source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
                         self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
 

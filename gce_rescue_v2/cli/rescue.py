@@ -49,6 +49,11 @@ def handle_rescue(args: argparse.Namespace) -> int:
         print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
         return 1
 
+    # Build config early so pre-flight checks (e.g. default-image reachability)
+    # can use it. Reads the --fix-script file if given (fail-fast on bad path).
+    from . import args_to_rescue_config
+    config = args_to_rescue_config(args)
+
     # Check for incomplete operation (interactive mode only)
     checkpoint = None
     resuming = False
@@ -116,6 +121,19 @@ def handle_rescue(args: argparse.Namespace) -> int:
                 print(f"{error_prefix()} {err}", file=sys.stderr)
                 return 1
             args.custom_rescue_image_size_gb = size_gb
+            # config was built before this pre-flight, so set the resolved size
+            # on it directly (args_to_rescue_config already ran).
+            config.custom_rescue_image_size_gb = size_gb
+        else:
+            # No custom image: confirm the default public image is reachable
+            # (fail fast under org policy instead of mid-rescue). Issue #122.
+            err = preflight.validate_default_rescue_image(
+                compute, vm_info, config, session_id=session_id,
+                command='rescue', mode=mode,
+            )
+            if err:
+                print(f"{error_prefix()} {err}", file=sys.stderr)
+                return 1
 
     # Interactive confirmation (unless --quiet or resuming)
     if not args.quiet and not resuming:
@@ -163,10 +181,6 @@ def handle_rescue(args: argparse.Namespace) -> int:
             return 0
 
         clear_lines(lines_printed)
-
-    # Convert to config
-    from . import args_to_rescue_config
-    config = args_to_rescue_config(args)
 
     if has_local_ssd:
         config.force = True

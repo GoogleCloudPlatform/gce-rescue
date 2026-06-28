@@ -350,8 +350,8 @@ def handle_repair(args: argparse.Namespace) -> int:
         # Validate --rescue-image BEFORE any destructive ops. Same shared
         # helper used by handle_rescue. Resolved size is mutated onto the
         # orchestrator's config so the inner rescue phase uses it.
+        from . import preflight as _preflight
         if getattr(args, 'rescue_image', None):
-            from . import preflight as _preflight
             size_gb, err = _preflight.validate_custom_rescue_image(
                 compute, vm, args.rescue_image,
                 session_id=session_id, command='repair', mode=mode,
@@ -360,6 +360,16 @@ def handle_repair(args: argparse.Namespace) -> int:
                 print(f"{error_prefix()} {err}", file=sys.stderr)
                 return 1
             orchestrator.config.custom_rescue_image_size_gb = size_gb
+        else:
+            # No custom image: confirm the default public image is reachable
+            # (fail fast under org policy instead of mid-repair). Issue #122.
+            err = _preflight.validate_default_rescue_image(
+                compute, vm, config, session_id=session_id,
+                command='repair', mode=mode,
+            )
+            if err:
+                print(f"{error_prefix()} {err}", file=sys.stderr)
+                return 1
 
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])

@@ -569,6 +569,20 @@ class TestHandleRescue:
         exit_code = cli.handle_rescue(args)
         assert exit_code == 0
 
+    def test_handle_rescue_blocks_on_inaccessible_default_image(self, monkeypatch, capsys):
+        """Unreachable default image (org policy) blocks before any rescue (issue #122)."""
+        self._setup_rescue(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(
+            preflight, "validate_default_rescue_image",
+            lambda *a, **kw: ("Cannot access the default rescue image ...\n"
+                              "      Specify an approved image with --rescue-image"),
+        )
+        args = _parse_args("rescue")
+        exit_code = cli.handle_rescue(args)
+        assert exit_code == 1
+        assert "--rescue-image" in capsys.readouterr().err
+
     def test_handle_rescue_validation_fails(self, monkeypatch):
         """Validation failure returns 1."""
         self._setup_rescue(monkeypatch, validate=False)
@@ -1255,3 +1269,85 @@ class TestFixScriptRepairPath:
         assert exit_code == 0
         orch.execute_custom.assert_called_once()
         assert orch._suppress_header is True
+
+
+class TestDefaultRescueImage:
+    """Tests for RescueConfig.default_rescue_image (issue #122)."""
+
+    def test_linux_x86(self):
+        from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_LINUX
+        c = RescueConfig()
+        assert c.default_rescue_image(OS_TYPE_LINUX, 'x86_64') == ('debian-cloud', 'debian-12')
+
+    def test_windows(self):
+        from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_WINDOWS
+        c = RescueConfig()
+        assert c.default_rescue_image(OS_TYPE_WINDOWS, 'x86_64') == ('windows-cloud', 'windows-2022')
+
+    def test_arm64(self):
+        from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_LINUX
+        c = RescueConfig()
+        assert c.default_rescue_image(OS_TYPE_LINUX, 'arm64') == ('debian-cloud', 'debian-12-arm64')
+
+    def test_windows_precedes_arm(self):
+        from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_WINDOWS
+        c = RescueConfig()
+        assert c.default_rescue_image(OS_TYPE_WINDOWS, 'arm64') == ('windows-cloud', 'windows-2022')
+
+
+class TestValidateDefaultRescueImage:
+    """Tests for preflight.validate_default_rescue_image (issue #122)."""
+
+    def _vm(self):
+        return {"disks": [{"boot": True, "licenses": ["debian-12"]}], "status": "RUNNING"}
+
+    def test_reachable_returns_none(self, monkeypatch):
+        from gce_rescue_v2.cli import preflight
+        from gce_rescue_v2.core.config import RescueConfig
+        from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
+        monkeypatch.setattr(preflight, "_create_tracked_client", lambda c, ua: Mock())
+        monkeypatch.setattr(RescueOrchestrator, "fetch_custom_image",
+                            lambda c, url: {"diskSizeGb": "10"})
+        err = preflight.validate_default_rescue_image(
+            Mock(), self._vm(), RescueConfig(),
+            session_id="s", command="rescue", mode="auto",
+        )
+        assert err is None
+
+    def test_403_returns_actionable_error(self, monkeypatch):
+        from gce_rescue_v2.cli import preflight
+        from gce_rescue_v2.core.config import RescueConfig
+        from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
+        from googleapiclient.errors import HttpError
+        resp = Mock(status=403)
+
+        def boom(c, url):
+            raise HttpError(resp, b'{"error":{"message":"denied"}}')
+
+        monkeypatch.setattr(preflight, "_create_tracked_client", lambda c, ua: Mock())
+        monkeypatch.setattr(RescueOrchestrator, "fetch_custom_image", boom)
+        err = preflight.validate_default_rescue_image(
+            Mock(), self._vm(), RescueConfig(),
+            session_id="s", command="rescue", mode="auto",
+        )
+        assert err is not None
+        assert "--rescue-image" in err
+
+    def test_transient_error_does_not_block(self, monkeypatch):
+        """A 5xx pre-flight hiccup returns None (don't block on transient errors)."""
+        from gce_rescue_v2.cli import preflight
+        from gce_rescue_v2.core.config import RescueConfig
+        from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
+        from googleapiclient.errors import HttpError
+        resp = Mock(status=503)
+
+        def boom(c, url):
+            raise HttpError(resp, b'{"error":{"message":"unavailable"}}')
+
+        monkeypatch.setattr(preflight, "_create_tracked_client", lambda c, ua: Mock())
+        monkeypatch.setattr(RescueOrchestrator, "fetch_custom_image", boom)
+        err = preflight.validate_default_rescue_image(
+            Mock(), self._vm(), RescueConfig(),
+            session_id="s", command="rescue", mode="auto",
+        )
+        assert err is None
