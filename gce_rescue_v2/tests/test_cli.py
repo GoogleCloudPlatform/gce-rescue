@@ -886,6 +886,45 @@ class TestHandleRepair:
         exit_code = cli.handle_repair(args)
         assert exit_code == 1
 
+    # --- Local SSD pre-flight (issue #134) ---
+
+    def test_handle_repair_local_ssd_quiet_requires_force(self, monkeypatch, capsys):
+        """repair --quiet on a Local SSD VM fails fast asking for --force."""
+        self._setup_repair_base(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: ["local-ssd-0"])
+        Fake = self._make_fake_repair_orch()
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        args = _parse_args("repair")  # --quiet, no --force
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert "Local SSD" in captured.err
+        assert "--force" in captured.err
+
+    def test_handle_repair_local_ssd_force_proceeds(self, monkeypatch):
+        """repair --quiet --force on a Local SSD VM proceeds past the stop guard."""
+        self._setup_repair_base(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: ["local-ssd-0"])
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "fstab", "severity": "error",
+                          "description": "Bad UUID in /etc/fstab",
+                          "detected_pattern": "UUID=bad-uuid"}],
+            fixable=["fstab"],
+            fstab_targets=["UUID=bad-uuid"],
+        )
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        args = _parse_args("repair", extra=["--force"])
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 0
+
     # --- --rescue-image pre-flight (issue #102) ---
 
     def test_handle_repair_rescue_image_invalid_blocks_pre_flight(

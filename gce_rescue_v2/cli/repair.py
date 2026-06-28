@@ -361,6 +361,31 @@ def handle_repair(args: argparse.Namespace) -> int:
                 return 1
             orchestrator.config.custom_rescue_image_size_gb = size_gb
 
+        # Local SSD pre-flight (same as rescue): stopping a VM with Local SSDs
+        # permanently destroys their data. In --quiet mode require --force so
+        # automation opts into the loss explicitly, instead of failing mid-stop
+        # with a raw "undefined value for discard-local-ssd" API error.
+        from . import preflight as _preflight
+        local_ssds = _preflight._check_local_ssds(vm)
+        if local_ssds and args.quiet and not getattr(args, 'force', False):
+            print(f"{error_prefix()} VM has Local SSDs attached.", file=sys.stderr)
+            print("", file=sys.stderr)
+            print(f"Local SSDs found: {', '.join(local_ssds)}", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("WARNING: Repairing this VM stops it, which will PERMANENTLY"
+                  " LOSE all data on Local SSDs!", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
+            print(f"  $ gce-rescue repair {args.instance_name} --zone={args.zone}"
+                  f" --quiet --force", file=sys.stderr)
+            return 1
+        if local_ssds:
+            # Proceeding (interactive, or --force in quiet): make the data loss
+            # explicit. The interactive confirmation prompt follows.
+            print(f"{warning_prefix()} Local SSDs attached"
+                  f" ({', '.join(local_ssds)}) — their data will be PERMANENTLY"
+                  f" LOST when the VM is stopped.", file=sys.stderr)
+
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])
         in_rescue = any(item.get('key') == 'rescue-mode' for item in metadata_items)
