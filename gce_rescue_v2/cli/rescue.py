@@ -233,7 +233,16 @@ def handle_rescue(args: argparse.Namespace) -> int:
             wait_time = "1-2 minutes" if is_win else "30 seconds"
             rescue_log = "C:\\gce-rescue.log" if is_win else "/var/log/gce-rescue.log"
             creds_note = ", credentials" if is_win else ""
-            logger.info(f"{note_prefix()} Disk mount is still in progress.")
+            # Be explicit when verification actually timed out (vs. an unknown
+            # state), including how long we waited so the user can decide whether
+            # to extend it with --verification-timeout.
+            vr = getattr(orchestrator, 'verification_result', None)
+            if vr and vr.details and vr.details.get('timed_out'):
+                secs = vr.details.get('timeout_seconds')
+                logger.info(f"{note_prefix()} Startup verification timed out after"
+                            f" {secs}s; disk mount may still be in progress.")
+            else:
+                logger.info(f"{note_prefix()} Disk mount is still in progress.")
             logger.info(f"      Wait ~{wait_time} before connecting."
                         f" If disk is not available, check:")
             logger.info(f"      - Rescue log: {rescue_log}")

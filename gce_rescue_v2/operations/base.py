@@ -95,6 +95,7 @@ class OperationResult:
     message: str
     rollback_data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None  # Structured extras (e.g. timeout info)
 
     def __str__(self):
         """String representation."""

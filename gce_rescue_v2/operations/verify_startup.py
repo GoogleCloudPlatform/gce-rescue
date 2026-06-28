@@ -44,6 +44,11 @@ class VerifyStartupOperation(BaseOperation):
 
         start_time = time.time()
         poll_interval = 5  # Poll every 5 seconds (consistent with V2 patterns)
+        # Most recent serial output seen; dumped to the log on timeout so
+        # failures are diagnosable from the log alone (no separate serial pull).
+        last_serial = ''
+        # How much trailing serial output to keep for diagnostics.
+        serial_tail_chars = 4000
 
         try:
             # Use tracked client if tracking_label provided
@@ -54,11 +59,30 @@ class VerifyStartupOperation(BaseOperation):
 
                 # Check timeout
                 if elapsed > timeout:
+                    serial_tail = last_serial[-serial_tail_chars:] if last_serial else ''
+                    self._log_info(
+                        f"Startup verification timed out after {timeout}s "
+                        f"(marker '{completion_marker}' not seen)"
+                    )
+                    if serial_tail:
+                        # DEBUG so it always lands in the log file (file handler
+                        # is DEBUG) without spamming the console.
+                        self._log_debug(
+                            f"Last serial console output (tail) at timeout:\n"
+                            f"{'-' * 60}\n{serial_tail}\n{'-' * 60}"
+                        )
+                    else:
+                        self._log_debug("No serial console output captured before timeout")
                     return OperationResult(
                         operation_name=self.name,
                         success=False,
                         message=f"Timeout waiting for startup script ({timeout}s)",
-                        error=f"Startup script did not complete within {timeout}s"
+                        error=f"Startup script did not complete within {timeout}s",
+                        details={
+                            'timed_out': True,
+                            'timeout_seconds': timeout,
+                            'serial_tail': serial_tail,
+                        }
                     )
 
                 # Poll serial console
@@ -70,6 +94,8 @@ class VerifyStartupOperation(BaseOperation):
                     ).execute()
 
                     contents = result.get('contents', '')
+                    if contents:
+                        last_serial = contents
 
                     # Check for completion marker
                     if completion_marker in contents:
