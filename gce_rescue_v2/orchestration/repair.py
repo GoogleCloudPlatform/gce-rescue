@@ -296,6 +296,11 @@ class RepairOrchestrator:
             # Custom fix script (--fix-script): composed per-OS by the rescue
             # orchestrator's startup-script generation
             rescue_config.fix_script = fix_script
+            # Propagate explicit --verification-timeout (issue #123); OS-aware
+            # defaults come from RescueConfig itself.
+            rescue_config.verification_timeout_override = (
+                self.config.verification_timeout_override
+            )
 
             rescue = RescueOrchestrator(
                 compute=self.compute, project=self.project, zone=self.zone,
