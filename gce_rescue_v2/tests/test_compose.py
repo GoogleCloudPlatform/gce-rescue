@@ -8,11 +8,13 @@ from gce_rescue_v2.orchestration.compose import (
 )
 
 
-# Minimal stand-in for rescue_mount.sh: mount logic + completion marker
+# Minimal stand-in for rescue_mount.sh: mount logic + completion call.
+# The real script calls signal_complete (emits the serial marker AND sets the
+# completion guest attribute); compose relocates that call after the fixes.
 BASE_SCRIPT = (
     'log "mounting disk"\n'
     'mount /dev/sdb1 /mnt/sysroot\n'
-    f'echo "{RESCUE_COMPLETE_MARKER}" >&2\n'
+    'signal_complete\n'
     'log "startup done"\n'
 )
 
@@ -42,19 +44,19 @@ class TestComposeStartupScript:
     """compose_startup_script combines mount + fix with marker relocation."""
 
     def test_marker_relocated_after_fix(self):
-        """The active completion marker must come AFTER the fix body."""
+        """The active completion signal must come AFTER the fix body."""
         fix = 'sed -i "s/bad/good/" /mnt/sysroot/etc/fstab'
         script = compose_startup_script(BASE_SCRIPT, [fix], repair_targets=None)
-        marker_pos = script.rindex(f'echo "{RESCUE_COMPLETE_MARKER}"')
-        assert marker_pos > script.index(fix), \
-            "completion marker must fire only after the fix has run"
+        signal_pos = script.rindex('signal_complete')
+        assert signal_pos > script.index(fix), \
+            "completion signal must fire only after the fix has run"
 
     def test_original_marker_commented(self):
-        """The base script's marker line is replaced with a comment."""
+        """The base script's completion call is replaced with a comment."""
         script = compose_startup_script(BASE_SCRIPT, ['fix'], repair_targets=None)
-        assert 'marker moved to end' in script
-        # Exactly one ACTIVE echo of the marker remains (the relocated one)
-        assert script.count(f'echo "{RESCUE_COMPLETE_MARKER}"') == 1
+        assert 'moved to end' in script
+        # Exactly one ACTIVE completion call remains (the relocated one)
+        assert script.count('signal_complete') == 1
 
     def test_mount_logic_preserved(self):
         """Base mount logic is kept intact ahead of the fix."""
@@ -86,9 +88,8 @@ class TestComposeStartupScript:
             BASE_SCRIPT, ['first fix', 'second fix'], repair_targets=[]
         )
         assert script.index('first fix') < script.index('second fix')
-        # Marker still after the LAST fix
-        assert script.rindex(f'echo "{RESCUE_COMPLETE_MARKER}"') > \
-            script.index('second fix')
+        # Completion signal still after the LAST fix
+        assert script.rindex('signal_complete') > script.index('second fix')
 
 
 # Minimal stand-in for rescue_mount_windows.ps1: mount + marker + trailing
