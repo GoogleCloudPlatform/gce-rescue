@@ -74,34 +74,41 @@ class CreateDiskOperation(BaseOperation):
 
             # Use tracked client if tracking_label provided
             compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
-            # Create the disk
-            compute.disks().insert(
+            start_time = time.time()
+            # Create the disk (returns an async zone operation)
+            operation = compute.disks().insert(
                 project=self.project,
                 zone=self.zone,
                 body=disk_body
             ).execute()
 
-            # Wait for disk creation
-            self._log_debug("Waiting for disk creation...")
-            start_time = time.time()
-
-            def get_status():
-                try:
-                    disk = self.compute.disks().get(
-                        project=self.project,
-                        zone=self.zone,
-                        disk=disk_name
-                    ).execute()
-                    return disk['status']
-                except Exception:
-                    return 'CREATING'
-
-            if not self._wait_for_status(get_status, 'READY', timeout):
+            # Wait on the OPERATION (not just the disk's status). Image/org-policy
+            # restrictions (e.g. constraints/compute.trustedImageProjects) surface
+            # only in the async operation result; polling the disk status would
+            # just time out and hide the real cause. Waiting on the operation
+            # fails fast and exposes the actual error message.
+            self._log_debug("Waiting for disk-create operation...")
+            if not self._wait_for_operation(operation, timeout):
+                op_error = self._last_operation_error
+                if op_error:
+                    suggestion = get_error_suggestion(op_error, operation='create_disk')
+                    if suggestion:
+                        error_detail = suggestion.format(
+                            vm_name=None, zone=self.zone,
+                            project=self.project, disk_name=disk_name
+                        )
+                    else:
+                        error_detail = f"Failed to create disk: {op_error}"
+                    self._log_error(error_detail)
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message=f"Failed to create disk: {op_error}",
+                        error=error_detail
+                    )
                 error_detail = DISK_CREATE_FAILED.format(
-                    vm_name=None,
-                    zone=self.zone,
-                    project=self.project,
-                    disk_name=disk_name
+                    vm_name=None, zone=self.zone,
+                    project=self.project, disk_name=disk_name
                 )
                 self._log_error(error_detail)
                 return OperationResult(
