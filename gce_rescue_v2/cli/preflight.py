@@ -285,6 +285,43 @@ def _check_local_ssds(vm_info: dict) -> list:
     return local_ssds
 
 
+def check_local_ssd_quiet_gate(vm_info, instance_name, zone, command,
+                               quiet, force) -> tuple:
+    """Shared Local SSD safety gate for rescue/repair (quiet mode).
+
+    Stopping a VM with Local SSDs permanently destroys their data. In --quiet
+    mode there's no prompt, so require --force to opt into the loss explicitly
+    (otherwise the stop fails mid-operation with a raw discard-local-ssd API
+    error). Used by both handle_rescue and handle_repair so the gate stays
+    identical across subcommands.
+
+    Args:
+        vm_info: VM resource dict (from _validate_vm_exists).
+        instance_name, zone: for the actionable --force command hint.
+        command: 'rescue' or 'repair' (used in the hint).
+        quiet: whether --quiet was given.
+        force: whether --force was given.
+
+    Returns:
+        (local_ssds, error_message): error_message is non-None only when the
+        caller must abort (quiet + Local SSDs + no --force). local_ssds is the
+        detected list (possibly empty) for the caller's interactive handling.
+    """
+    local_ssds = _check_local_ssds(vm_info)
+    if local_ssds and quiet and not force:
+        msg = (
+            "VM has Local SSDs attached.\n\n"
+            f"Local SSDs found: {', '.join(local_ssds)}\n\n"
+            "WARNING: Stopping this VM will PERMANENTLY LOSE all data on"
+            " Local SSDs!\n\n"
+            "To proceed in quiet mode, use --force flag:\n"
+            f"  $ gce-rescue {command} {instance_name} --zone={zone}"
+            f" --quiet --force"
+        )
+        return local_ssds, msg
+    return local_ssds, None
+
+
 def _validate_vm_for_restore(compute, project: str, zone: str, vm_name: str,
                              user_agent: str = None) -> tuple:
     """

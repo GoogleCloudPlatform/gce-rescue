@@ -13,7 +13,9 @@ from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bol
 from ..utils.logger import setup_logging
 from ..orchestration.checkpoint import CheckpointManager
 from .output import _Spinner, _format_duration
-from .preflight import get_gcloud_config, _create_tracked_client
+from .preflight import (
+    get_gcloud_config, _create_tracked_client, check_local_ssd_quiet_gate,
+)
 from .checkpoint_ui import _handle_checkpoint_rollback
 
 
@@ -361,30 +363,25 @@ def handle_repair(args: argparse.Namespace) -> int:
                 return 1
             orchestrator.config.custom_rescue_image_size_gb = size_gb
 
-        # Local SSD pre-flight (same as rescue): stopping a VM with Local SSDs
-        # permanently destroys their data. In --quiet mode require --force so
-        # automation opts into the loss explicitly, instead of failing mid-stop
-        # with a raw "undefined value for discard-local-ssd" API error.
-        from . import preflight as _preflight
-        local_ssds = _preflight._check_local_ssds(vm)
-        if local_ssds and args.quiet and not getattr(args, 'force', False):
-            print(f"{error_prefix()} VM has Local SSDs attached.", file=sys.stderr)
-            print("", file=sys.stderr)
-            print(f"Local SSDs found: {', '.join(local_ssds)}", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("WARNING: Repairing this VM stops it, which will PERMANENTLY"
-                  " LOSE all data on Local SSDs!", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
-            print(f"  $ gce-rescue repair {args.instance_name} --zone={args.zone}"
-                  f" --quiet --force", file=sys.stderr)
+        # Local SSD safety gate (shared with rescue). In --quiet mode require
+        # --force; otherwise proceed but make the data loss explicit and ensure
+        # the stop discards Local SSDs (force) so it doesn't fail mid-operation.
+        local_ssds, ssd_err = check_local_ssd_quiet_gate(
+            vm, args.instance_name, args.zone, 'repair',
+            args.quiet, getattr(args, 'force', False),
+        )
+        if ssd_err:
+            print(f"{error_prefix()} {ssd_err}", file=sys.stderr)
             return 1
         if local_ssds:
-            # Proceeding (interactive, or --force in quiet): make the data loss
-            # explicit. The interactive confirmation prompt follows.
-            print(f"{warning_prefix()} Local SSDs attached"
-                  f" ({', '.join(local_ssds)}) — their data will be PERMANENTLY"
-                  f" LOST when the VM is stopped.", file=sys.stderr)
+            # Stopping the VM destroys Local SSD data; force the discard so the
+            # stop succeeds (matches rescue). The interactive Proceed prompt
+            # below is the confirmation; surface the loss before it.
+            config.force = True
+            if not args.quiet:
+                print(f"{warning_prefix()} Data on Local SSDs"
+                      f" ({', '.join(local_ssds)}) will be permanently lost when"
+                      f" the VM is stopped.")
 
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])

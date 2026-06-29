@@ -1294,3 +1294,56 @@ class TestFixScriptRepairPath:
         assert exit_code == 0
         orch.execute_custom.assert_called_once()
         assert orch._suppress_header is True
+
+
+class TestLocalSsdQuietGate:
+    """Tests for the shared Local SSD quiet-mode gate (issue #134 / Todd review)."""
+
+    def _vm(self, with_ssd=True):
+        disks = [{"boot": True, "deviceName": "sda"}]
+        if with_ssd:
+            disks.append({"type": "SCRATCH", "deviceName": "local-ssd-0"})
+        return {"disks": disks, "status": "RUNNING"}
+
+    def test_no_local_ssd_passes(self):
+        from gce_rescue_v2.cli import preflight
+        ssds, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(with_ssd=False), "vm-1", "us-central1-a", "rescue",
+            quiet=True, force=False,
+        )
+        assert ssds == []
+        assert err is None
+
+    def test_quiet_local_ssd_no_force_blocks(self):
+        from gce_rescue_v2.cli import preflight
+        ssds, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(), "vm-1", "us-central1-a", "repair", quiet=True, force=False,
+        )
+        assert ssds == ["local-ssd-0"]
+        assert err is not None
+        assert "--force" in err
+        assert "repair" in err  # command-specific hint
+
+    def test_quiet_local_ssd_with_force_passes(self):
+        from gce_rescue_v2.cli import preflight
+        ssds, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(), "vm-1", "us-central1-a", "rescue", quiet=True, force=True,
+        )
+        assert ssds == ["local-ssd-0"]
+        assert err is None  # force opts in
+
+    def test_interactive_local_ssd_no_error(self):
+        """Interactive (not quiet) returns the list but no error (caller confirms)."""
+        from gce_rescue_v2.cli import preflight
+        ssds, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(), "vm-1", "us-central1-a", "rescue", quiet=False, force=False,
+        )
+        assert ssds == ["local-ssd-0"]
+        assert err is None
+
+    def test_command_in_hint(self):
+        from gce_rescue_v2.cli import preflight
+        _, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(), "vm-1", "us-central1-a", "rescue", quiet=True, force=False,
+        )
+        assert "gce-rescue rescue vm-1" in err
