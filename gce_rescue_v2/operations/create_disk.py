@@ -99,7 +99,7 @@ class CreateDiskOperation(BaseOperation):
                         )
                     else:
                         error_detail = f"Failed to create disk: {op_error}"
-                    self._log_error(error_detail)
+                    self._log_debug(error_detail)
                     return OperationResult(
                         operation_name=self.name,
                         success=False,
@@ -110,7 +110,7 @@ class CreateDiskOperation(BaseOperation):
                     vm_name=None, zone=self.zone,
                     project=self.project, disk_name=disk_name
                 )
-                self._log_error(error_detail)
+                self._log_debug(error_detail)
                 return OperationResult(
                     operation_name=self.name,
                     success=False,
@@ -142,7 +142,7 @@ class CreateDiskOperation(BaseOperation):
                 )
             else:
                 error_detail = f"Failed to create disk: {error_msg}"
-            self._log_error(error_detail)
+            self._log_debug(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,

@@ -317,7 +317,9 @@ class BaseOperation(ABC):
                         errors = result['error'].get('errors', [])
                         error_msg = '; '.join([e.get('message', 'Unknown error') for e in errors])
                         self._last_operation_error = error_msg
-                        self._log_error(f"Operation failed: {error_msg}")
+                        # Captured above for the caller to surface a formatted,
+                        # actionable message; keep the raw line out of user output.
+                        self._log_debug(f"Operation failed: {error_msg}")
                         return False
                     self._last_operation_error = None
                     return True

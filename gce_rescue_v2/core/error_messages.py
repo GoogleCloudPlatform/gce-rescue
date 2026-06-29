@@ -217,21 +217,22 @@ DISK_CREATE_FAILED = ErrorSuggestion(
 )
 
 TRUSTED_IMAGE_BLOCKED = ErrorSuggestion(
-    message="Rescue disk image blocked by org policy (trustedImageProjects)",
+    message="Rescue image blocked by org policy (compute.trustedImageProjects)",
     causes=[
         "This project restricts which image projects may be used"
         " (constraints/compute.trustedImageProjects)",
-        "The rescue image's project (e.g. debian-cloud / windows-cloud) is not"
-        " in the allowed list",
+        "The default rescue image's project (e.g. debian-cloud / windows-cloud)"
+        " is not in the allowed list",
     ],
     suggestions=[
         "Specify an approved image with --rescue-image="
-        "projects/PROJECT/global/images/family/FAMILY",
+        "projects/IMAGE_PROJECT/global/images/IMAGE",
+        "An image family also works: .../global/images/family/FAMILY",
         "Ask your organization admin which image projects are permitted",
     ],
     commands=[
         "gce-rescue rescue {vm_name} --zone={zone} --project={project}"
-        " --rescue-image=projects/PROJECT/global/images/family/FAMILY",
+        " --rescue-image=projects/IMAGE_PROJECT/global/images/IMAGE",
     ]
 )
 
