@@ -191,43 +191,62 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
     script_name = Path(args.fix_script).name
 
     if not args.quiet:
+        lines_printed = 0
         print(f"Repair: {args.instance_name} ({args.zone})")
+        lines_printed += 1
         print("")
+        lines_printed += 1
         print(f"  Custom fix script: {args.fix_script} "
               f"({len(script_lines)} lines)")
+        lines_printed += 1
         preview = script_lines[:15]
         for line in preview:
             print(f"    | {line}")
+            lines_printed += 1
         if len(script_lines) > len(preview):
             print(f"    | ... ({len(script_lines) - len(preview)} more lines)")
+            lines_printed += 1
         print("")
+        lines_printed += 1
         print("  Repair plan:")
+        lines_printed += 1
         step = 1
         if getattr(args, 'snapshot', True):
             print(f"    {step}. Create backup snapshot of boot disk")
+            lines_printed += 1
             step += 1
         print(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
+        lines_printed += 1
         step += 1
         print(f"    {step}. Run the custom fix script against the affected disk")
+        lines_printed += 1
         step += 1
         print(f"    {step}. Restore original boot disk and start VM")
+        lines_printed += 1
         print("")
+        lines_printed += 1
         print("  Diagnosis is skipped: the script runs exactly as provided.")
+        lines_printed += 1
         if local_ssds:
             print("")
             print(f"  {warning_prefix()} Data on Local SSDs"
                   f" ({', '.join(local_ssds)}) will be permanently lost.")
+            lines_printed += 2
         print("")
+        lines_printed += 1
 
         try:
             response = input("  Proceed? [y/N]: ").strip().lower()
+            lines_printed += 1
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             return 0
         if response not in ('y', 'yes'):
             print("\nAborted by user.")
             return 0
-        print("")
+
+        # Clear the confirmation block; the concise header below replaces it.
+        clear_lines(lines_printed)
 
     # Concise repair header
     print(f"Repairing instance [{args.instance_name}]:")
