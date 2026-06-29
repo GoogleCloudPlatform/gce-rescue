@@ -180,7 +180,8 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
 
 
 def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
-                           project: str, fix_script: str) -> int:
+                           project: str, fix_script: str,
+                           local_ssds: list = None) -> int:
     """Run repair with a custom fix script (--fix-script), skipping diagnosis.
 
     Shows the supplied script and the repair plan, asks for confirmation
@@ -212,6 +213,10 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
         print(f"    {step}. Restore original boot disk and start VM")
         print("")
         print("  Diagnosis is skipped: the script runs exactly as provided.")
+        if local_ssds:
+            print("")
+            print(f"  {warning_prefix()} Data on Local SSDs"
+                  f" ({', '.join(local_ssds)}) will be permanently lost.")
         print("")
 
         try:
@@ -375,13 +380,9 @@ def handle_repair(args: argparse.Namespace) -> int:
             return 1
         if local_ssds:
             # Stopping the VM destroys Local SSD data; force the discard so the
-            # stop succeeds (matches rescue). The interactive Proceed prompt
-            # below is the confirmation; surface the loss before it.
+            # stop succeeds (matches rescue). The data-loss warning is shown in
+            # the confirmation plan blocks below, right before the Proceed prompt.
             config.force = True
-            if not args.quiet:
-                print(f"{warning_prefix()} Data on Local SSDs"
-                      f" ({', '.join(local_ssds)}) will be permanently lost when"
-                      f" the VM is stopped.")
 
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])
@@ -489,7 +490,7 @@ def handle_repair(args: argparse.Namespace) -> int:
     # Custom fix script (--fix-script): skip diagnosis, run the supplied fix
     if config.fix_script:
         return _run_custom_fix_script(args, orchestrator, project,
-                                      config.fix_script)
+                                      config.fix_script, local_ssds=local_ssds)
 
     # Diagnose
     spinner = _Spinner("Analyzing serial console output")
@@ -634,6 +635,10 @@ def handle_repair(args: argparse.Namespace) -> int:
             step += 1
         print(f"    {step}. Restore original boot disk and start VM")
         lines_to_clear += 1
+        if local_ssds:
+            print(f"  {warning_prefix()} Data on Local SSDs"
+                  f" ({', '.join(local_ssds)}) will be permanently lost.")
+            lines_to_clear += 1
         print("")
         lines_to_clear += 1
 
