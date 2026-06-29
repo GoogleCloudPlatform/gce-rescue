@@ -117,6 +117,20 @@ def handle_rescue(args: argparse.Namespace) -> int:
                 return 1
             args.custom_rescue_image_size_gb = size_gb
 
+        # Pre-flight: is the rescue image's project allowed by org policy?
+        # Catches constraints/compute.trustedImageProjects BEFORE stopping the VM
+        # (zero downtime). Fails open if the policy can't be read. Issue #122.
+        image_project = preflight.resolve_rescue_image_project(
+            vm_info, rescue_image_url=getattr(args, 'rescue_image', None)
+        )
+        policy_err = preflight.check_image_org_policy(
+            compute, project, image_project, command='rescue',
+            instance_name=args.instance_name,
+        )
+        if policy_err:
+            print(f"{error_prefix()} {policy_err}", file=sys.stderr)
+            return 1
+
     # Interactive confirmation (unless --quiet or resuming)
     if not args.quiet and not resuming:
         lines_printed = 0
