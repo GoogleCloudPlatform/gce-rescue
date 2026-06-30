@@ -191,53 +191,45 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
     script_name = Path(args.fix_script).name
 
     if not args.quiet:
-        lines_printed = 0
-        print(f"Repair: {args.instance_name} ({args.zone})")
-        lines_printed += 1
-        print("")
-        lines_printed += 1
-        print(f"  Custom fix script: {args.fix_script} "
-              f"({len(script_lines)} lines)")
-        lines_printed += 1
+        # Build the confirmation block as a list so we can clear exactly as many
+        # lines as we printed, without a manual running tally.
         preview = script_lines[:15]
-        for line in preview:
-            print(f"    | {line}")
-            lines_printed += 1
+        block = [
+            f"Repair: {args.instance_name} ({args.zone})",
+            "",
+            f"  Custom fix script: {args.fix_script} ({len(script_lines)} lines)",
+        ]
+        block += [f"    | {line}" for line in preview]
         if len(script_lines) > len(preview):
-            print(f"    | ... ({len(script_lines) - len(preview)} more lines)")
-            lines_printed += 1
-        print("")
-        lines_printed += 1
-        print("  Repair plan:")
-        lines_printed += 1
+            block.append(
+                f"    | ... ({len(script_lines) - len(preview)} more lines)"
+            )
+        block += ["", "  Repair plan:"]
         step = 1
         if getattr(args, 'snapshot', True):
-            print(f"    {step}. Create backup snapshot of boot disk")
-            lines_printed += 1
+            block.append(f"    {step}. Create backup snapshot of boot disk")
             step += 1
-        print(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
-        lines_printed += 1
+        block.append(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
         step += 1
-        print(f"    {step}. Run the custom fix script against the affected disk")
-        lines_printed += 1
+        block.append(
+            f"    {step}. Run the custom fix script against the affected disk"
+        )
         step += 1
-        print(f"    {step}. Restore original boot disk and start VM")
-        lines_printed += 1
-        print("")
-        lines_printed += 1
-        print("  Diagnosis is skipped: the script runs exactly as provided.")
-        lines_printed += 1
+        block.append(f"    {step}. Restore original boot disk and start VM")
+        block += ["", "  Diagnosis is skipped: the script runs exactly as provided."]
         if local_ssds:
-            print("")
-            print(f"  {warning_prefix()} Data on Local SSDs"
-                  f" ({', '.join(local_ssds)}) will be permanently lost.")
-            lines_printed += 2
-        print("")
-        lines_printed += 1
+            block += [
+                "",
+                f"  {warning_prefix()} Data on Local SSDs"
+                f" ({', '.join(local_ssds)}) will be permanently lost.",
+            ]
+        block.append("")
+
+        for line in block:
+            print(line)
 
         try:
             response = input("  Proceed? [y/N]: ").strip().lower()
-            lines_printed += 1
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             return 0
@@ -245,8 +237,9 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
             print("\nAborted by user.")
             return 0
 
-        # Clear the confirmation block; the concise header below replaces it.
-        clear_lines(lines_printed)
+        # Clear the confirmation block (+1 for the prompt line); the concise
+        # header below replaces it.
+        clear_lines(len(block) + 1)
 
     # Concise repair header
     print(f"Repairing instance [{args.instance_name}]:")
@@ -584,13 +577,9 @@ def handle_repair(args: argparse.Namespace) -> int:
 
     # Repair path: show compact summary + plan, get confirmation, then clear
     if not args.quiet:
-        lines_to_clear = 0
-
-        # Header
-        print(f"Repair: {args.instance_name} ({args.zone})")
-        lines_to_clear += 1
-        print("")
-        lines_to_clear += 1
+        # Build the confirmation block as a list so we can clear exactly as many
+        # lines as we printed, without a manual running tally.
+        block = [f"Repair: {args.instance_name} ({args.zone})", ""]
 
         # Compact issue summary grouped by category
         category_counts: Dict[str, int] = Counter(
@@ -611,32 +600,21 @@ def handle_repair(args: argparse.Namespace) -> int:
                     sev_parts.append(f"{severity_counts[cat][sev]} {sev}")
             sev_str = ', '.join(sev_parts)
             issue_word = 'issue' if count == 1 else 'issues'
-            print(f"  Found {count} {cat} {issue_word} ({sev_str})")
-            lines_to_clear += 1
+            block.append(f"  Found {count} {cat} {issue_word} ({sev_str})")
 
         # Unfixable warnings
         if unfixable:
             for cat in unfixable:
-                print(
+                block.append(
                     f"  {warning_prefix()} [{cat.upper()}] requires manual repair"
                 )
-                lines_to_clear += 1
 
-        print("  Run 'diagnose' for details.")
-        lines_to_clear += 1
-        print("")
-        lines_to_clear += 1
-
-        # Repair plan
-        print("  Repair plan:")
-        lines_to_clear += 1
+        block += ["  Run 'diagnose' for details.", "", "  Repair plan:"]
         step = 1
         if snapshot_enabled:
-            print(f"    {step}. Create backup snapshot of boot disk")
-            lines_to_clear += 1
+            block.append(f"    {step}. Create backup snapshot of boot disk")
             step += 1
-        print(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
-        lines_to_clear += 1
+        block.append(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
         step += 1
         # Build fix descriptions with extracted identifiers
         if fstab_targets:
@@ -663,23 +641,20 @@ def handle_repair(args: argparse.Namespace) -> int:
             }
         for cat in fixable:
             desc = fix_descriptions.get(cat, f'Fix {cat}')
-            print(f"    {step}. {desc}")
-            lines_to_clear += 1
+            block.append(f"    {step}. {desc}")
             step += 1
-        print(f"    {step}. Restore original boot disk and start VM")
-        lines_to_clear += 1
+        block.append(f"    {step}. Restore original boot disk and start VM")
         if local_ssds:
-            print(f"  {warning_prefix()} Data on Local SSDs"
-                  f" ({', '.join(local_ssds)}) will be permanently lost.")
-            lines_to_clear += 1
-        print("")
-        lines_to_clear += 1
+            block.append(f"  {warning_prefix()} Data on Local SSDs"
+                         f" ({', '.join(local_ssds)}) will be permanently lost.")
+        block.append("")
+
+        for line in block:
+            print(line)
 
         # Confirmation
         try:
-            response = input(
-                "  Proceed? [y/N]: "
-            ).strip().lower()
+            response = input("  Proceed? [y/N]: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             return 0
@@ -688,10 +663,8 @@ def handle_repair(args: argparse.Namespace) -> int:
             print("\nAborted by user.")
             return 0
 
-        lines_to_clear += 1  # input line
-
-        # Clear diagnosis + plan + confirmation
-        clear_lines(lines_to_clear)
+        # Clear diagnosis + plan + confirmation (+1 for the prompt line)
+        clear_lines(len(block) + 1)
 
     # Print concise repair header
     print(f"Repairing instance [{args.instance_name}]:")
