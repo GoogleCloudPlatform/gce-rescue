@@ -103,7 +103,7 @@ class StopVMOperation(BaseOperation):
                         zone=self.zone,
                         project=self.project
                     )
-                    self._log_error(error_detail)
+                    self._log_debug(error_detail)
                     return OperationResult(
                         operation_name=self.name,
                         success=False,
@@ -160,7 +160,7 @@ class StopVMOperation(BaseOperation):
             else:
                 error_detail = f"Failed to stop VM: {error_msg}"
 
-            self._log_error(error_detail)
+            self._log_debug(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,

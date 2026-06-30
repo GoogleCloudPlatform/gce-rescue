@@ -350,8 +350,8 @@ def handle_repair(args: argparse.Namespace) -> int:
         # Validate --rescue-image BEFORE any destructive ops. Same shared
         # helper used by handle_rescue. Resolved size is mutated onto the
         # orchestrator's config so the inner rescue phase uses it.
+        from . import preflight as _preflight
         if getattr(args, 'rescue_image', None):
-            from . import preflight as _preflight
             size_gb, err = _preflight.validate_custom_rescue_image(
                 compute, vm, args.rescue_image,
                 session_id=session_id, command='repair', mode=mode,
@@ -360,6 +360,20 @@ def handle_repair(args: argparse.Namespace) -> int:
                 print(f"{error_prefix()} {err}", file=sys.stderr)
                 return 1
             orchestrator.config.custom_rescue_image_size_gb = size_gb
+
+        # Pre-flight: is the rescue image's project allowed by org policy?
+        # Catches constraints/compute.trustedImageProjects BEFORE stopping the VM
+        # (zero downtime). Fails open if the policy can't be read. Issue #122.
+        image_project = _preflight.resolve_rescue_image_project(
+            vm, rescue_image_url=getattr(args, 'rescue_image', None)
+        )
+        policy_err = _preflight.check_image_org_policy(
+            compute, project, image_project, command='repair',
+            instance_name=args.instance_name,
+        )
+        if policy_err:
+            print(f"{error_prefix()} {policy_err}", file=sys.stderr)
+            return 1
 
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])
