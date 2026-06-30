@@ -5,6 +5,18 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-06-30
+
+### Added
+- Up-front detection of organization-policy rescue-image blocks. When a project enforces `constraints/compute.trustedImageProjects` and the default rescue image's project (e.g. `debian-cloud` / `windows-cloud`) is not allowed, `rescue` and `repair` now fail fast **before any change is made** — the VM is never stopped (zero downtime) — with an actionable error that names the allowed image projects and shows a copy-pasteable `--rescue-image` example. A pre-flight org-policy query (`getEffectiveOrgPolicy`) catches the common case; if the policy cannot be read, a creation-time safety net surfaces the same guidance and rolls back cleanly. Previously this surfaced only mid-operation, after the VM was already stopped and snapshotted (#137, #122).
+- `--verification-timeout=SECONDS` flag for `rescue` and `repair` to override the startup-script verification timeout. OS-aware defaults (Linux 300s, Windows 600s) replace the previous fixed 120s, fixing intermittent false verification failures on slow-booting Windows rescue VMs whose mount script can take several minutes to detect the affected disk (#131, #123).
+
+### Fixed
+- Cleaner error output across `rescue`, `restore`, and `repair`: removed a doubled `ERROR: ERROR:` prefix and stray empty `ERROR:` lines, and operation errors no longer interleave with the live progress spinner — they now print after the step resolves to `FAILED.` (#137).
+
+### Changed
+- Dependency and GitHub Actions maintenance updates (#112–#117).
+
 ## [2.2.0] - 2026-06-12
 
 ### Added
