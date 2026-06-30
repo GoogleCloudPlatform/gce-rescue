@@ -15,6 +15,16 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOGFILE"
 }
 
+# Signal rescue completion. Emits the serial marker (best-effort; serial can
+# drop the final output burst) AND sets a guest attribute the orchestrator
+# polls as the reliable, deterministic completion signal.
+signal_complete() {
+    echo "GCE-RESCUE-COMPLETE" >&2
+    curl -s -m 10 -X PUT --data "COMPLETE" -H "Metadata-Flavor: Google" \
+        "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/gce-rescue/status" \
+        >/dev/null 2>&1 || true
+}
+
 log "=== GCE Rescue Auto-Mount Started ==="
 
 # Change hostname to indicate rescue mode
@@ -131,8 +141,8 @@ if [ -n "$disk_p" ]; then
     log "=== GCE Rescue Auto-Mount Complete ==="
     echo "SUCCESS" > "$STATUS_FILE"
 
-    # Output completion marker to serial console (for orchestrator verification)
-    echo "GCE-RESCUE-COMPLETE" >&2
+    # Signal completion (serial marker + guest attribute)
+    signal_complete
     log "=== Startup script completed successfully ==="
 
 else
