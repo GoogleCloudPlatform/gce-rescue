@@ -673,12 +673,13 @@ class TestFixScriptComposition:
         return orch
 
     def test_linux_fix_script_composed(self):
-        """Linux + fix script: fix body embedded, marker relocated after it."""
+        """Linux + fix script: fix body embedded, completion signal after it."""
         fix = 'touch /mnt/sysroot/etc/fixed'
         orch = self._make_orchestrator(fix_script=fix)
         script = orch._generate_startup_script()
         assert fix in script
-        assert script.rindex('echo "GCE-RESCUE-COMPLETE"') > script.index(fix)
+        # signal_complete (serial marker + guest attribute) relocated after fix
+        assert script.rindex('signal_complete') > script.index(fix)
         assert 'REPAIR_TARGETS' not in script
 
     def test_disk_placeholder_resolved_before_composition(self):

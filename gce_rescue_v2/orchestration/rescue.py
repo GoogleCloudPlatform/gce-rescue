@@ -801,7 +801,12 @@ class RescueOrchestrator:
                     {'key': script_key, 'value': startup_script},
                     {'key': 'rescue-mode', 'value': str(int(time.time()))},
                     {'key': 'rescue-original-disk', 'value': self.original_disk_name},
-                    {'key': 'rescue-os-type', 'value': self.os_type}
+                    {'key': 'rescue-os-type', 'value': self.os_type},
+                    # Let the guest write a guest attribute on completion, which
+                    # the orchestrator polls as a reliable alternative to the
+                    # serial-console marker (serial can drop the script's final
+                    # output burst before the process exits).
+                    {'key': 'enable-guest-attributes', 'value': 'TRUE'},
                 ]
                 result = set_metadata.execute(
                     vm_name=self.vm_name,
