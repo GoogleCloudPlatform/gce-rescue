@@ -122,7 +122,7 @@ class CreateSnapshotOperation(BaseOperation):
                         project=self.project,
                         disk_name=disk_name
                     )
-                    self._log_error(error_detail)
+                    self._log_debug(error_detail)
                     return OperationResult(
                         operation_name=self.name,
                         success=False,
@@ -161,7 +161,7 @@ class CreateSnapshotOperation(BaseOperation):
                             project=self.project,
                             disk_name=disk_name
                         )
-                        self._log_error(error_detail)
+                        self._log_debug(error_detail)
                         return OperationResult(
                             operation_name=self.name,
                             success=False,
@@ -187,7 +187,7 @@ class CreateSnapshotOperation(BaseOperation):
                 )
             else:
                 error_detail = f"Failed to create snapshot: {error_msg}"
-            self._log_error(error_detail)
+            self._log_debug(error_detail)
             return OperationResult(
                 operation_name=self.name,
                 success=False,

@@ -111,6 +111,123 @@ def validate_custom_rescue_image(
     return int(image_dict.get('diskSizeGb', 0)), None
 
 
+# Default rescue-image projects by OS/arch (mirrors RescueConfig defaults). Used
+# to know which image project the org-policy pre-flight must check.
+_DEFAULT_IMAGE_PROJECTS = {
+    'windows': 'windows-cloud',
+    'arm64': 'debian-cloud',
+    'linux': 'debian-cloud',
+}
+
+TRUSTED_IMAGE_CONSTRAINT = 'constraints/compute.trustedImageProjects'
+
+
+def resolve_rescue_image_project(vm_info, rescue_image_url=None) -> str:
+    """Return the GCP project the rescue image will come from.
+
+    For --rescue-image, parse the project from the URL. Otherwise pick the
+    default image project for the VM's OS/arch (debian-cloud / windows-cloud).
+    """
+    if rescue_image_url:
+        parts = rescue_image_url.split('/')
+        if len(parts) >= 2 and parts[0] == 'projects':
+            return parts[1]
+        return ''  # unparseable; skip the policy check rather than guess
+    from ..utils.os_detection import detect_os_type, detect_architecture
+    os_type = detect_os_type(vm_info)
+    if os_type == 'windows':
+        return _DEFAULT_IMAGE_PROJECTS['windows']
+    if detect_architecture(vm_info) == 'arm64':
+        return _DEFAULT_IMAGE_PROJECTS['arm64']
+    return _DEFAULT_IMAGE_PROJECTS['linux']
+
+
+def _fetch_trusted_image_policy(compute, project) -> Optional[dict]:
+    """Fetch the effective compute.trustedImageProjects policy, or None.
+
+    Returns None for test mocks (no real credentials) or any read failure, so
+    the caller fails open. Reading the policy needs orgpolicy.policy.get, which
+    users and service accounts with viewer-level access generally have.
+    """
+    import google_auth_httplib2
+    http = getattr(compute, '_http', None)
+    if not isinstance(http, google_auth_httplib2.AuthorizedHttp):
+        return None  # test mock / no real client
+    try:
+        import google.auth
+        from googleapiclient import discovery
+        # The compute client is compute-scoped, but the Org Policy API needs
+        # broader scope. Fetch ADC (same identity AuthManager uses) with
+        # cloud-platform scope just for this read.
+        creds, _ = google.auth.default(
+            scopes=['https://www.googleapis.com/auth/cloud-platform']
+        )
+        crm = discovery.build(
+            'cloudresourcemanager', 'v1',
+            credentials=creds, cache_discovery=False,
+        )
+        return crm.projects().getEffectiveOrgPolicy(
+            resource=f'projects/{project}',
+            body={'constraint': TRUSTED_IMAGE_CONSTRAINT},
+        ).execute()
+    except Exception:
+        return None
+
+
+def check_image_org_policy(compute, project, image_project, command='rescue',
+                           instance_name='INSTANCE') -> Optional[str]:
+    """Pre-flight: is `image_project` allowed by compute.trustedImageProjects?
+
+    Reads the effective org policy (works for users AND service accounts - reading
+    is permitted even when setting is not). Returns an actionable error message if
+    the image project is blocked, else None (allowed, OR policy unreadable - in
+    which case we fail open and let the operation proceed).
+
+    Catches the #122 case BEFORE any destructive step, so the VM is never stopped.
+    """
+    if not image_project:
+        return None
+    resp = _fetch_trusted_image_policy(compute, project)
+    if resp is None:
+        return None  # unreadable / mock -> fail open
+
+    lp = resp.get('listPolicy', {})
+    img = f'projects/{image_project}'
+    allowed = lp.get('allowedValues')
+    denied = lp.get('deniedValues')
+
+    blocked = False
+    if lp.get('allValues') == 'DENY':
+        blocked = True
+    elif allowed is not None:
+        blocked = img not in allowed
+    elif denied is not None:
+        blocked = img in denied
+    # allValues == ALLOW or no list -> nothing blocked
+
+    if not blocked:
+        return None
+
+    allowed_hint = (', '.join(allowed) if allowed else '(none)')
+    # Build a copy-pasteable example using the first allowed project if known,
+    # so the user sees a concrete suggestion rather than a generic placeholder.
+    example_project = 'PROJECT'
+    if allowed:
+        first = allowed[0]
+        example_project = first.split('/', 1)[1] if first.startswith('projects/') else first
+    return (
+        f"Rescue image blocked by org policy (compute.trustedImageProjects).\n"
+        f"  Default rescue image project: {image_project}\n"
+        f"  Allowed image projects:       {allowed_hint}\n"
+        f"\n"
+        f"To {command} with an approved image, run:\n"
+        f"  $ gce-rescue {command} {instance_name} "
+        f"--rescue-image=projects/{example_project}/global/images/IMAGE\n"
+        f"\n"
+        f"  (An image family also works: .../global/images/family/FAMILY)"
+    )
+
+
 def get_gcloud_config(key: str) -> Optional[str]:
     """
     Read configuration from gcloud config.
