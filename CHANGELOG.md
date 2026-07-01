@@ -5,6 +5,12 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] - 2026-07-01
+
+### Fixed
+- Deterministic rescue completion signal for Windows (and Linux). Verification previously relied only on the serial console, which can drop the startup script's final output before the process exits — so the `GCE-RESCUE-COMPLETE` marker never reached serial and verification falsely timed out even though the rescue succeeded. The startup script now sets a guest attribute (`gce-rescue/status=COMPLETE`) and verification polls that first, with the serial marker kept as a fallback (#144).
+- `repair` now pre-flights Local SSDs the same way `rescue` does: in `--quiet` mode it requires `--force` (with a clear hint) and shows a data-loss warning before the confirmation prompt, instead of failing mid-operation with a raw "undefined value for discard-local-ssd" API error (#135).
+
 ## [2.3.0] - 2026-06-30
 
 ### Added
