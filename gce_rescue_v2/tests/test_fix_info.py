@@ -211,6 +211,25 @@ class TestShippedFixInfo:
                 f"Pattern '{pattern.name}' has no fixes in core/diagnose_rules/fstab.yaml"
             )
 
+    def test_filesystem_fix_guidance_loaded(self):
+        assert 'filesystem' in CATEGORY_FIX_GUIDANCE
+
+    def test_filesystem_is_not_auto_repairable(self):
+        """filesystem stays auto_repair: false until filesystem_fix.sh lands."""
+        assert 'filesystem' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_filesystem_patterns_have_fixes(self):
+        """Every filesystem pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        fs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'filesystem']
+        for pattern in fs_patterns:
+            fixes = get_fixes_for_pattern('filesystem', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/filesystem.yaml"
+            )
+
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
