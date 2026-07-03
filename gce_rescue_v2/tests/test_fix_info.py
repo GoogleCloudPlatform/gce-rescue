@@ -329,6 +329,46 @@ class TestShippedFixInfo:
                 f"core/diagnose_rules/cpu_lockup.yaml"
             )
 
+    def test_grub_fix_guidance_loaded(self):
+        assert 'grub' in CATEGORY_FIX_GUIDANCE
+
+    def test_grub_is_not_auto_repairable(self):
+        """grub stays auto_repair: false until startup_scripts/fixes/grub_fix.sh lands."""
+        assert 'grub' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_grub_patterns_have_fixes(self):
+        """Every grub pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        grub_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'grub']
+        assert len(grub_patterns) > 0
+        for pattern in grub_patterns:
+            fixes = get_fixes_for_pattern('grub', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/grub.yaml"
+            )
+
+    def test_firmware_fix_guidance_loaded(self):
+        assert 'firmware' in CATEGORY_FIX_GUIDANCE
+
+    def test_firmware_is_not_auto_repairable(self):
+        """firmware stays auto_repair: false until firmware_fix.sh lands."""
+        assert 'firmware' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_firmware_patterns_have_fixes(self):
+        """Every firmware pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        fw_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'firmware']
+        assert len(fw_patterns) > 0
+        for pattern in fw_patterns:
+            fixes = get_fixes_for_pattern('firmware', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/firmware.yaml"
+            )
+
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'

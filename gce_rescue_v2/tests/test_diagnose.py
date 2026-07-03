@@ -1906,3 +1906,407 @@ class TestDiagnoseUnifiedEngineRedTeamRegressions:
         }
         assert 'disk_full_no_space' in patterns
         assert '\n' not in patterns['disk_full_no_space']
+
+
+# ---------------------------------------------------------------------------
+# TestGrubDetection
+# ---------------------------------------------------------------------------
+
+class TestGrubDetection:
+    """Detection tests for grub.yaml patterns (bootloader stage).
+
+    GRUB serial output carries no kernel timestamps and no systemd
+    prefixes — fixtures reproduce the real bare-line formatting.
+    """
+
+    def test_grub_rescue_prompt_detected(self):
+        """Drop to 'grub rescue>' reports the rescue prompt and its cause."""
+        serial = (
+            "GRUB loading.\n"
+            "Welcome to GRUB!\n"
+            "\n"
+            "error: no such partition.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_rescue_prompt' in names
+        assert 'grub_no_such_partition' in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert categories == {'grub'}
+        assert all(e['severity'] == 'critical' for e in data['boot_errors'])
+
+    def test_grub_normal_shell_detected(self):
+        """Minimal-BASH banner means boot stopped at the grub> shell."""
+        serial = (
+            "GNU GRUB  version 2.06-13+deb12u1\n"
+            "\n"
+            "Minimal BASH-like line editing is supported. For the first "
+            "word, TAB\n"
+            "lists possible command completions. Anywhere else TAB lists "
+            "possible\n"
+            "device or file completions.\n"
+            "\n"
+            "grub> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_normal_shell' in names
+
+    def test_grub_config_not_found_detected(self):
+        """Missing grub.cfg (Debian /boot/grub path)."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: file `/boot/grub/grub.cfg' not found.\n"
+            "grub> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_file_not_found' in names
+
+    def test_grub2_config_path_variant_detected(self):
+        """RHEL/SLES use /boot/grub2/grub.cfg — the regex must accept both."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: file `/boot/grub2/grub.cfg' not found.\n"
+            "grub> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_file_not_found' in names
+
+    def test_grub_kernel_not_found_detected(self):
+        """Missing vmlinuz referenced by grub.cfg, plus the follow-up
+        'you need to load the kernel first' error."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: file `/boot/vmlinuz-6.1.0-18-cloud-amd64' not found.\n"
+            "error: you need to load the kernel first.\n"
+            "\n"
+            "Press any key to continue...\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_kernel_not_found' in names
+        assert 'grub_load_kernel_first' in names
+
+    def test_grub_initrd_not_found_detected(self):
+        """Missing initrd referenced by grub.cfg."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: file `/boot/initrd.img-6.1.0-18-cloud-amd64' not found.\n"
+            "\n"
+            "Press any key to continue...\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_kernel_not_found' in names
+
+    def test_grub_symbol_not_found_detected(self):
+        """Core/module version skew (e.g. grub_calloc after an upgrade)."""
+        serial = (
+            "GRUB loading.\n"
+            "Welcome to GRUB!\n"
+            "\n"
+            "error: symbol `grub_calloc' not found.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_symbol_not_found' in names
+
+    def test_grub_disk_not_found_detected(self):
+        serial = (
+            "GRUB loading.\n"
+            "Welcome to GRUB!\n"
+            "\n"
+            "error: disk `hd0,gpt2' not found.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_disk_not_found' in names
+
+    def test_grub_unknown_filesystem_detected(self):
+        """GRUB 'error: unknown filesystem' is grub-category, and must not
+        cross-fire into the filesystem category."""
+        serial = (
+            "GRUB loading.\n"
+            "Welcome to GRUB!\n"
+            "\n"
+            "error: unknown filesystem.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_unknown_filesystem' in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'filesystem' not in categories
+
+    def test_grub_out_of_memory_detected(self):
+        """GRUB OOM is bound to the 'error:' prefix and must never be
+        confused with kernel OOM (kernel/disk_full categories)."""
+        serial = (
+            "GRUB loading.\n"
+            "Welcome to GRUB!\n"
+            "\n"
+            "error: out of memory.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_out_of_memory' in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'kernel' not in categories
+        assert 'disk_full' not in categories
+
+    def test_grub_invalid_magic_detected(self):
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: invalid magic number.\n"
+            "error: you need to load the kernel first.\n"
+            "\n"
+            "Press any key to continue...\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_invalid_magic' in names
+
+    def test_healthy_boot_with_grub_banner_no_findings(self):
+        """The normal 'Welcome to GRUB!' banner on every healthy boot must
+        not fire any grub pattern (FP guard from the master plan)."""
+        serial = (
+            "SeaBIOS (version 1.8.2-20231011_165638-google)\n"
+            "Booting from Hard Disk 0...\n"
+            "GRUB loading.\n"
+            "Welcome to GRUB!\n"
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 "
+            "(debian-kernel@lists.debian.org)\n"
+            "[    0.512345] Trying to unpack rootfs image as initramfs...\n"
+            "[    2.412345] EXT4-fs (sda1): mounted filesystem with ordered "
+            "data mode. Quota mode: none.\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_kernel_oom_lines_do_not_trigger_grub(self):
+        """Kernel OOM output (timestamp-prefixed 'Out of memory') must not
+        match grub_out_of_memory — proves the 'error:' line-start binding."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  512.103311] Out of memory: Killed process 1234 (java) "
+            "total-vm:8388608kB\n"
+            "[  512.209972] Kernel panic - not syncing: Out of memory: "
+            "system-wide panic_on_oom is enabled\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'grub' not in categories
+
+    def test_mount_unknown_filesystem_type_does_not_trigger_grub(self):
+        """The kernel/mount 'unknown filesystem type' wording never starts a
+        serial line with 'error:', so grub_unknown_filesystem must not fire."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    3.204333] mount[456]: mount: /data: unknown filesystem "
+            "type 'xfs'.\n"
+            "[    3.304333] systemd[1]: data.mount: Mount process exited, "
+            "code=exited, status=32/n/a\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'grub' not in categories
+
+    def test_fstab_errors_do_not_trigger_grub_or_firmware(self):
+        """fstab failure lines should not produce grub/firmware findings."""
+        serial = (
+            "Linux version 5.15.0\n"
+            "Timed out waiting for device /dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "Dependency failed for /mnt/data\n"
+            "You are in emergency mode\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'grub' not in categories
+        assert 'firmware' not in categories
+
+    def test_stale_grub_error_cleared_by_later_successful_boot(self):
+        """The serial ring buffer keeps old boots: a grub failure followed
+        by a later completed boot on a RUNNING VM is stale noise and must
+        be suppressed (grub does not declare survives_boot_success)."""
+        serial = (
+            "GRUB loading.\n"
+            "Welcome to GRUB!\n"
+            "error: no such partition.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+            "SeaBIOS (version 1.8.2-20231011_165638-google)\n"
+            "Booting from Hard Disk 0...\n"
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestFirmwareDetection
+# ---------------------------------------------------------------------------
+
+class TestFirmwareDetection:
+    """Detection tests for firmware.yaml patterns (BIOS/UEFI stage)."""
+
+    def test_bios_no_bootable_device_detected(self):
+        """SeaBIOS wiped-MBR failure reports firmware_no_bootable_device."""
+        serial = (
+            "SeaBIOS (version 1.8.2-20231011_165638-google)\n"
+            "Machine UUID 12345678-1234-1234-1234-123456789abc\n"
+            "Booting from Hard Disk 0...\n"
+            "Boot failed: not a bootable disk\n"
+            "\n"
+            "No bootable device.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'firmware_no_bootable_device' in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert categories == {'firmware'}
+
+    def test_bios_could_not_read_boot_disk_detected(self):
+        serial = (
+            "SeaBIOS (version 1.8.2-20231011_165638-google)\n"
+            "Machine UUID 12345678-1234-1234-1234-123456789abc\n"
+            "Booting from Hard Disk 0...\n"
+            "Boot failed: could not read the boot disk\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'firmware_no_bootable_device' in names
+
+    def test_uefi_bds_load_failure_detected(self):
+        """OVMF BdsDxe failure (missing/unformatted ESP or lost NVRAM entry)."""
+        serial = (
+            "UEFI: Attempting to start image.\n"
+            "Description: UEFI Google PersistentDisk\n"
+            "BdsDxe: failed to load Boot0001 \"UEFI Google PersistentDisk\" "
+            "from PciRoot(0x0)/Pci(0x3,0x0)/Scsi(0x1,0x0): Not Found\n"
+            "BdsDxe: No bootable option or device was found.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'firmware_uefi_boot_load_failed' in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert categories == {'firmware'}
+
+    def test_secure_boot_violation_detected(self):
+        """Shielded VM Secure Boot rejection — the OVMF verification line.
+        A 'loading Boot0000' line must not fire the failed-to-load pattern."""
+        serial = (
+            "BdsDxe: loading Boot0000 \"UEFI Google PersistentDisk\" "
+            "from PciRoot(0x0)/Pci(0x3,0x0)/Scsi(0x1,0x0)\n"
+            "Verification failed: (0x1A) Security Violation\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'firmware_secure_boot_violation' in names
+        assert 'firmware_uefi_boot_load_failed' not in names
+
+    def test_bad_shim_signature_detected(self):
+        """shim/GRUB-emitted Secure Boot rejection, with the realistic
+        follow-up grub error on the same screen (cross-category pairing)."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: bad shim signature.\n"
+            "error: you need to load the kernel first.\n"
+            "\n"
+            "Press any key to continue...\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'firmware_secure_boot_violation' in names
+        assert 'grub_load_kernel_first' in names
+
+    def test_gpt_corrupt_detected(self):
+        serial = (
+            "SeaBIOS (version 1.8.2-20231011_165638-google)\n"
+            "Machine UUID 12345678-1234-1234-1234-123456789abc\n"
+            "Booting from Hard Disk 0...\n"
+            "Invalid partition table!\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'firmware_gpt_corrupt' in names
+
+    def test_healthy_seabios_boot_no_firmware_findings(self):
+        """'Booting from Hard Disk...' prints on EVERY healthy SeaBIOS boot
+        and must never fire firmware patterns (critic FP correction)."""
+        serial = (
+            "SeaBIOS (version 1.8.2-20231011_165638-google)\n"
+            "Machine UUID 12345678-1234-1234-1234-123456789abc\n"
+            "Booting from Hard Disk 0...\n"
+            "Welcome to GRUB!\n"
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    2.412345] EXT4-fs (sda1): mounted filesystem with ordered "
+            "data mode. Quota mode: none.\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_resized_disk_gpt_warning_not_flagged(self):
+        """The kernel's 'GPT: Primary header thinks Alt. header is not at
+        the end of the disk' warning fires on every resized-but-unexpanded
+        PD while the VM boots fine — it must NOT be reported (critic C1)."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    1.234567] GPT:Primary header thinks Alt. header is not at "
+            "the end of the disk.\n"
+            "[    1.234789] GPT:41943039 != 62914559\n"
+            "[    1.234901] GPT: Use GNU Parted to correct GPT errors.\n"
+            "[    2.412345] EXT4-fs (sda1): mounted filesystem with ordered "
+            "data mode. Quota mode: none.\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_stale_firmware_error_cleared_by_later_successful_boot(self):
+        """A firmware failure from an older boot followed by a completed
+        boot must be suppressed on a RUNNING VM (stale ring-buffer noise)."""
+        serial = (
+            "SeaBIOS (version 1.8.2-20231011_165638-google)\n"
+            "Booting from Hard Disk 0...\n"
+            "No bootable device.\n"
+            "SeaBIOS (version 1.8.2-20231011_165638-google)\n"
+            "Booting from Hard Disk 0...\n"
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []

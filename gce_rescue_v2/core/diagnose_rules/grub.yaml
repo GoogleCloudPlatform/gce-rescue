@@ -1,0 +1,167 @@
+# GRUB2 bootloader failure patterns (boot stage 2).
+#
+# Anchoring convention: GRUB output carries NO kernel timestamps and no
+# systemd/journald prefixes — its error messages start the serial line as
+# "error: <message>". Every error-message regex below is bound to that
+# line-start "error:" prefix (the engine compiles with re.MULTILINE), so
+# short phrases like "out of memory" or "unknown filesystem" can never
+# match kernel OOM reports or mount(8)/kernel messages, which always
+# arrive with a timestamp or unit prefix on the serial console.
+#
+# Interplay: no GRUB line contains "Kernel panic - not syncing", so the
+# kernel_panic_generic catch-all lookahead in kernel.yaml is unaffected.
+category: grub
+fix_guidance: "chroot into /mnt/sysroot, reinstall GRUB to the boot disk (grub-install /dev/sdX on Debian-family, grub2-install /dev/sdX on RHEL-family) and regenerate the config (update-grub or grub2-mkconfig -o /boot/grub2/grub.cfg)"
+# auto_repair MUST stay false until startup_scripts/fixes/grub_fix.sh
+# lands. RepairOrchestrator.validate() checks that every category with
+# auto_repair: true has a fix script, so flipping this early makes
+# `repair` fail preflight for ALL categories. Flip to true in the same
+# commit that adds the script.
+auto_repair: false
+# NOT detect_only: GRUB damage is genuinely fixable from rescue mode
+# (grub-install + update-grub/grub2-mkconfig on the mounted original disk).
+# No survives_boot_success: a stale GRUB error from an older boot IS
+# resolved once a later boot completes, so boot-success suppression must
+# clear these findings.
+
+patterns:
+  - name: grub_rescue_prompt
+    severity: critical
+    description: "GRUB dropped to the rescue prompt (core modules or boot partition unreadable)"
+    regex:
+      # Literal 'grub rescue>' cannot match ordinary prose mentioning GRUB.
+      - 'Entering rescue mode\.\.\.'
+      - '^\s*grub rescue>'
+    fixes:
+      - "Enter rescue mode and chroot into the original disk: sudo chroot /mnt/sysroot (bind-mount /dev, /proc and /sys first)"
+      - "Reinstall GRUB to the disk device: grub-install /dev/sdX (Debian-family) or grub2-install /dev/sdX (RHEL-family), where /dev/sdX is the original boot disk"
+      - "Regenerate the GRUB config: update-grub (Debian-family) or grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+
+  - name: grub_normal_shell
+    severity: critical
+    description: "Boot stopped at the GRUB shell (grub.cfg missing or unreadable)"
+    regex:
+      # Banner unique to the full grub> shell (rescue mode prints a shorter
+      # banner). It can also appear when a user presses 'c'/'e' at a healthy
+      # GRUB menu, but that only reaches the buffer during interactive
+      # serial sessions — accepted residual risk (plan FP note).
+      - 'Minimal BASH-like line editing is supported'
+    fixes:
+      - "The GRUB config is missing or unreadable - regenerate it from rescue mode: sudo chroot /mnt/sysroot, then update-grub (Debian-family) or grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+      - "Verify /boot/grub/grub.cfg (Debian-family) or /boot/grub2/grub.cfg (RHEL-family) exists on the mounted disk and is non-empty"
+
+  - name: grub_file_not_found
+    severity: critical
+    description: "GRUB configuration or module file not found"
+    regex:
+      # .? absorbs the opening quote/backtick GRUB prints around paths
+      # (serial rendering varies by version). grub2? covers Debian
+      # /boot/grub and RHEL/SLES /boot/grub2 layouts.
+      - '^\s*error: file .?/boot/grub2?/grub\.cfg.? not found'
+      - '^\s*error: file .?/boot/grub2?/\S* not found'
+      # UEFI layout: grub.cfg stub under /EFI/<distro>/ on the ESP.
+      - '^\s*error: file .?/efi/[\w.-]+/grub\.cfg.? not found'
+    fixes:
+      - "Regenerate the GRUB config from rescue mode: sudo chroot /mnt/sysroot, then update-grub (Debian-family) or grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+      - "If GRUB modules (*.mod) are missing or corrupt, reinstall GRUB: grub-install /dev/sdX (Debian-family) or grub2-install /dev/sdX (RHEL-family)"
+      - "Check that /boot (or the EFI system partition) is intact and not full: df -h /mnt/sysroot/boot"
+
+  - name: grub_kernel_not_found
+    severity: critical
+    description: "Kernel or initrd file referenced by the GRUB config not found"
+    regex:
+      # (?:/boot)? — on systems with a separate /boot partition, grub.cfg
+      # references /vmlinuz-* and /initrd.img-* without the /boot prefix.
+      - '^\s*error: file .?(?:/boot)?/vmlinuz\S* not found'
+      - '^\s*error: file .?(?:/boot)?/init(?:rd|ramfs)\S* not found'
+    fixes:
+      - "List installed kernels on the mounted disk: ls /mnt/sysroot/boot/vmlinuz-*"
+      - "Reinstall the kernel package from a chroot if the image is missing: sudo chroot /mnt/sysroot apt-get install --reinstall linux-image-amd64 (Debian-family) or dnf reinstall kernel-core (RHEL-family)"
+      - "Regenerate the GRUB config so entries match the installed kernels: update-grub (Debian-family) or grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+
+  - name: grub_load_kernel_first
+    severity: critical
+    description: "GRUB tried to boot without a loaded kernel (broken boot entry)"
+    regex:
+      - '^\s*error: you need to load the kernel first'
+    fixes:
+      - "A boot entry failed to load its kernel/initrd - check the preceding 'error: file ... not found' line for the missing file"
+      - "Regenerate the GRUB config from rescue mode: sudo chroot /mnt/sysroot, then update-grub (Debian-family) or grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+
+  - name: grub_no_such_partition
+    severity: critical
+    description: "GRUB cannot find the partition it was configured to boot from"
+    regex:
+      - '^\s*error: no such partition'
+    fixes:
+      - "The partition layout changed after GRUB was installed (deleted/renumbered partition) - verify the table from rescue mode: sudo fdisk -l /dev/sdX"
+      - "Reinstall GRUB against the current layout: sudo chroot /mnt/sysroot, then grub-install /dev/sdX (Debian-family) or grub2-install /dev/sdX (RHEL-family)"
+      - "Regenerate the config: update-grub (Debian-family) or grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+
+  - name: grub_no_such_device
+    severity: critical
+    description: "GRUB cannot find the device (UUID or label) it was configured to boot from"
+    regex:
+      - '^\s*error: no such device'
+    fixes:
+      - "The filesystem UUID GRUB searches for no longer exists (reformatted /boot or cloned disk) - compare: sudo blkid vs the search line in grub.cfg on the mounted disk"
+      - "Reinstall GRUB and regenerate its config from rescue mode: sudo chroot /mnt/sysroot, then grub-install /dev/sdX + update-grub (Debian-family) or grub2-install /dev/sdX + grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+
+  - name: grub_disk_not_found
+    severity: critical
+    description: "Disk referenced by GRUB does not exist"
+    regex:
+      # Canonical BIOS form: error: disk 'hd0,gpt2' not found.
+      - '^\s*error: disk .?hd\d+,\w+.? not found'
+      # Broader form (lvmid/..., UUID references) — still bound to the
+      # line-start 'error: disk' prefix.
+      - '^\s*error: disk [^\n]{1,80} not found'
+    fixes:
+      - "GRUB's device map no longer matches the attached disks - reinstall GRUB from rescue mode: sudo chroot /mnt/sysroot, then grub-install /dev/sdX (Debian-family) or grub2-install /dev/sdX (RHEL-family)"
+      - "If the entry references LVM, verify the volume group is intact: sudo vgscan; sudo lvs"
+
+  - name: grub_unknown_filesystem
+    severity: critical
+    description: "GRUB cannot read the filesystem holding /boot"
+    regex:
+      # 'error:' prefix keeps this from ever overlapping the kernel/mount
+      # message 'unknown filesystem type', which never starts a serial line.
+      - '^\s*error: unknown filesystem'
+    fixes:
+      - "The /boot filesystem is corrupt or an unsupported type - check it from rescue mode: sudo fsck -y /dev/sdX (run on the unmounted partition)"
+      - "Reinstall GRUB after repairing the filesystem: sudo chroot /mnt/sysroot, then grub-install /dev/sdX (Debian-family) or grub2-install /dev/sdX (RHEL-family)"
+      - "If the filesystem is unrecoverable, restore the disk from a snapshot"
+
+  - name: grub_symbol_not_found
+    severity: critical
+    description: "GRUB core image and modules are from different versions (symbol not found)"
+    regex:
+      # Bound to a grub_ symbol name (e.g. grub_calloc) so it cannot match
+      # linker/loader errors from other programs.
+      - '^\s*error: symbol .?grub_\w+.? not found'
+    fixes:
+      - "A GRUB package upgrade updated the modules without reinstalling the core image (version skew) - reinstall from rescue mode: sudo chroot /mnt/sysroot, then grub-install /dev/sdX (Debian-family) or grub2-install /dev/sdX (RHEL-family)"
+      - "Regenerate the config afterwards: update-grub (Debian-family) or grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+
+  - name: grub_out_of_memory
+    severity: critical
+    description: "GRUB ran out of memory while loading the boot entry"
+    regex:
+      # The 'error:' line-start prefix is REQUIRED here: without it this
+      # would collide with kernel OOM output ('Out of memory: Killed
+      # process ...'), which is always timestamp-prefixed.
+      - '^\s*error: out of memory'
+    fixes:
+      - "Usually caused by an oversized initrd - rebuild it from rescue mode: sudo chroot /mnt/sysroot, then update-initramfs -u (Debian-family) or dracut -f (RHEL-family)"
+      - "Check the initrd size on the mounted disk: ls -lh /mnt/sysroot/boot/init*"
+
+  - name: grub_invalid_magic
+    severity: critical
+    description: "GRUB rejected a corrupt kernel or module image (invalid magic number)"
+    regex:
+      - '^\s*error: invalid magic number'
+      - '^\s*error: invalid arch-independent ELF magic'
+    fixes:
+      - "The kernel image or a GRUB module is corrupt (wrong-arch or truncated file) - reinstall the kernel from a chroot: sudo chroot /mnt/sysroot apt-get install --reinstall linux-image-amd64 (Debian-family) or dnf reinstall kernel-core (RHEL-family)"
+      - "Reinstall GRUB if modules are corrupt: grub-install /dev/sdX (Debian-family) or grub2-install /dev/sdX (RHEL-family)"
+      - "Verify /boot is not on a damaged filesystem: sudo fsck -y /dev/sdX (unmounted)"

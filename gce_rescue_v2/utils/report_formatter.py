@@ -435,6 +435,7 @@ def _category_label(category: str) -> str:
     labels = {
         'fstab': 'Fix /etc/fstab',
         'grub': 'Repair GRUB',
+        'firmware': 'Repair boot device',
         'kernel': 'Check kernel',
         'filesystem': 'Fix filesystem',
         'initramfs': 'Rebuild initramfs',

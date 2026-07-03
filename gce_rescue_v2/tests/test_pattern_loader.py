@@ -376,6 +376,46 @@ class TestShippedPatterns:
                 f"Pattern '{pattern.name}' missing 'cpu_lockup_' prefix"
             )
 
+    def test_grub_patterns_present(self):
+        grub_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'grub']
+        assert len(grub_patterns) == 12
+
+    def test_grub_pattern_names_prefixed(self):
+        """grub pattern names should carry the category prefix."""
+        grub_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'grub']
+        for pattern in grub_patterns:
+            assert pattern.name.startswith('grub_'), (
+                f"Pattern '{pattern.name}' missing 'grub_' prefix"
+            )
+
+    def test_grub_patterns_have_inline_fixes(self):
+        """All grub patterns should have inline fixes from merged YAML."""
+        grub_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'grub']
+        for pattern in grub_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_firmware_patterns_present(self):
+        fw_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'firmware']
+        assert len(fw_patterns) == 4
+
+    def test_firmware_pattern_names_prefixed(self):
+        """firmware pattern names should carry the category prefix."""
+        fw_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'firmware']
+        for pattern in fw_patterns:
+            assert pattern.name.startswith('firmware_'), (
+                f"Pattern '{pattern.name}' missing 'firmware_' prefix"
+            )
+
+    def test_firmware_patterns_have_inline_fixes(self):
+        """All firmware patterns should have inline fixes from merged YAML."""
+        fw_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'firmware']
+        for pattern in fw_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
     def test_survives_boot_success_flags(self):
         """ssh/filesystem/disk_full failures are not resolved by a completed
         boot (a full disk stays full after 'Startup finished'), so their YAML
@@ -387,7 +427,7 @@ class TestShippedPatterns:
         assert 'ssh' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'filesystem' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'disk_full' in SURVIVES_BOOT_SUCCESS_CATEGORIES
-        for cat in ('fstab', 'kernel', 'initramfs'):
+        for cat in ('fstab', 'kernel', 'initramfs', 'grub', 'firmware'):
             assert cat not in SURVIVES_BOOT_SUCCESS_CATEGORIES
 
     def test_detect_only_flags(self):
@@ -403,7 +443,8 @@ class TestShippedPatterns:
         assert 'kernel' in DETECT_ONLY_CATEGORIES
         assert 'cpu_lockup' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'kernel' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
-        for cat in ('fstab', 'initramfs', 'disk_full', 'ssh', 'filesystem'):
+        for cat in ('fstab', 'initramfs', 'disk_full', 'ssh', 'filesystem',
+                    'grub', 'firmware'):
             assert cat not in DETECT_ONLY_CATEGORIES
 
     def test_detect_only_sets_agree(self):
