@@ -43,23 +43,24 @@ is_virtual_fs() {
 }
 
 # Check if an fstab entry matches any repair target
-matches_target() {
-    local device="$1"
-    local mountpoint="$2"
 
-    # Extract the identifier value from the device field
-    local dev_value=$(echo "$device" | sed 's/^UUID=//; s/^LABEL=//; s/^PARTUUID=//')
+# matches_target() {
+#     local device="$1"
+#     local mountpoint="$2"
 
-    while IFS= read -r target; do
-        [ -z "$target" ] && continue
-        # Match by identifier substring in device field
-        if echo "$device" | grep -qiF "$target"; then return 0; fi
-        if [ -n "$dev_value" ] && echo "$dev_value" | grep -qiF "$target"; then return 0; fi
-        # Match by mount point
-        if [ "$mountpoint" = "$target" ]; then return 0; fi
-    done <<< "$REPAIR_TARGETS"
-    return 1
-}
+#     # Extract the identifier value from the device field
+#     local dev_value=$(echo "$device" | sed 's/^UUID=//; s/^LABEL=//; s/^PARTUUID=//')
+
+#     while IFS= read -r target; do
+#         [ -z "$target" ] && continue
+#         # Match by identifier substring in device field
+#         if echo "$device" | grep -qiF "$target"; then return 0; fi
+#         if [ -n "$dev_value" ] && echo "$dev_value" | grep -qiF "$target"; then return 0; fi
+#         # Match by mount point
+#         if [ "$mountpoint" = "$target" ]; then return 0; fi
+#     done <<< "$REPAIR_TARGETS"
+#     return 1
+# }
 
 log "=== fstab repair started ==="
 
@@ -70,9 +71,10 @@ if [ -z "$REPAIR_TARGETS" ]; then
 else
 
 log "Repair targets:"
-while IFS= read -r t; do
-    [ -n "$t" ] && log "  - $t"
-done <<< "$REPAIR_TARGETS"
+
+# while IFS= read -r t; do
+#     [ -n "$t" ] && log "  - $t"
+# done <<< "$REPAIR_TARGETS"
 
 # Verify fstab exists
 if [ ! -f "$FSTAB" ]; then
@@ -107,17 +109,21 @@ while IFS= read -r line; do
 
     # Check for malformed entries (need at least device, mountpoint, fstype)
     if [ "$field_count" -lt 3 ]; then
-        # Only comment out malformed entries if they match a target
-        if matches_target "$device" "$mountpoint"; then
-            echo "# GCE-REPAIR: commented out malformed entry (${field_count} fields)" >> "$tmpfile"
-            echo "#$line" >> "$tmpfile"
-            fixes=$((fixes + 1))
-            repair_line "[FIXED] fstab: Commented out malformed entry on line $line_num"
-            continue
-        fi
         echo "$line" >> "$tmpfile"
         continue
     fi
+    # if [ "$field_count" -lt 3 ]; then
+    #     # Only comment out malformed entries if they match a target
+    #     if matches_target "$device" "$mountpoint"; then
+    #         echo "# GCE-REPAIR: commented out malformed entry (${field_count} fields)" >> "$tmpfile"
+    #         echo "#$line" >> "$tmpfile"
+    #         fixes=$((fixes + 1))
+    #         repair_line "[FIXED] fstab: Commented out malformed entry on line $line_num"
+    #         continue
+    #     fi
+    #     echo "$line" >> "$tmpfile"
+    #     continue
+    # fi
 
     # Skip virtual filesystems - they don't need validation
     if is_virtual_fs "$fstype"; then
@@ -125,14 +131,52 @@ while IFS= read -r line; do
         continue
     fi
 
-    # Never comment out the root mount
-    if [ "$mountpoint" = "/" ]; then
-        echo "$line" >> "$tmpfile"
-        continue
+    # # Never comment out the root mount
+
+    # if [ "$mountpoint" = "/" ]; then
+    #     echo "$line" >> "$tmpfile"
+    #     continue
+    # fi
+
+    # Clean the device identifier string (strip headers)
+    dev_clean=$(echo "$device" | sed 's/^UUID=//; s/^LABEL=//; s/^PARTUUID=//')
+
+    # Bypasses the nested loop bug by using high-speed string index evaluation
+    is_matched=0
+    if echo "$REPAIR_TARGETS" | grep -qiF "$dev_clean"; then is_matched=1; fi
+    if echo "$REPAIR_TARGETS" | grep -qiF "$mountpoint"; then is_matched=1; fi
+
+    if [ "$mountpoint" = "/" ] || [ "$mountpoint" = "/boot" ] || [ "$mountpoint" = "/boot/efi" ]; then
+        if ! blkid | grep -qiF "$dev_clean"; then
+            log "Proactive hardware scan caught broken core mount target for $mountpoint (ID: $dev_clean)"
+            is_matched=1
+        fi
     fi
 
-    # Check if this entry matches any diagnosed repair target
-    if matches_target "$device" "$mountpoint"; then
+    if [ "$is_matched" -eq 1 ]; then
+        # SURGICAL PATH FOR THE ROOT PARTITION
+        if [ "$mountpoint" = "/" ]; then
+            log "Targeted root mount mismatch handled on line $line_num. Initializing repair hook..."
+            TARGET_PART=$(findmnt -n -o SOURCE "$SYSROOT" 2>/dev/null || echo "")
+            
+            if [ -n "$TARGET_PART" ]; then
+                TRUE_UUID=$(blkid -s PARTUUID -o value "$TARGET_PART" 2>/dev/null || echo "")
+                
+                if [ -n "$TRUE_UUID" ]; then
+                    id_type="PARTUUID"
+                    if echo "$device" | grep -q '^UUID='; then id_type="UUID"; fi
+                    
+                    fixed_line=$(echo "$line" | sed -E "s:${id_type}=[^[:space:]]+:${id_type}=${TRUE_UUID}:" 2>/dev/null || echo "$line")
+                    echo "$fixed_line" >> "$tmpfile"
+                    fixes=$((fixes + 1))
+                    repair_line "[FIXED] fstab: Restored true root partition hardware token (${TRUE_UUID:0:12}...)"
+                    continue
+                fi
+            fi
+            echo "$line" >> "$tmpfile"
+            continue
+        fi
+    #if matches_target "$device" "$mountpoint"; then
         # Extract a short identifier for the repair message
         short_id="$device"
         if echo "$device" | grep -q '^UUID='; then

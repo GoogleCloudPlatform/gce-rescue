@@ -3,16 +3,25 @@ fix_guidance: "sudo nano /mnt/sysroot/etc/fstab"
 auto_repair: true
 
 patterns:
+  - name: fstab_root_uuid_mismatch
+    severity: critical
+    description: "Critical root partition mount failure where systemd-remount-fs cannot find the root UUID/PARTUUID"
+    regex:
+      - "systemd-remount-fs\\[\\d+\\]: mount: /: can't find (PART)?UUID=[\\w-]+"
+      - "/bin/mount for / exited with exit status 1"
+    fixes:
+      - "The recovery script will automatically run blkid inside the rescue environment to update fstab with the true root hardware ID"
   - name: fstab_uuid_not_found
     severity: critical
     description: "UUID specified in /etc/fstab cannot be found"
     regex:
       - 'UUID=[\w-]+ does not exist'
-      - "can't find UUID=[\\w-]+"
+      - "(?<!mount: /: )can't find UUID=[\\w-]+"
+      - "(?<!mount: /: )can't find PARTUUID=[\\w-]+"
       - 'Timed out waiting for device.*UUID='
       - 'Expecting device.*/dev/disk/by-uuid/'
     fixes:
-      - "Comment out or fix the invalid UUID entry"
+      - "Comment out or fix the invalid UUID/PARTUUID entry"
 
   - name: fstab_device_timeout
     severity: critical
@@ -41,6 +50,7 @@ patterns:
     regex:
       - 'Dependency failed for .*\.mount'
       - 'Failed to mount .*\.mount'
+      - 'Failed to start systemd-remount-fs\.service'
       - 'mount.*failed'
       - 'systemd.*Failed to mount'
     fixes:
