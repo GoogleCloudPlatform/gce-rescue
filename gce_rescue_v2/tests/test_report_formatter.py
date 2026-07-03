@@ -618,3 +618,45 @@ class TestDetectOnlyFixSection:
         assert '$ Identify' not in report
         # cpu_lockup guidance must not appear inside step 2's command list
         assert '- Identify the offending process/workload' in report
+
+    def test_kernel_panic_only_report_has_no_fake_command(self, formatter):
+        """Integration red-team C3: kernel is detect-only — a panic-only
+        report must not render the prose fix_guidance behind a '$ ' prompt
+        or wrap it in a rescue/restore cycle that does not apply."""
+        diagnosis = {
+            'vm_name': 'vm-1',
+            'zone': 'asia-south1-b',
+            'status': 'TERMINATED',
+            'os_type': 'linux',
+            'os_flavor': 'debian-12',
+            'architecture': 'x86_64',
+            'license_type': 'free',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [
+                {
+                    'category': 'kernel',
+                    'severity': 'critical',
+                    'description': 'Kernel panic detected during boot',
+                    'detected_pattern': 'Kernel panic - not syncing: '
+                                        'Attempted to kill init!',
+                    'suggested_fixes': [
+                        'Reset the VM: gcloud compute instances reset '
+                        'VM_NAME --zone=ZONE',
+                    ],
+                    'context_lines': [
+                        'Kernel panic - not syncing: Attempted to kill init!'
+                    ],
+                    'matched_line_index': 0,
+                }
+            ],
+            'recommendations': [],
+        }
+        report = formatter.format_report(diagnosis)
+        assert '$ Reset the VM' not in report
+        assert 'Enter rescue mode' not in report
+        assert 'gce-rescue rescue' not in report
+        assert 'gce-rescue restore' not in report
+        # Guidance rendered as prose bullets under the category label
+        assert 'Check kernel:' in report
+        assert ('- Reset the VM and select a previous kernel from the GRUB '
+                'menu via the serial console') in report

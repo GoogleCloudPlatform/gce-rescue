@@ -351,11 +351,14 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
 
     # A finding only counts as a suppressing "root cause" if it can actually
     # explain a boot failure: detect-only categories (YAML flag
-    # 'detect_only') describe runtime conditions, not on-disk boot config,
-    # and warnings are informational — neither may hide critical
+    # 'detect_only') describe runtime conditions, not on-disk boot config;
+    # survives-boot-success categories (e.g. ssh) describe failures that by
+    # definition do NOT block boot and so can never explain emergency mode;
+    # and warnings are informational. None of these may hide critical
     # boot-failure findings like emergency mode.
     def _is_boot_root_cause(err: DetectedError) -> bool:
         return (err.category not in DETECT_ONLY_CATEGORIES
+                and err.category not in SURVIVES_BOOT_SUCCESS_CATEGORIES
                 and err.severity != 'warning')
 
     if len(detected_errors) > 1:
@@ -418,8 +421,13 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         # Find the position of the last detected error. Use the full
         # pre-dedupe evidence set: a finding removed by dedupe (e.g.
         # emergency mode) still proves the latest boot failed.
+        # Skip survives-boot-success categories: they are exempt from
+        # suppression anyway, so a post-marker ssh/filesystem line must not
+        # veto the clearing of stale boot-blocker noise from an older boot.
         last_error_pos = -1
         for err in all_detected:
+            if err.category in SURVIVES_BOOT_SUCCESS_CATEGORIES:
+                continue
             for match in re.finditer(
                 re.escape(err.detected_pattern), serial_output, re.IGNORECASE
             ):

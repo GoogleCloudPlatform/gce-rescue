@@ -1695,3 +1695,156 @@ class TestDiagnoseFilesystemRedTeamRegressions:
         data = _diagnose(serial)
         assert data['diagnosis_status'] == 'healthy'
         assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseUnifiedEngineRedTeamRegressions
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseUnifiedEngineRedTeamRegressions:
+    """Regressions from the adversarial review of the unified diagnose
+    engine (2.4.0 coverage integration). Each test reproduces a confirmed
+    failing serial buffer from the red-team report. The _diagnose helper
+    runs with vm_status RUNNING."""
+
+    def test_lone_ssh_error_does_not_erase_emergency_mode(self):
+        """C1: a single ssh auth error (survives-boot category, can never
+        explain emergency mode) must not qualify as a Tier-1 root cause and
+        delete the CRITICAL fstab_emergency_mode finding."""
+        serial = (
+            "You are in emergency mode. After logging in, type "
+            '"journalctl -xb" to view system logs.\n'
+            "sshd[401]: Authentication refused: bad ownership or modes "
+            "for directory /home/bob/.ssh\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_emergency_mode' in names
+        assert 'ssh_auth_permissions' in names
+        severities = {e['name']: e['severity'] for e in data['boot_errors']}
+        assert severities['fstab_emergency_mode'] == 'critical'
+
+    def test_lone_filesystem_error_does_not_erase_emergency_mode(self):
+        """C1 side effect (safe direction): a filesystem finding alone also
+        stops suppressing emergency mode — both findings are shown."""
+        serial = (
+            "[  152.208814] EXT4-fs error (device sdb1): "
+            "ext4_find_entry:1455: inode #2: comm systemd: "
+            "reading directory lblock 0\n"
+            "You are in emergency mode. After logging in, type "
+            '"journalctl -xb" to view system logs.\n'
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_corruption' in names
+        assert 'fstab_emergency_mode' in names
+
+    def test_post_marker_filesystem_error_does_not_retain_stale_fstab(self):
+        """C2: a filesystem error AFTER the boot-success marker is exempt
+        from suppression anyway, so its position must not veto the clearing
+        of stale fstab noise from the previous failed boot."""
+        serial = (
+            "systemd[1]: Timed out waiting for device "
+            "dev-disk-by\\x2duuid-6c78e5d3.device.\n"
+            "systemd[1]: Startup finished in 4.2s (kernel) + 8.1s "
+            "(userspace) = 12.3s.\n"
+            "[FAILED] EXT4-fs error (device sdb1): ext4_find_entry:1463: "
+            "inode #2: comm ls: reading directory lblock 0\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'filesystem' in categories
+        assert 'fstab' not in categories
+
+    def test_post_marker_ssh_failure_does_not_retain_stale_fstab(self):
+        """C2: same veto bug via a post-marker sshd failure — the stale
+        fstab device timeout from the old boot must be cleared."""
+        serial = (
+            "systemd[1]: Timed out waiting for device "
+            "dev-disk-by\\x2duuid-6c78e5d3.device.\n"
+            "systemd[1]: Startup finished in 4.2s (kernel) + 8.1s "
+            "(userspace) = 12.3s.\n"
+            "systemd[1]: Failed to start ssh.service - OpenBSD Secure "
+            "Shell server.\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'ssh' in categories
+        assert 'fstab' not in categories
+
+    def test_kernel_panic_does_not_suppress_emergency_mode(self):
+        """C3 (engine side): kernel is detect-only — a panic must not act
+        as a Tier-1 root cause and hide a stale emergency-mode finding from
+        another boot; both findings are shown."""
+        serial = (
+            "You are in emergency mode. After logging in, type "
+            '"journalctl -xb" to view system logs.\n'
+            "-- reboot --\n"
+            "[   12.310221] Kernel panic - not syncing: Attempted to kill "
+            "init! exitcode=0x00007f00\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_generic' in names
+        assert 'fstab_emergency_mode' in names
+
+    def test_recovered_panic_before_boot_success_is_suppressed(self):
+        """C3 side effect: a panic BEFORE the last successful boot marker on
+        a RUNNING VM is history and is cleared — same intentional precedent
+        as the recovered-lockup suppression."""
+        serial = (
+            "[   30.104501] Kernel panic - not syncing: Attempted to kill "
+            "init! exitcode=0x00007f00\n"
+            "-- reboot --\n"
+            "systemd[1]: Startup finished in 4.2s (kernel) + 8.1s "
+            "(userspace) = 12.3s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_disk_full_survives_completed_boot(self):
+        """C4: a boot-success marker does not empty a full disk — the
+        disk_full finding must survive suppression on a RUNNING VM instead
+        of reporting healthy."""
+        serial = (
+            "systemd-journald[300]: Failed to write entry: "
+            "No space left on device\n"
+            "systemd[1]: Startup finished in 4.2s (kernel) + 8.1s "
+            "(userspace) = 12.3s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'disk_full_no_space' in names
+
+    def test_post_marker_disk_full_does_not_retain_stale_fstab(self):
+        """C4 secondary effect: disk_full lines AFTER the marker must not
+        keep stale fstab noise alive (they are exempt from suppression, so
+        their position must not veto the clearing)."""
+        serial = (
+            "systemd[1]: Timed out waiting for device "
+            "dev-disk-by\\x2duuid-6c78e5d3.device.\n"
+            "systemd[1]: Startup finished in 4.2s (kernel) + 8.1s "
+            "(userspace) = 12.3s.\n"
+            "systemd-journald[300]: Failed to write entry: "
+            "No space left on device\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'disk_full' in categories
+        assert 'fstab' not in categories
+
+    def test_disk_full_detected_pattern_has_no_trailing_newline(self):
+        """Minor: the anchored ENOSPC regex must stop at end-of-line so the
+        newline never leaks into detected_pattern / JSON output."""
+        serial = (
+            "systemd-journald[300]: Failed to write entry: "
+            "No space left on device\n"
+        )
+        data = _diagnose(serial)
+        patterns = {
+            e['name']: e['detected_pattern'] for e in data['boot_errors']
+        }
+        assert 'disk_full_no_space' in patterns
+        assert '\n' not in patterns['disk_full_no_space']

@@ -2,6 +2,7 @@ category: kernel
 # Detect-only category: kernel panics require manual investigation
 # (reset the VM, pick a previous kernel from GRUB, read the backtrace).
 # fix_guidance is intentionally guidance text, not a single command.
+detect_only: true
 fix_guidance: "Reset the VM and select a previous kernel from the GRUB menu via the serial console; investigate the panic backtrace in the serial output"
 auto_repair: false
 

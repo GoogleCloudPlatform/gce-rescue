@@ -1,4 +1,8 @@
 category: disk_full
+# A boot-success marker does not mean the disk is no longer full — a VM
+# can finish booting while writes keep failing. Findings must survive the
+# RUNNING + "Startup finished" suppression.
+survives_boot_success: true
 fix_guidance: "sudo du -xh /mnt/sysroot --max-depth=2 | sort -rh | head -20"
 auto_repair: false
 
@@ -12,7 +16,9 @@ patterns:
     #   - cgroup limits on container hosts (kubelet/docker mkdir /sys/fs/cgroup)
     # Lines merely quoting the phrase mid-sentence no longer match either.
     regex:
-      - '^(?!.*(?:inotify|directory watch|/sys/fs/cgroup)).*No space left on device\s*$'
+    # [ \t]*$ (not \s*$) so the match stops at end-of-line and the trailing
+    # newline never leaks into detected_pattern / JSON output.
+      - '^(?!.*(?:inotify|directory watch|/sys/fs/cgroup)).*No space left on device[ \t]*$'
     fixes:
       - "Free space from rescue mode: clear journals (/mnt/sysroot/var/log/journal), /mnt/sysroot/tmp and old kernels/packages"
       - "Or resize the boot disk: gcloud compute disks resize DISK_NAME --zone=ZONE --size=NEW_SIZE_GB, then reboot to auto-expand"

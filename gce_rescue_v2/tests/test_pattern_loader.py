@@ -377,29 +377,33 @@ class TestShippedPatterns:
             )
 
     def test_survives_boot_success_flags(self):
-        """ssh/filesystem failures are not resolved by a completed boot, so
-        their YAML declares survives_boot_success; boot-blocking categories
-        must not declare it."""
+        """ssh/filesystem/disk_full failures are not resolved by a completed
+        boot (a full disk stays full after 'Startup finished'), so their YAML
+        declares survives_boot_success; boot-blocking categories must not
+        declare it."""
         from gce_rescue_v2.core.diagnosis import (
             SURVIVES_BOOT_SUCCESS_CATEGORIES,
         )
         assert 'ssh' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'filesystem' in SURVIVES_BOOT_SUCCESS_CATEGORIES
-        for cat in ('fstab', 'kernel', 'initramfs', 'disk_full'):
+        assert 'disk_full' in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        for cat in ('fstab', 'kernel', 'initramfs'):
             assert cat not in SURVIVES_BOOT_SUCCESS_CATEGORIES
 
     def test_detect_only_flags(self):
-        """cpu_lockup is detect-only (runtime condition, never a suppressing
-        root cause); detect_only does NOT imply survives_boot_success, and
-        rescue-workflow categories must not declare it."""
+        """cpu_lockup and kernel are detect-only (manual investigation, never
+        a rescue/restore fix); detect_only does NOT imply
+        survives_boot_success, and rescue-workflow categories must not
+        declare it."""
         from gce_rescue_v2.core.diagnosis import (
             DETECT_ONLY_CATEGORIES,
             SURVIVES_BOOT_SUCCESS_CATEGORIES,
         )
         assert 'cpu_lockup' in DETECT_ONLY_CATEGORIES
+        assert 'kernel' in DETECT_ONLY_CATEGORIES
         assert 'cpu_lockup' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
-        for cat in ('fstab', 'kernel', 'initramfs', 'disk_full', 'ssh',
-                    'filesystem'):
+        assert 'kernel' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        for cat in ('fstab', 'initramfs', 'disk_full', 'ssh', 'filesystem'):
             assert cat not in DETECT_ONLY_CATEGORIES
 
     def test_detect_only_sets_agree(self):
