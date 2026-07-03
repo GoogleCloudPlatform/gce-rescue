@@ -303,9 +303,17 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         "Failed to mount filesystem listed in /etc/fstab",
         "Mount point dependency failed (device not available)",
     }
+    # A finding only counts as a suppressing "root cause" if it can actually
+    # explain a boot failure: cpu_lockup findings describe runtime CPU
+    # conditions (not on-disk boot config) and warnings are informational,
+    # so neither may hide critical boot-failure findings like emergency mode.
+    def _is_boot_root_cause(err: DetectedError) -> bool:
+        return err.category != 'cpu_lockup' and err.severity != 'warning'
+
     if len(detected_errors) > 1:
         has_non_catchall = any(
-            e.description not in _CATCH_ALL for e in detected_errors
+            _is_boot_root_cause(e) and e.description not in _CATCH_ALL
+            for e in detected_errors
         )
         if has_non_catchall:
             detected_errors = [
@@ -314,7 +322,8 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
             ]
     if len(detected_errors) > 1:
         has_root_cause = any(
-            e.description not in _GENERIC_SYMPTOM for e in detected_errors
+            _is_boot_root_cause(e) and e.description not in _GENERIC_SYMPTOM
+            for e in detected_errors
         )
         if has_root_cause:
             detected_errors = [

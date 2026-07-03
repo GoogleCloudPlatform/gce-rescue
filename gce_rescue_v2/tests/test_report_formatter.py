@@ -532,3 +532,89 @@ class TestAutoRepairSuggestion:
         """Auto-repair suggestion should include the zone."""
         report = formatter.format_report(single_error_diagnosis)
         assert '--zone=us-central1-a' in report
+
+
+class TestDetectOnlyFixSection:
+    """Red-team C4: detect-only categories (cpu_lockup) must not be rendered
+    as shell commands inside a rescue/restore workflow."""
+
+    @pytest.fixture
+    def cpu_lockup_diagnosis(self):
+        return {
+            'vm_name': 'prod-db-1',
+            'zone': 'us-central1-a',
+            'status': 'RUNNING',
+            'os_type': 'linux',
+            'os_flavor': 'ubuntu-24.04',
+            'architecture': 'x86_64',
+            'license_type': 'free',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [
+                {
+                    'category': 'cpu_lockup',
+                    'severity': 'warning',
+                    'description': 'Bus lock or split lock detected (performance-degrading memory access)',
+                    'detected_pattern': 'took a bus_lock trap',
+                    'suggested_fixes': [
+                        'Identify the application named in the message and fix its misaligned atomic memory access',
+                        'If the VM is unresponsive, reset it: gcloud compute instances reset VM_NAME --zone=ZONE',
+                    ],
+                    'context_lines': ['x86/split lock detection: #DB: myapp/2211 took a bus_lock trap at address: 0x7f3c'],
+                    'matched_line_index': 0,
+                }
+            ],
+            'recommendations': [],
+        }
+
+    def test_no_rescue_restore_steps_for_detect_only(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        """cpu_lockup-only reports must not tell the user to enter rescue
+        mode — there is nothing to fix on the rescued disk."""
+        report = formatter.format_report(cpu_lockup_diagnosis)
+        assert 'gce-rescue rescue' not in report
+        assert 'gce-rescue restore' not in report
+        assert 'Enter rescue mode' not in report
+
+    def test_prose_guidance_not_rendered_as_command(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        """Prose fix_guidance must not be printed with a '$ ' prompt."""
+        report = formatter.format_report(cpu_lockup_diagnosis)
+        assert '$ Identify' not in report
+        assert 'Identify the offending process/workload' in report
+        assert 'Investigate CPU lockup' in report
+
+    def test_placeholders_substituted_in_detect_only_fixes(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        """VM_NAME/ZONE in per-issue fixes should be substituted."""
+        report = formatter.format_report(cpu_lockup_diagnosis)
+        assert 'gcloud compute instances reset prod-db-1 --zone=us-central1-a' in report
+        assert 'VM_NAME' not in report
+
+    def test_mixed_categories_keep_rescue_steps_for_disk_issues(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        """When a disk category (fstab) co-occurs with cpu_lockup, the
+        rescue steps stay for fstab but cpu_lockup guidance is rendered in
+        its own prose block."""
+        diagnosis = dict(cpu_lockup_diagnosis)
+        diagnosis['boot_errors'] = diagnosis['boot_errors'] + [
+            {
+                'category': 'fstab',
+                'severity': 'critical',
+                'description': 'UUID specified in /etc/fstab cannot be found',
+                'detected_pattern': 'UUID=abc123 does not exist',
+                'suggested_fixes': ['Comment out or fix the invalid UUID entry'],
+                'context_lines': ['UUID=abc123 does not exist'],
+                'matched_line_index': 0,
+            }
+        ]
+        report = formatter.format_report(diagnosis)
+        assert 'gce-rescue rescue prod-db-1' in report
+        assert 'gce-rescue restore prod-db-1' in report
+        assert 'Investigate CPU lockup' in report
+        assert '$ Identify' not in report
+        # cpu_lockup guidance must not appear inside step 2's command list
+        assert '- Identify the offending process/workload' in report

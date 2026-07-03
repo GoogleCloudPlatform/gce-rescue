@@ -534,6 +534,34 @@ class TestDiagnoseCpuLockup:
         )
         assert err['severity'] == 'critical'
 
+    def test_hard_lockup_detected_kernel_6_5_plus_prefix(self):
+        """Red-team C2: kernel >= 6.5 (Ubuntu 24.04 = 6.8) logs the hard
+        lockup with a 'watchdog:' prefix, not 'NMI watchdog:'. On GCE the
+        buddy detector (6.5+ prefix) is the realistic reporter since guests
+        have no PMU."""
+        serial = (
+            "[ 3600.200000] watchdog: Watchdog detected hard LOCKUP on cpu 2\n"
+            "[ 3600.208113] Modules linked in: virtio_scsi virtio_pci\n"
+        )
+        data = _diagnose(serial)
+        err = next(
+            e for e in data['boot_errors']
+            if e['name'] == 'cpu_lockup_hard_lockup'
+        )
+        assert err['severity'] == 'critical'
+
+    def test_benign_watchdog_boot_lines_not_matched(self):
+        """Healthy watchdog boot lines (present on every GCE boot) must not
+        trigger the hard lockup pattern."""
+        serial = (
+            "[    0.512331] NMI watchdog: Perf NMI watchdog permanently disabled\n"
+            "[    0.520114] watchdog: Delayed init of the lockup detector failed: -19\n"
+            "[    0.527448] watchdog: Hard watchdog permanently disabled\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'cpu_lockup' not in categories
+
     def test_bus_lock_trap_detected(self):
         """Kernel split-lock-detection trap line should be detected as warning."""
         serial = (
@@ -586,6 +614,58 @@ class TestDiagnoseCpuLockup:
         names = [e['name'] for e in data['boot_errors']]
         assert 'cpu_lockup_rcu_stall' in names
 
+    def test_rcu_preempt_stall_detected(self):
+        """Red-team C3: rcu_preempt is the default RCU flavor on Ubuntu
+        22.04/24.04 (PREEMPT_DYNAMIC) — the most common modern GCE case."""
+        serial = (
+            "[  512.882314] rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:\n"
+            "[  512.890120] rcu: \t1-...!: (0 ticks this GP) idle=b6ac/0/0x0 softirq=9241/9241 fqs=0\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cpu_lockup_rcu_stall' in names
+
+    def test_rcu_stall_old_kernel_format_detected(self):
+        """Red-team C3: kernels < 4.19 / RHEL 7 log without the 'rcu:'
+        prefix."""
+        serial = (
+            "[  455.220133] INFO: rcu_sched detected stalls on CPUs/tasks: { 1} (detected by 0, t=60002 jiffies)\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cpu_lockup_rcu_stall' in names
+
+    def test_rcu_expedited_stall_detected(self):
+        """Red-team C3: expedited grace-period stalls should also match."""
+        serial = (
+            "[  600.101220] rcu: INFO: rcu_sched detected expedited stalls on CPUs/tasks: { 2-... } 6620 jiffies s: 141\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cpu_lockup_rcu_stall' in names
+
+    def test_rcu_preempt_self_detected_stall_detected(self):
+        """Red-team C3: self-detected stall with the rcu_preempt flavor."""
+        serial = (
+            "[  711.400913] rcu: INFO: rcu_preempt self-detected stall on CPU\n"
+            "[  711.408122] rcu: \t2-....: (5249 ticks this GP) idle=e3e/1/0x4000000000000002\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cpu_lockup_rcu_stall' in names
+
+    def test_healthy_rcu_boot_banners_not_matched(self):
+        """Healthy RCU boot banners must not trigger the stall pattern."""
+        serial = (
+            "[    0.010220] rcu: Hierarchical RCU implementation.\n"
+            "[    0.014331] rcu: \tRCU restricting CPUs from NR_CPUS=8192 to nr_cpu_ids=2.\n"
+            "[    0.020144] rcu: Hierarchical SRCU implementation.\n"
+            "[    0.031228] rcu: RCU calculated value of scheduler-enlistment delay is 25 jiffies.\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'cpu_lockup' not in categories
+
     def test_healthy_boot_matches_no_cpu_lockup_patterns(self):
         """A clean boot must not produce any cpu_lockup findings."""
         serial = (
@@ -632,9 +712,10 @@ class TestDiagnoseCpuLockup:
         categories = {e['category'] for e in data['boot_errors']}
         assert categories == {'cpu_lockup'}
 
-    def test_lockup_finding_suppresses_emergency_mode_catch_all(self):
-        """A cpu_lockup root cause should drop the emergency-mode catch-all
-        finding (tier-1 dedupe)."""
+    def test_lockup_finding_does_not_suppress_emergency_mode(self):
+        """cpu_lockup findings are runtime conditions, never a boot-config
+        root cause, so they must NOT suppress the emergency-mode catch-all
+        (tier-1 dedupe must ignore them)."""
         serial = (
             "[  312.104501] NMI watchdog: Watchdog detected hard LOCKUP on cpu 1\n"
             "[  320.220118] You are in emergency mode\n"
@@ -642,7 +723,34 @@ class TestDiagnoseCpuLockup:
         data = _diagnose(serial)
         names = [e['name'] for e in data['boot_errors']]
         assert 'cpu_lockup_hard_lockup' in names
-        assert 'fstab_emergency_mode' not in names
+        assert 'fstab_emergency_mode' in names
+
+    def test_bus_lock_warning_does_not_suppress_emergency_mode(self):
+        """Red-team C1: a warning-severity bus_lock finding must not hide a
+        CRITICAL fstab emergency-mode finding."""
+        serial = (
+            "[  102.334455] x86/split lock detection: #DB: myapp/2211 took a bus_lock trap at address: 0x7f3c2a1b4d20\n"
+            "[  180.220118] You are in emergency mode\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cpu_lockup_bus_lock' in names
+        assert 'fstab_emergency_mode' in names
+        severities = {e['name']: e['severity'] for e in data['boot_errors']}
+        assert severities['fstab_emergency_mode'] == 'critical'
+
+    def test_bus_lock_warning_does_not_suppress_dependency_failures(self):
+        """Red-team C1: a warning-severity bus_lock finding must not strip
+        generic-symptom fstab criticals (tier-2 dedupe)."""
+        serial = (
+            "[  102.334455] x86/split lock detection: #DB: myapp/2211 took a bus_lock trap at address: 0x7f3c2a1b4d20\n"
+            "[  150.101332] systemd[1]: Dependency failed for /mnt/disks/data.\n"
+            "[  150.109221] systemd[1]: Dependency failed for File System Check on /dev/sdb1.\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'cpu_lockup' in categories
+        assert 'fstab' in categories
 
     def test_recovered_lockup_before_boot_success_is_suppressed(self):
         """A lockup that happened BEFORE the last successful boot marker on a

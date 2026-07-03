@@ -141,7 +141,7 @@ class TestBuildExports:
     def test_guidance_extracted(self, tmp_path):
         _write_yaml(tmp_path, 'test.yaml', VALID_FIX_YAML)
         fix_data = _load_fix_files(tmp_path)
-        guidance, _, _ = _build_exports(fix_data)
+        guidance, _, _, _ = _build_exports(fix_data)
 
         assert guidance == {'test_cat': "sudo nano /mnt/sysroot/etc/test"}
 
@@ -149,7 +149,7 @@ class TestBuildExports:
         _write_yaml(tmp_path, 'a.yaml', VALID_FIX_YAML)
         _write_yaml(tmp_path, 'b.yaml', NO_AUTO_REPAIR_YAML)
         fix_data = _load_fix_files(tmp_path)
-        _, supported, _ = _build_exports(fix_data)
+        _, supported, _, _ = _build_exports(fix_data)
 
         assert 'test_cat' in supported
         assert 'manual_cat' not in supported
@@ -157,7 +157,7 @@ class TestBuildExports:
     def test_pattern_fixes_extracted(self, tmp_path):
         _write_yaml(tmp_path, 'test.yaml', VALID_FIX_YAML)
         fix_data = _load_fix_files(tmp_path)
-        _, _, pattern_fixes = _build_exports(fix_data)
+        _, _, _, pattern_fixes = _build_exports(fix_data)
 
         assert 'test_cat' in pattern_fixes
         assert pattern_fixes['test_cat']['test_pattern_a'] == [
