@@ -375,3 +375,36 @@ class TestShippedPatterns:
             assert pattern.name.startswith('cpu_lockup_'), (
                 f"Pattern '{pattern.name}' missing 'cpu_lockup_' prefix"
             )
+
+    def test_survives_boot_success_flags(self):
+        """ssh/filesystem failures are not resolved by a completed boot, so
+        their YAML declares survives_boot_success; boot-blocking categories
+        must not declare it."""
+        from gce_rescue_v2.core.diagnosis import (
+            SURVIVES_BOOT_SUCCESS_CATEGORIES,
+        )
+        assert 'ssh' in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        assert 'filesystem' in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        for cat in ('fstab', 'kernel', 'initramfs', 'disk_full'):
+            assert cat not in SURVIVES_BOOT_SUCCESS_CATEGORIES
+
+    def test_detect_only_flags(self):
+        """cpu_lockup is detect-only (runtime condition, never a suppressing
+        root cause); detect_only does NOT imply survives_boot_success, and
+        rescue-workflow categories must not declare it."""
+        from gce_rescue_v2.core.diagnosis import (
+            DETECT_ONLY_CATEGORIES,
+            SURVIVES_BOOT_SUCCESS_CATEGORIES,
+        )
+        assert 'cpu_lockup' in DETECT_ONLY_CATEGORIES
+        assert 'cpu_lockup' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        for cat in ('fstab', 'kernel', 'initramfs', 'disk_full', 'ssh',
+                    'filesystem'):
+            assert cat not in DETECT_ONLY_CATEGORIES
+
+    def test_detect_only_sets_agree(self):
+        """A detect_only category must declare fix_guidance (its prose is what
+        the formatter renders), keeping engine and formatter sets identical."""
+        from gce_rescue_v2.core import fix_catalog, diagnosis
+        assert (fix_catalog.DETECT_ONLY_CATEGORIES
+                == set(diagnosis.DETECT_ONLY_CATEGORIES))

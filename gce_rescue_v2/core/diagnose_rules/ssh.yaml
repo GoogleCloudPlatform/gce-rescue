@@ -1,6 +1,10 @@
 category: ssh
 fix_guidance: "sudo nano /mnt/sysroot/etc/ssh/sshd_config"
 auto_repair: false
+# ssh failures are boot-completing by nature (sshd or the guest agent fails
+# while the rest of the boot reaches multi-user.target), so a "Startup
+# finished" marker does not mean they are resolved.
+survives_boot_success: true
 
 # Scope: only SSH failures that are visible in the VM serial console are
 # patterned here. Client-side errors such as "Permission denied (publickey)"

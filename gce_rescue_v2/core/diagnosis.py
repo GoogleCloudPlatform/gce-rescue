@@ -27,6 +27,13 @@ class BootErrorPattern:
     severity: str  # critical, error, warning
     description: str
     fixes: List[str] = field(default_factory=list)  # Suggested fixes
+    # Category-level flags, copied onto each pattern of the category:
+    # survives_boot_success: findings are NOT cleared by the RUNNING +
+    #   boot-success-marker suppression (failures that don't block boot).
+    # detect_only: runtime condition, not on-disk boot config — never a
+    #   suppressing "root cause" in dedupe.
+    survives_boot_success: bool = False
+    detect_only: bool = False
 
 
 @dataclass
@@ -83,6 +90,12 @@ def _validate_pattern_file(data: dict, filename: str) -> None:
 
     if not isinstance(data['patterns'], list) or len(data['patterns']) == 0:
         raise ValueError(f"{filename}: 'patterns' must be a non-empty list")
+
+    for flag in ('survives_boot_success', 'detect_only'):
+        if flag in data and not isinstance(data[flag], bool):
+            raise ValueError(
+                f"{filename}: '{flag}' must be a boolean"
+            )
 
     required_pattern_fields = ['name', 'severity', 'description', 'regex']
     for i, pattern in enumerate(data['patterns']):
@@ -142,6 +155,8 @@ def _load_patterns_from_yaml(
         _validate_pattern_file(data, yaml_file.name)
 
         category = data['category']
+        survives = bool(data.get('survives_boot_success', False))
+        detect_only = bool(data.get('detect_only', False))
 
         for p in data['patterns']:
             all_patterns.append(BootErrorPattern(
@@ -151,6 +166,8 @@ def _load_patterns_from_yaml(
                 severity=p['severity'],
                 description=p['description'],
                 fixes=list(p.get('fixes', [])),
+                survives_boot_success=survives,
+                detect_only=detect_only,
             ))
 
     return all_patterns
@@ -158,6 +175,13 @@ def _load_patterns_from_yaml(
 
 # Load patterns at module level (fail fast if patterns are broken)
 BOOT_ERROR_PATTERNS = _load_patterns_from_yaml()
+
+# Category behavior sets derived from the YAML flags — the analysis engine
+# never hardcodes category names.
+SURVIVES_BOOT_SUCCESS_CATEGORIES = frozenset(
+    p.category for p in BOOT_ERROR_PATTERNS if p.survives_boot_success)
+DETECT_ONLY_CATEGORIES = frozenset(
+    p.category for p in BOOT_ERROR_PATTERNS if p.detect_only)
 
 
 def _extract_context_lines(
@@ -326,11 +350,13 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
     all_detected = list(detected_errors)
 
     # A finding only counts as a suppressing "root cause" if it can actually
-    # explain a boot failure: cpu_lockup findings describe runtime CPU
-    # conditions (not on-disk boot config) and warnings are informational,
-    # so neither may hide critical boot-failure findings like emergency mode.
+    # explain a boot failure: detect-only categories (YAML flag
+    # 'detect_only') describe runtime conditions, not on-disk boot config,
+    # and warnings are informational — neither may hide critical
+    # boot-failure findings like emergency mode.
     def _is_boot_root_cause(err: DetectedError) -> bool:
-        return err.category != 'cpu_lockup' and err.severity != 'warning'
+        return (err.category not in DETECT_ONLY_CATEGORIES
+                and err.severity != 'warning')
 
     if len(detected_errors) > 1:
         has_non_catchall = any(
@@ -373,16 +399,14 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         r'Started .*OpenBSD Secure Shell server',
         r'Started .*Google Compute Engine Startup Scripts',
     ]
-    # ssh failures are boot-completing by nature (sshd or the guest agent
-    # fails while the rest of the boot reaches multi-user.target), so a
-    # "Startup finished" marker does not mean they are resolved. Filesystem
-    # corruption is never self-resolving noise either: a corrupt secondary
-    # disk marked nofail lets the VM boot fine while the disk stays broken.
-    # Both are therefore exempt from boot-success suppression.
-    _SUPPRESSION_EXEMPT_CATEGORIES = {'ssh', 'filesystem'}
+    # Categories flagged 'survives_boot_success' in their YAML (e.g. ssh,
+    # filesystem) describe failures that do not block boot — sshd dies but
+    # boot completes, or a corrupt nofail secondary disk lets the VM boot
+    # while the disk stays broken. A "Startup finished" marker does not mean
+    # they are resolved, so they are exempt from boot-success suppression.
     suppressible = [
         e for e in detected_errors
-        if e.category not in _SUPPRESSION_EXEMPT_CATEGORIES
+        if e.category not in SURVIVES_BOOT_SUCCESS_CATEGORIES
     ]
     if vm_status == 'RUNNING' and suppressible:
         # Find the position of the last boot success marker
@@ -419,7 +443,7 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                 )
                 detected_errors = [
                     e for e in detected_errors
-                    if e.category in _SUPPRESSION_EXEMPT_CATEGORIES
+                    if e.category in SURVIVES_BOOT_SUCCESS_CATEGORIES
                 ]
 
     # Determine diagnosis status and recommendations

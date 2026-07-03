@@ -3,6 +3,9 @@ fix_guidance: "sudo umount /mnt/sysroot && sudo fsck -y /dev/sdb1"
 # auto_repair stays false until startup_scripts/fixes/filesystem_fix.sh exists
 # and repair orchestration is wired for it. Detect-only with manual guidance.
 auto_repair: false
+# A corrupt secondary disk marked nofail lets the VM boot fine while the
+# disk stays broken — a successful boot never resolves these findings.
+survives_boot_success: true
 
 # Dedupe interplay with fstab.yaml:
 # fstab_fsck_failed matches generic boot-time fsck failure output (e.g.
