@@ -161,7 +161,8 @@ BOOT_ERROR_PATTERNS = _load_patterns_from_yaml()
 
 
 def _extract_context_lines(
-    serial_output: str, match_text: str, context_lines: int = 3
+    serial_output: str, match_text: str, context_lines: int = 3,
+    match_pos: int = None
 ) -> Tuple[List[str], int]:
     """Extract lines around a matched pattern for context.
 
@@ -169,6 +170,14 @@ def _extract_context_lines(
         serial_output: Full serial console output
         match_text: The matched text to find context for
         context_lines: Number of lines before and after to include
+        match_pos: Character offset of the actual regex match. When given,
+            the matched line is derived from this offset directly — never
+            by re-searching for match_text. This matters when the matched
+            text also appears on earlier lines (e.g. a generic
+            'Kernel panic - not syncing' whose lookahead rejected an older
+            panic line): re-searching would anchor the evidence on the
+            wrong (first) occurrence, while the matcher deliberately uses
+            the last one.
 
     Returns:
         Tuple of (context lines cleaned of ANSI codes, index of matched line)
@@ -176,12 +185,18 @@ def _extract_context_lines(
     # Split output into lines
     lines = serial_output.split('\n')
 
-    # Find the line containing the match
-    match_line_idx = -1
-    for i, line in enumerate(lines):
-        if match_text in line:
-            match_line_idx = i
-            break
+    if match_pos is not None:
+        # Line index = number of newlines before the match offset
+        match_line_idx = serial_output.count('\n', 0, match_pos)
+        if match_line_idx >= len(lines):
+            match_line_idx = -1
+    else:
+        # Fallback: find the first line containing the match text
+        match_line_idx = -1
+        for i, line in enumerate(lines):
+            if match_text in line:
+                match_line_idx = i
+                break
 
     if match_line_idx == -1:
         return [match_text], 0  # Fallback: single line, index 0
@@ -268,10 +283,12 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                     # Avoid duplicate errors for the same category
                     if not any(err.category == pattern_def.category and err.description == pattern_def.description
                               for err in detected_errors):
-                        # Extract context around the error
+                        # Extract context around the error, anchored on the
+                        # actual match offset (not a re-search of the text)
                         context, match_idx = _extract_context_lines(
                             serial_output, match.group(0),
-                            context_lines=1
+                            context_lines=1,
+                            match_pos=match.start()
                         )
 
                         # Use inline fixes from the pattern definition

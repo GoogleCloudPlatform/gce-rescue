@@ -880,6 +880,14 @@ class TestSupportedCategories:
     def test_grub_is_not_supported(self):
         assert 'grub' not in SUPPORTED_FIX_CATEGORIES
 
+    def test_kernel_is_not_supported(self):
+        """kernel is detect-only — no auto-repair fix script exists."""
+        assert 'kernel' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_initramfs_is_not_supported(self):
+        """initramfs stays unsupported until fixes/initramfs_fix.sh lands."""
+        assert 'initramfs' not in SUPPORTED_FIX_CATEGORIES
+
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""
         fixes_dir = (

@@ -211,6 +211,44 @@ class TestShippedFixInfo:
                 f"Pattern '{pattern.name}' has no fixes in core/diagnose_rules/fstab.yaml"
             )
 
+    def test_kernel_fix_guidance_loaded(self):
+        """kernel category has fix_guidance, so it must appear in the catalog."""
+        assert 'kernel' in CATEGORY_FIX_GUIDANCE
+
+    def test_initramfs_fix_guidance_loaded(self):
+        """initramfs category has fix_guidance, so it must appear in the catalog."""
+        assert 'initramfs' in CATEGORY_FIX_GUIDANCE
+
+    def test_kernel_is_not_auto_repairable(self):
+        """kernel is detect-only (auto_repair: false) — no fix script exists."""
+        assert 'kernel' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_initramfs_is_not_auto_repairable(self):
+        """initramfs ships with auto_repair: false until initramfs_fix.sh lands."""
+        assert 'initramfs' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_kernel_patterns_have_fixes(self):
+        """Every kernel pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        kernel_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'kernel']
+        for pattern in kernel_patterns:
+            fixes = get_fixes_for_pattern('kernel', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in core/diagnose_rules/kernel.yaml"
+            )
+
+    def test_initramfs_patterns_have_fixes(self):
+        """Every initramfs pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        initramfs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'initramfs']
+        for pattern in initramfs_patterns:
+            fixes = get_fixes_for_pattern('initramfs', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in core/diagnose_rules/initramfs.yaml"
+            )
+
     def test_disk_full_fix_guidance_loaded(self):
         assert 'disk_full' in CATEGORY_FIX_GUIDANCE
 

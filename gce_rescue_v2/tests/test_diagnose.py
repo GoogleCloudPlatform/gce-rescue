@@ -490,6 +490,274 @@ class TestDiagnoseStabilization:
 
 
 # ---------------------------------------------------------------------------
+# TestKernelPanicDetection
+# ---------------------------------------------------------------------------
+
+class TestKernelPanicDetection:
+    """Detection tests for kernel.yaml panic patterns."""
+
+    def test_hung_task_panic_detected(self):
+        """Hung-task panic should report kernel_panic_hung_task, not generic."""
+        serial = (
+            "[    0.000000] Linux version 5.10.0-28-cloud-amd64 (debian-kernel@lists.debian.org)\n"
+            "[  241.693421] INFO: task jbd2/sda1-8:512 blocked for more than 120 seconds.\n"
+            "[  241.699830] \"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\" disables this message.\n"
+            "[  362.812554] Kernel panic - not syncing: hung_task: blocked tasks\n"
+            "[  362.818992] CPU: 0 PID: 42 Comm: khungtaskd Not tainted 5.10.0-28-cloud-amd64 #1\n"
+            "[  362.825101] Call Trace:\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_hung_task' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_oom_panic_detected(self):
+        """OOM panic should report kernel_panic_oom, not generic."""
+        serial = (
+            "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
+            "[  512.103311] Out of memory: Killed process 1234 (java) total-vm:8388608kB\n"
+            "[  512.209972] Kernel panic - not syncing: out of memory. panic_on_oom is selected\n"
+            "[  512.216104] CPU: 1 PID: 55 Comm: oom_reaper Not tainted 5.10.0-28-cloud-amd64 #1\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_oom' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_machine_check_panic_detected(self):
+        """Fatal machine check panic should report kernel_panic_machine_check."""
+        serial = (
+            "[    0.000000] Linux version 5.14.0-362.el9.x86_64\n"
+            "[  100.001234] mce: [Hardware Error]: CPU 0: Machine Check Exception: 5 Bank 0\n"
+            "[  100.103421] Kernel panic - not syncing: Fatal Machine check\n"
+            "[  100.109553] Kernel Offset: disabled\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_machine_check' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_nmi_panic_detected(self):
+        """NMI panic should report kernel_panic_nmi, not generic."""
+        serial = (
+            "[    0.000000] Linux version 5.15.0-100-generic\n"
+            "[   88.004521] Uhhuh. NMI received for unknown reason 31 on CPU 0.\n"
+            "[   88.101233] Kernel panic - not syncing: NMI: Not continuing\n"
+            "[   88.107455] CPU: 0 PID: 0 Comm: swapper/0 Not tainted 5.15.0-100-generic #1\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_nmi' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_unrecognized_panic_reports_generic(self):
+        """A panic cause not covered by specific patterns falls to generic."""
+        serial = (
+            "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
+            "[    5.002311] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000009\n"
+            "[    5.008442] CPU: 0 PID: 1 Comm: init Not tainted 5.10.0-28-cloud-amd64 #1\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_generic' in names
+
+    def test_modern_oom_panic_detected(self):
+        """Modern (>=4.x) OOM panic wording must be detected, not report healthy.
+
+        Regression: kernels since ~4.x panic with 'Out of memory: ...
+        panic_on_oom is enabled' (not the pre-4.x 'is selected'). The old
+        regex missed it AND the generic lookahead excluded it -> the engine
+        reported a genuinely panicked VM as healthy.
+        """
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  512.103311] Out of memory: Killed process 1234 (java) total-vm:8388608kB\n"
+            "[  512.209972] Kernel panic - not syncing: Out of memory: system-wide panic_on_oom is enabled\n"
+            "[  512.216104] CPU: 1 PID: 55 Comm: oom_reaper Not tainted 6.1.0-18-cloud-amd64 #1\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_oom' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_compulsory_oom_panic_detected(self):
+        """sysctl vm.panic_on_oom=2 variant ('compulsory ... is enabled')."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  600.001122] Kernel panic - not syncing: Out of memory: compulsory panic_on_oom is enabled\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_oom' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_evidence_anchors_on_actual_match_not_first_occurrence(self):
+        """Evidence must quote the line the regex matched, not an earlier
+        line containing the same text.
+
+        Regression (live Test 3): buffer held an old OOM panic and a fresh
+        sysrq panic. kernel_panic_generic matched the sysrq line (lookahead
+        rejects the OOM line), but context extraction re-searched for the
+        matched text 'Kernel panic - not syncing' and anchored the evidence
+        on the FIRST occurrence — the OOM line. Context must be derived
+        from the match offset instead.
+        """
+        serial = (
+            "[    0.000000] Linux version 6.1.0-49-cloud-amd64\n"
+            "[   85.365705] Kernel panic - not syncing: Out of memory: system-wide panic_on_oom is enabled\n"
+            "[   85.374092] CPU: 1 PID: 1138 Comm: tail Not tainted 6.1.0-49-cloud-amd64 #1\n"
+            "[    0.000000] Linux version 6.1.0-49-cloud-amd64 (second boot)\n"
+            "[   18.500000] sysrq: Trigger a crash\n"
+            "[   18.600000] Kernel panic - not syncing: sysrq triggered crash\n"
+            "[   18.830725] ---[ end Kernel panic - not syncing: sysrq triggered crash ]---\n"
+        )
+        data = _diagnose(serial)
+        generic = [e for e in data['boot_errors']
+                   if e['name'] == 'kernel_panic_generic']
+        assert generic, "kernel_panic_generic should fire on the sysrq line"
+        err = generic[0]
+        matched_line = err['context_lines'][err['matched_line_index']]
+        assert 'sysrq triggered crash' in matched_line
+        assert 'panic_on_oom' not in matched_line
+
+    def test_vfs_panic_variant_falls_to_generic(self):
+        """A VFS root-fs panic that is NOT unknown-block must not vanish.
+
+        Regression: the generic lookahead excluded any 'VFS: Unable to mount
+        root fs' while initramfs only matches the 'on unknown-block' form ->
+        e.g. an NFS-root panic matched nothing and reported healthy. Exclusion
+        terms must mirror the positive patterns exactly.
+        """
+        serial = (
+            "[    0.000000] Linux version 5.15.0-100-generic\n"
+            "[    9.912345] Kernel panic - not syncing: VFS: Unable to mount root fs via NFS.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_generic' in names
+        assert 'initramfs_no_root_fs' not in names
+
+    def test_fstab_errors_do_not_trigger_kernel_patterns(self):
+        """fstab failure lines should not produce kernel-category findings."""
+        serial = (
+            "Linux version 5.15.0\n"
+            "Timed out waiting for device /dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "Dependency failed for /mnt/data\n"
+            "You are in emergency mode\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'kernel' not in categories
+
+    def test_healthy_boot_matches_no_kernel_patterns(self):
+        """A clean boot log should produce no kernel findings."""
+        serial = (
+            "[    0.000000] Linux version 5.15.0-100-generic (builder@server)\n"
+            "[    0.000000] Booting Linux on physical CPU 0x0\n"
+            "[    2.412345] EXT4-fs (sda1): mounted filesystem with ordered data mode\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestInitramfsDetection
+# ---------------------------------------------------------------------------
+
+class TestInitramfsDetection:
+    """Detection tests for initramfs.yaml patterns, including kernel overlap."""
+
+    def test_no_root_fs_panic_detected_as_initramfs(self):
+        """VFS root-mount panic reports initramfs, NOT generic kernel panic.
+
+        The panic line itself contains 'Kernel panic - not syncing', so
+        kernel_panic_generic must exclude it via negative lookahead.
+        """
+        serial = (
+            "[    0.000000] Linux version 4.18.0-425.el8.x86_64\n"
+            "[    1.523311] md: Waiting for all devices to be available before autodetect\n"
+            "[    1.612345] VFS: Cannot open root device \"sda1\" or unknown-block(0,0): error -6\n"
+            "[    1.702211] Please append a correct \"root=\" boot option; here are the available partitions:\n"
+            "[    1.803992] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)\n"
+            "[    1.810221] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 4.18.0-425.el8.x86_64 #1\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_no_root_fs' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_unpacking_failure_detected(self):
+        """Corrupt initramfs (junk in compressed archive) should be detected."""
+        serial = (
+            "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
+            "[    0.812345] Trying to unpack rootfs image as initramfs...\n"
+            "[    0.905566] Initramfs unpacking failed: junk in compressed archive\n"
+            "[    1.002211] Freeing initrd memory: 24576K\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_load_failure' in names
+
+    def test_unpacking_failure_is_error_not_critical(self):
+        """'junk ... compressed archive' is benign on some kernels (microcode
+        cpio padding, ~5.4-5.15) where boot proceeds normally. Without a
+        following VFS panic it is ambiguous, so it must report severity
+        'error', not 'critical' (the unambiguous case is initramfs_no_root_fs).
+        """
+        serial = (
+            "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
+            "[    0.905566] Initramfs unpacking failed: junk in compressed archive\n"
+        )
+        data = _diagnose(serial)
+        findings = [e for e in data['boot_errors']
+                    if e['name'] == 'initramfs_load_failure']
+        assert findings, "initramfs_load_failure should be detected"
+        assert all(f['severity'] == 'error' for f in findings)
+
+    def test_load_failure_variant_detected(self):
+        """'Failed to load initramfs' variant should also be detected."""
+        serial = (
+            "[    0.000000] Linux version 5.15.0-100-generic\n"
+            "[    0.712345] Failed to load initramfs image from /boot/initrd.img-5.15.0-100-generic\n"
+            "[    0.809982] Kernel command line: BOOT_IMAGE=/boot/vmlinuz-5.15.0-100-generic root=UUID=abc\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_load_failure' in names
+
+    def test_benign_decoding_message_not_matched(self):
+        """'Initramfs unpacking failed: Decoding failed' is benign on some
+        kernels (LZ4 fallback) and must NOT trigger initramfs_load_failure."""
+        serial = (
+            "[    0.000000] Linux version 5.4.0-100-generic (buildd@lcy02)\n"
+            "[    0.905566] Initramfs unpacking failed: Decoding failed\n"
+            "[    2.412345] EXT4-fs (sda1): mounted filesystem with ordered data mode\n"
+            "ubuntu login: \n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'initramfs' not in categories
+
+    def test_fstab_errors_do_not_trigger_initramfs_patterns(self):
+        """fstab failure lines should not produce initramfs-category findings."""
+        serial = (
+            "Linux version 5.15.0\n"
+            "Timed out waiting for device /dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "Dependency failed for /mnt/data\n"
+            "You are in emergency mode\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'initramfs' not in categories
+
+
+# ---------------------------------------------------------------------------
 # TestDiagnoseDiskFull
 # ---------------------------------------------------------------------------
 
