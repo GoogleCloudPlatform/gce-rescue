@@ -1707,6 +1707,64 @@ class TestDiagnoseUnifiedEngineRedTeamRegressions:
     failing serial buffer from the red-team report. The _diagnose helper
     runs with vm_status RUNNING."""
 
+    def test_full_disk_garbled_fsckd_line_not_flagged_as_fsck_failed(self):
+        """LIVE (t-diskfull): on a full disk, journald interleaves two writes
+        onto one physical serial line, e.g. a healthy 'systemd-fsckd.service:
+        Deactivated succe...' fragment concatenated with journald's 'Failed
+        to open ...: No space left on device'. The old greedy 'fsck.*failed'
+        matched 'fsckd...Failed' across the garble -> false CRITICAL
+        fstab_fsck_failed. disk_full must be the only fstab-family finding
+        here (no fsck_failed)."""
+        serial = (
+            "systemd-journald[206]: Failed to open system journal: "
+            "No space left on device\n"
+            "syst[   33.575608] systemd-fsckd.service: Deactivated succe"
+            "[   33.581290] systemd-journald[206]: Failed to open: "
+            "No space left on device\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'disk_full_no_space' in names
+        assert 'fstab_fsck_failed' not in names
+
+    def test_healthy_fsckd_daemon_lines_not_flagged(self):
+        """LIVE (t-diskfull): the fsck-to-fsckd socket/daemon startup lines are
+        normal on every boot and must never match fstab_fsck_failed."""
+        serial = (
+            "[    3.302480] systemd[1]: Listening on systemd-fsckd.socket - "
+            "fsck to fsckd communication Socket.\n"
+            "systemd[1]: Started systemd-fsckd.service - File System Check "
+            "Daemon to report status.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_fsck_failed' not in names
+
+    def test_real_fsck_failure_still_detected(self):
+        """Guard: tightening the regex must not lose true fsck failures."""
+        for line in (
+            "systemd-fsck[512]: fsck failed with exit status 4\n",
+            "systemd-fsck[512]: fsck exited with status code 8\n",
+            "[   12.3] EXT4-fs (sdb1): FILE SYSTEM CHECK FAILED\n",
+        ):
+            data = _diagnose("Linux version 6.1\n" + line)
+            names = [e['name'] for e in data['boot_errors']]
+            assert 'fstab_fsck_failed' in names, line
+
+    def test_device_cannot_open_blockdev_detected_as_filesystem(self):
+        """LIVE (t-fs): severe superblock+partition corruption makes the
+        device unopenable, so serial shows '/dev/sda: Can't open blockdev'
+        rather than 'Bad magic number'. That must surface as a filesystem
+        finding (alongside the fstab mount failure)."""
+        serial = (
+            "[    4.129800] /dev/sda: Can't open blockdev\n"
+            "[FAILED] Failed to mount mnt-data.mount - /mnt/data.\n"
+        )
+        data = _diagnose(serial)
+        cats = {e['category'] for e in data['boot_errors']}
+        assert 'filesystem' in cats
+        assert 'fstab' in cats  # mount failure still reported too
+
     def test_lone_ssh_error_does_not_erase_emergency_mode(self):
         """C1: a single ssh auth error (survives-boot category, can never
         explain emergency mode) must not qualify as a Tier-1 root cause and

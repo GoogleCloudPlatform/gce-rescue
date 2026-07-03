@@ -54,6 +54,10 @@ patterns:
       - 'XFS \([\w-]+\): Metadata CRC error detected'
       - 'XFS \([\w-]+\): Unmount and run xfs_repair'
       - 'EXT4-fs error \(device'
+      # Severe corruption (superblock + partition table destroyed) makes the
+      # device unopenable, so fsck/mount emit this instead of "Bad magic
+      # number". Anchored to a real device path to avoid matching prose.
+      - "/dev/\\S+: Can't open blockdev"
     fixes:
       - "From rescue mode, check the unmounted disk: fsck -y /dev/sdX (ext) or xfs_repair /dev/sdX (XFS)"
       - "If corruption persists, check disk health in GCP Console and restore from a snapshot"

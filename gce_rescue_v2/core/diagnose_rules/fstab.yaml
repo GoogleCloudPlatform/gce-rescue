@@ -71,7 +71,12 @@ patterns:
     severity: critical
     description: "Filesystem check (fsck) failed on a mounted partition"
     regex:
-      - 'fsck.*failed'
+      # 'fsck' and 'failed' must be adjacent. A greedy 'fsck.*failed' spans
+      # garbled serial: on a full disk, journald interleaves 'systemd-fsckd
+      # ...service: Deactivated succe[...]Failed to open' onto one physical
+      # line, so 'fsck.*failed' fires on a healthy fsck daemon (false positive).
+      - 'fsck failed'
+      - 'fsck.{0,40}exited with (?:exit )?(?:status|code)'
       - 'fsck exited with status code'
       - 'FILE SYSTEM CHECK FAILED'
       - 'UNEXPECTED INCONSISTENCY'
