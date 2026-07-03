@@ -253,3 +253,23 @@ class TestShippedPatterns:
             assert len(pattern.fixes) > 0, (
                 f"Pattern '{pattern.name}' has no inline fixes"
             )
+
+    def test_ssh_patterns_present(self):
+        ssh_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'ssh']
+        assert len(ssh_patterns) == 3
+
+    def test_ssh_patterns_have_inline_fixes(self):
+        """All ssh patterns should have inline fixes from merged YAML."""
+        ssh_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'ssh']
+        for pattern in ssh_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_ssh_pattern_names_have_category_prefix(self):
+        """All ssh pattern names should carry the ssh_ prefix convention."""
+        ssh_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'ssh']
+        for pattern in ssh_patterns:
+            assert pattern.name.startswith('ssh_'), (
+                f"Pattern '{pattern.name}' missing 'ssh_' prefix"
+            )
