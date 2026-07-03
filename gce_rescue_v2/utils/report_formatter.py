@@ -273,7 +273,11 @@ class DiagnosisReportFormatter:
             )
 
         lines.append("")
-        lines.append(dim("Note: Currently checks fstab errors only. "
+        # Derive the checked categories from the loaded rules so this note
+        # can never go stale when new diagnose_rules/*.yaml files land.
+        from ..core.diagnosis import BOOT_ERROR_PATTERNS
+        categories = sorted({p.category for p in BOOT_ERROR_PATTERNS})
+        lines.append(dim(f"Note: Currently checks: {', '.join(categories)}. "
                          "If the VM still won't boot, check the serial console:"))
         gcloud_cmd = f"  $ gcloud compute instances get-serial-port-output {vm_name} --zone={zone}"
         if project:

@@ -1,0 +1,73 @@
+category: kernel
+# Detect-only category: kernel panics require manual investigation
+# (reset the VM, pick a previous kernel from GRUB, read the backtrace).
+# fix_guidance is intentionally guidance text, not a single command.
+fix_guidance: "Reset the VM and select a previous kernel from the GRUB menu via the serial console; investigate the panic backtrace in the serial output"
+auto_repair: false
+
+patterns:
+  - name: kernel_panic_hung_task
+    severity: critical
+    description: "Kernel panic caused by hung (blocked) tasks"
+    regex:
+      - 'Kernel panic - not syncing: hung_task: blocked tasks'
+    fixes:
+      - "Reset the VM: gcloud compute instances reset VM_NAME --zone=ZONE"
+      - "If panics persist, boot a previous kernel from the GRUB menu via the interactive serial console"
+      - "Review the serial output for blocked task backtraces (INFO: task ... blocked) to identify stuck I/O or workload"
+
+  - name: kernel_panic_oom
+    severity: critical
+    description: "Kernel panic due to out of memory (panic_on_oom)"
+    regex:
+      # Pre-4.x kernels: "out of memory. panic_on_oom is selected"
+      # Modern kernels:  "Out of memory: system-wide panic_on_oom is enabled"
+      #                  / "compulsory panic_on_oom is enabled" (sysctl=2)
+      - 'Kernel panic - not syncing: [Oo]ut of memory'
+      - 'panic_on_oom is (?:selected|enabled)'
+    fixes:
+      - "Identify the memory-hungry process in the serial output (Out of memory: Killed process ...)"
+      - "Resize the VM to a larger machine type: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
+      - "If panic-on-OOM is not intended, set vm.panic_on_oom=0 in /etc/sysctl.conf"
+
+  - name: kernel_panic_machine_check
+    severity: critical
+    description: "Kernel panic due to a fatal machine check (hardware error)"
+    regex:
+      - 'Kernel panic - not syncing: Fatal Machine check'
+    fixes:
+      - "This usually indicates a host hardware error - stop and start the VM to move it to a different host"
+      - "Stop: gcloud compute instances stop VM_NAME --zone=ZONE, then start: gcloud compute instances start VM_NAME --zone=ZONE"
+      - "If the panic repeats, contact Google Cloud Support with the serial console output"
+
+  - name: kernel_panic_nmi
+    severity: critical
+    description: "Kernel panic triggered by a non-maskable interrupt (NMI)"
+    regex:
+      - 'Kernel panic - not syncing: NMI: Not continuing'
+    fixes:
+      - "Reset the VM: gcloud compute instances reset VM_NAME --zone=ZONE"
+      - "If NMI panics repeat, stop and start the VM to move it to a different host"
+      - "Check for unknown_nmi_panic or panic-on-NMI settings in kernel parameters"
+
+  # Catch-all for panics not matched by the specific patterns above.
+  # The negative lookahead prevents double-reporting the same panic line:
+  # the engine only dedupes identical (category, description) pairs, so
+  # without the lookahead both a specific pattern and this generic one
+  # would be reported. Also excludes 'VFS: Unable to mount root fs on
+  # unknown-block' panics, which belong to the initramfs category.
+  #
+  # INVARIANT: every exclusion term below must mirror the positive regex
+  # of the pattern it defers to (here or in initramfs.yaml). An exclusion
+  # broader than its positive creates a silent hole where a real panic
+  # matches nothing and the VM reports healthy. Guarded by
+  # test_diagnose.py::TestKernelPanicDetection exclusion-drift tests.
+  - name: kernel_panic_generic
+    severity: critical
+    description: "Kernel panic detected (unspecified cause)"
+    regex:
+      - 'Kernel panic - not syncing(?!.*(?:hung_task: blocked tasks|[Oo]ut of memory|panic_on_oom is (?:selected|enabled)|Fatal Machine check|NMI: Not continuing|VFS: Unable to mount root fs on unknown-block))'
+    fixes:
+      - "Reset the VM: gcloud compute instances reset VM_NAME --zone=ZONE"
+      - "Boot a previous kernel from the GRUB menu via the interactive serial console"
+      - "Review the full panic backtrace in the serial output to identify the failing module or driver"

@@ -1,0 +1,37 @@
+category: initramfs
+fix_guidance: "chroot into /mnt/sysroot and rebuild the initramfs: dracut -f (RHEL-family) or update-initramfs -u -k VERSION (Debian-family), then regenerate the GRUB config"
+# auto_repair MUST stay false until startup_scripts/fixes/initramfs_fix.sh
+# lands. RepairOrchestrator.validate() checks that every category in
+# SUPPORTED_FIX_CATEGORIES has a fix script, so flipping this to true
+# without the script makes `repair` fail preflight for ALL categories
+# (including fstab). Flip to true in the same commit that adds the script.
+auto_repair: false
+
+patterns:
+  - name: initramfs_no_root_fs
+    severity: critical
+    description: "Kernel cannot mount the root filesystem (missing or corrupt initramfs)"
+    regex:
+      - 'VFS: Unable to mount root fs on unknown-block'
+    fixes:
+      - "Enter the rescued VM and chroot into the original disk: sudo chroot /mnt/sysroot"
+      - "Rebuild the initramfs: dracut -f (RHEL-family) or update-initramfs -u -k VERSION (Debian-family)"
+      - "Regenerate the GRUB config: grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family) or update-grub (Debian-family)"
+      - "Verify the root= kernel parameter points to an existing device or UUID"
+
+  # severity: error (not critical) — "junk in/within compressed archive"
+  # is benign on some kernels (~5.4-5.15) when the initrd is a microcode
+  # cpio concatenated with the main archive (boot proceeds normally).
+  # The unambiguous failure is initramfs_no_root_fs above; this pattern
+  # alone, without a following VFS panic, may be noise.
+  - name: initramfs_load_failure
+    severity: error
+    description: "Initramfs image failed to load or unpack"
+    regex:
+      - 'Initramfs unpacking failed: junk \S+ compressed archive'
+      - 'Failed to load initramfs'
+    fixes:
+      - "If the VM boots normally despite this message, it is likely benign (microcode cpio padding on some kernels) - no action needed"
+      - "If boot fails: rebuild the initramfs from rescue mode: sudo chroot /mnt/sysroot, then dracut -f (RHEL-family) or update-initramfs -u -k VERSION (Debian-family)"
+      - "Check free space on the boot partition before rebuilding: df -h /mnt/sysroot/boot"
+      - "Regenerate the GRUB config after rebuilding: grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family) or update-grub (Debian-family)"

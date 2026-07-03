@@ -253,3 +253,43 @@ class TestShippedPatterns:
             assert len(pattern.fixes) > 0, (
                 f"Pattern '{pattern.name}' has no inline fixes"
             )
+
+    def test_kernel_patterns_present(self):
+        kernel_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'kernel']
+        assert len(kernel_patterns) == 5
+
+    def test_kernel_patterns_have_inline_fixes(self):
+        """All kernel patterns should have inline fixes from merged YAML."""
+        kernel_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'kernel']
+        for pattern in kernel_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_initramfs_patterns_present(self):
+        initramfs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'initramfs']
+        assert len(initramfs_patterns) == 2
+
+    def test_initramfs_patterns_have_inline_fixes(self):
+        """All initramfs patterns should have inline fixes from merged YAML."""
+        initramfs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'initramfs']
+        for pattern in initramfs_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_all_kernel_pattern_names_prefixed(self):
+        """Kernel pattern names should follow the category-prefix convention."""
+        kernel_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'kernel']
+        for pattern in kernel_patterns:
+            assert pattern.name.startswith('kernel_'), (
+                f"Pattern '{pattern.name}' missing 'kernel_' prefix"
+            )
+
+    def test_all_initramfs_pattern_names_prefixed(self):
+        """Initramfs pattern names should follow the category-prefix convention."""
+        initramfs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'initramfs']
+        for pattern in initramfs_patterns:
+            assert pattern.name.startswith('initramfs_'), (
+                f"Pattern '{pattern.name}' missing 'initramfs_' prefix"
+            )
