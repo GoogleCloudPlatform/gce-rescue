@@ -18,8 +18,16 @@ patterns:
     severity: critical
     description: "Device referenced in /etc/fstab timed out waiting"
     regex:
-      - 'Timed out waiting for device.*/dev/\S+'
-      - 'Timed out waiting for device dev-\w+'
+      # /dev/mapper/* timeouts are LVM activation failures and belong to
+      # lvm.yaml, hence the (?!mapper) carve-outs on both loose forms.
+      - 'Timed out waiting for device.*/dev/(?!mapper/)\S+'
+      # RHEL/SLES systemd escapes dashes in device unit names as \x2d
+      # (dev-disk-by\x2duuid-<uuid>.device). This explicit form is listed
+      # BEFORE the loose dev-\w+ fallback so the full unit name (with the
+      # UUID) lands in detected_pattern for identifier extraction, instead
+      # of the fallback's truncated 'device dev-disk' match.
+      - 'Timed out waiting for device dev-disk-by\\x2d\S+'
+      - 'Timed out waiting for device dev-(?!mapper)\w+'
     fixes:
       - "Comment out or fix the invalid device entry"
       - "Verify disk is attached: gcloud compute instances describe VM_NAME --zone=ZONE"
@@ -39,10 +47,13 @@ patterns:
     severity: critical
     description: "Failed to mount filesystem listed in /etc/fstab"
     regex:
+      # /sysroot failures happen inside the initrd (RHEL-family) and are
+      # owned by initramfs_sysroot_mount_failed - carved out here so one
+      # line never fires both categories.
       - 'Dependency failed for .*\.mount'
-      - 'Failed to mount .*\.mount'
+      - 'Failed to mount (?!/sysroot).*\.mount'
       - 'mount.*failed'
-      - 'systemd.*Failed to mount'
+      - 'systemd.*Failed to mount (?!/sysroot)'
     fixes:
       - "Comment out or fix the problematic entry"
       - "Verify filesystem type and mount options are correct"
@@ -51,7 +62,9 @@ patterns:
     severity: critical
     description: "Mount point dependency failed (device not available)"
     regex:
-      - 'Dependency failed for /[a-zA-Z]'
+      # (?!sysroot\b): /sysroot dependency failures are the initrd stage
+      # (initramfs_sysroot_mount_failed), not running-system fstab.
+      - 'Dependency failed for /(?!sysroot\b)[a-zA-Z]'
       - 'Dependency failed for File System Check'
     fixes:
       - "Comment out or fix the problematic entry"
@@ -64,6 +77,10 @@ patterns:
       - 'You are in emergency mode'
       - 'Welcome to emergency mode'
       - 'Entering emergency mode'
+      # sulogin maintenance prompt (RHEL/SLES/openSUSE wording; not
+      # SLES-only - RHEL emergency prints it too).
+      - 'Give root password for maintenance'
+      - 'press Control-D to continue'
     fixes:
       - "Review serial console for preceding error messages"
 

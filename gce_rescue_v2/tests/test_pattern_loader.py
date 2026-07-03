@@ -268,7 +268,7 @@ class TestShippedPatterns:
 
     def test_initramfs_patterns_present(self):
         initramfs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'initramfs']
-        assert len(initramfs_patterns) == 2
+        assert len(initramfs_patterns) == 8
 
     def test_initramfs_patterns_have_inline_fixes(self):
         """All initramfs patterns should have inline fixes from merged YAML."""
@@ -352,7 +352,7 @@ class TestShippedPatterns:
 
     def test_filesystem_patterns_present(self):
         fs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'filesystem']
-        assert len(fs_patterns) == 2
+        assert len(fs_patterns) == 6
 
     def test_filesystem_pattern_names_prefixed(self):
         """All filesystem pattern names should carry the category prefix."""
@@ -416,6 +416,89 @@ class TestShippedPatterns:
                 f"Pattern '{pattern.name}' has no inline fixes"
             )
 
+    def test_lvm_patterns_present(self):
+        lvm_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'lvm']
+        assert len(lvm_patterns) == 3
+
+    def test_lvm_pattern_names_prefixed(self):
+        """lvm pattern names should carry the category prefix."""
+        lvm_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'lvm']
+        for pattern in lvm_patterns:
+            assert pattern.name.startswith('lvm_'), (
+                f"Pattern '{pattern.name}' missing 'lvm_' prefix"
+            )
+
+    def test_lvm_patterns_have_inline_fixes(self):
+        """All lvm patterns should have inline fixes from merged YAML."""
+        lvm_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'lvm']
+        for pattern in lvm_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_crypt_patterns_present(self):
+        crypt_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'crypt']
+        assert len(crypt_patterns) == 3
+
+    def test_crypt_pattern_names_prefixed(self):
+        """crypt pattern names should carry the category prefix."""
+        crypt_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'crypt']
+        for pattern in crypt_patterns:
+            assert pattern.name.startswith('crypt_'), (
+                f"Pattern '{pattern.name}' missing 'crypt_' prefix"
+            )
+
+    def test_crypt_patterns_have_inline_fixes(self):
+        """All crypt patterns should have inline fixes from merged YAML."""
+        crypt_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'crypt']
+        for pattern in crypt_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_raid_patterns_present(self):
+        raid_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'raid']
+        assert len(raid_patterns) == 2
+
+    def test_raid_pattern_names_prefixed(self):
+        """raid pattern names should carry the category prefix."""
+        raid_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'raid']
+        for pattern in raid_patterns:
+            assert pattern.name.startswith('raid_'), (
+                f"Pattern '{pattern.name}' missing 'raid_' prefix"
+            )
+
+    def test_raid_patterns_have_inline_fixes(self):
+        """All raid patterns should have inline fixes from merged YAML."""
+        raid_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'raid']
+        for pattern in raid_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_machine_id_patterns_present(self):
+        mid_patterns = [p for p in BOOT_ERROR_PATTERNS
+                        if p.category == 'machine_id']
+        assert len(mid_patterns) == 1
+
+    def test_machine_id_pattern_names_prefixed(self):
+        """machine_id pattern names should carry the category prefix."""
+        mid_patterns = [p for p in BOOT_ERROR_PATTERNS
+                        if p.category == 'machine_id']
+        for pattern in mid_patterns:
+            assert pattern.name.startswith('machine_id_'), (
+                f"Pattern '{pattern.name}' missing 'machine_id_' prefix"
+            )
+
+    def test_machine_id_patterns_have_inline_fixes(self):
+        """All machine_id patterns should have inline fixes."""
+        mid_patterns = [p for p in BOOT_ERROR_PATTERNS
+                        if p.category == 'machine_id']
+        for pattern in mid_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
     def test_survives_boot_success_flags(self):
         """ssh/filesystem/disk_full failures are not resolved by a completed
         boot (a full disk stays full after 'Startup finished'), so their YAML
@@ -427,24 +510,27 @@ class TestShippedPatterns:
         assert 'ssh' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'filesystem' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'disk_full' in SURVIVES_BOOT_SUCCESS_CATEGORIES
-        for cat in ('fstab', 'kernel', 'initramfs', 'grub', 'firmware'):
+        for cat in ('fstab', 'kernel', 'initramfs', 'grub', 'firmware',
+                    'lvm', 'crypt', 'raid', 'machine_id'):
             assert cat not in SURVIVES_BOOT_SUCCESS_CATEGORIES
 
     def test_detect_only_flags(self):
-        """cpu_lockup and kernel are detect-only (manual investigation, never
-        a rescue/restore fix); detect_only does NOT imply
-        survives_boot_success, and rescue-workflow categories must not
-        declare it."""
+        """cpu_lockup/kernel/crypt are detect-only (manual investigation or,
+        for crypt, an encrypted disk that rescue mode cannot unlock);
+        detect_only does NOT imply survives_boot_success, and
+        rescue-workflow categories must not declare it."""
         from gce_rescue_v2.core.diagnosis import (
             DETECT_ONLY_CATEGORIES,
             SURVIVES_BOOT_SUCCESS_CATEGORIES,
         )
         assert 'cpu_lockup' in DETECT_ONLY_CATEGORIES
         assert 'kernel' in DETECT_ONLY_CATEGORIES
+        assert 'crypt' in DETECT_ONLY_CATEGORIES
         assert 'cpu_lockup' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'kernel' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        assert 'crypt' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
         for cat in ('fstab', 'initramfs', 'disk_full', 'ssh', 'filesystem',
-                    'grub', 'firmware'):
+                    'grub', 'firmware', 'lvm', 'raid', 'machine_id'):
             assert cat not in DETECT_ONLY_CATEGORIES
 
     def test_detect_only_sets_agree(self):

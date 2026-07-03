@@ -660,3 +660,53 @@ class TestDetectOnlyFixSection:
         assert 'Check kernel:' in report
         assert ('- Reset the VM and select a previous kernel from the GRUB '
                 'menu via the serial console') in report
+
+
+class TestWave2CategoryLabels:
+    """Labels for the Wave 2 categories (lvm, crypt, raid, machine_id)."""
+
+    def test_new_category_labels_defined(self):
+        from gce_rescue_v2.utils.report_formatter import _category_label
+        assert _category_label('lvm') == 'Activate LVM volume group'
+        assert _category_label('crypt') == 'Handle encrypted (LUKS) disk'
+        assert _category_label('raid') == 'Repair RAID array'
+        assert _category_label('machine_id') == 'Regenerate machine-id'
+
+    def test_crypt_rendered_as_detect_only_guidance(self, formatter):
+        """crypt is detect-only: no rescue/restore workflow is offered."""
+        diagnosis = {
+            'vm_name': 'luks-vm',
+            'zone': 'us-central1-a',
+            'status': 'RUNNING',
+            'os_type': 'linux',
+            'os_flavor': 'rhel-9',
+            'architecture': 'x86_64',
+            'license_type': 'payg',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [
+                {
+                    'name': 'crypt_passphrase_prompt',
+                    'category': 'crypt',
+                    'severity': 'critical',
+                    'description': 'Boot is waiting for a LUKS passphrase '
+                                   'on the console',
+                    'detected_pattern': 'Please enter passphrase for disk '
+                                        'luks-2f4c8e11 on /:',
+                    'suggested_fixes': [
+                        'Connect to the interactive serial console and type '
+                        'the passphrase: gcloud compute '
+                        'connect-to-serial-port VM_NAME --zone=ZONE',
+                    ],
+                    'context_lines': [
+                        'Please enter passphrase for disk luks-2f4c8e11 on /:'
+                    ],
+                    'matched_line_index': 0,
+                }
+            ],
+            'recommendations': [],
+        }
+        report = formatter.format_report(diagnosis)
+        assert 'Handle encrypted (LUKS) disk:' in report
+        assert 'Enter rescue mode' not in report
+        assert 'gce-rescue rescue' not in report
+        assert 'connect-to-serial-port luks-vm --zone=us-central1-a' in report

@@ -7,12 +7,34 @@ fix_guidance: "chroot into /mnt/sysroot and rebuild the initramfs: dracut -f (RH
 # (including fstab). Flip to true in the same commit that adds the script.
 auto_repair: false
 
+# Distro dialects covered here:
+#   dracut (RHEL/Rocky/Alma/CentOS/SLES): dracut-initqueue warnings,
+#     dracut: FATAL:, the rdsosreport/dracut:/# emergency shell.
+#   BusyBox initramfs-tools (Debian/Ubuntu): ALERT! ... Dropping to a
+#     shell!, 'Gave up waiting for root ...', the (initramfs) prompt.
+#
+# Overlap contract with fstab.yaml:
+#   fstab_emergency_mode owns the generic 'Entering emergency mode' /
+#   'You are in emergency mode' strings — dracut patterns below anchor
+#   ONLY on dracut-specific strings (rdsosreport.txt, dracut:/#,
+#   dracut-initqueue) so the same emergency line never matches twice.
+#   When both fire on a dracut buffer, Tier-1 dedupe in core/diagnosis.py
+#   demotes the fstab_emergency_mode catch-all in favor of the dracut
+#   root-cause finding. '/sysroot' mount/dependency failures belong HERE
+#   (initrd stage), and fstab.yaml carves them out with (?!sysroot).
+
 patterns:
   - name: initramfs_no_root_fs
     severity: critical
     description: "Kernel cannot mount the root filesystem (missing or corrupt initramfs)"
     regex:
       - 'VFS: Unable to mount root fs on unknown-block'
+      # Non-panic form printed just before the panic (or alone when the
+      # kernel keeps retrying). Does not interact with the
+      # kernel_panic_generic lookahead: that lookahead only guards the
+      # 'Kernel panic - not syncing' line itself, which is a separate
+      # serial line from this one.
+      - 'VFS: Cannot open root device'
     fixes:
       - "Enter the rescued VM and chroot into the original disk: sudo chroot /mnt/sysroot"
       - "Rebuild the initramfs: dracut -f (RHEL-family) or update-initramfs -u -k VERSION (Debian-family)"
@@ -29,9 +51,99 @@ patterns:
     description: "Initramfs image failed to load or unpack"
     regex:
       - 'Initramfs unpacking failed: junk \S+ compressed archive'
+      - 'Initramfs unpacking failed: invalid magic'
       - 'Failed to load initramfs'
+      # Bound to initr(d|amfs) on the same line so a generic 'Failed to
+      # decompress' from an unrelated subsystem can never match.
+      - 'Failed to decompress [^\n]*initr(?:d|amfs)'
     fixes:
       - "If the VM boots normally despite this message, it is likely benign (microcode cpio padding on some kernels) - no action needed"
       - "If boot fails: rebuild the initramfs from rescue mode: sudo chroot /mnt/sysroot, then dracut -f (RHEL-family) or update-initramfs -u -k VERSION (Debian-family)"
       - "Check free space on the boot partition before rebuilding: df -h /mnt/sysroot/boot"
       - "Regenerate the GRUB config after rebuilding: grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family) or update-grub (Debian-family)"
+
+  - name: initramfs_dracut_timeout
+    severity: critical
+    description: "dracut timed out waiting for the root device (RHEL-family initramfs)"
+    regex:
+      # Rocky/RHEL 9 live capture wording: 'dracut-initqueue[550]:
+      # Warning: dracut-initqueue timeout - starting timeout scripts'.
+      - 'dracut-initqueue\[\d+\]:.*timeout'
+      - 'dracut-initqueue\[\d+\]: Warning: Could not boot'
+      # Device-wait warning for by-uuid/by-label/by-path devices.
+      # /dev/mapper/* is carved out (owned by lvm.yaml) and /dev/sdX is
+      # carved out (owned by initramfs_nvme_device_rename below) so one
+      # warning line never produces two findings.
+      - 'dracut-initqueue\[\d+\]: Warning: /dev/(?!mapper/|sd[a-z])\S+ does not exist'
+    fixes:
+      - "The device named in the 'does not exist' warning is the one dracut cannot find - compare it against real devices from rescue mode: sudo blkid"
+      - "If the root UUID changed (disk restored/cloned), fix root= in the BLS entries: sudo chroot /mnt/sysroot, then grubby --update-kernel=ALL --args=root=UUID=NEW_UUID"
+      - "If a storage driver is missing from the initramfs, rebuild it: sudo chroot /mnt/sysroot, then dracut -f"
+
+  - name: initramfs_dracut_fatal
+    severity: critical
+    description: "dracut hit a fatal error inside the initramfs (RHEL-family)"
+    regex:
+      - 'dracut: FATAL:'
+      - 'dracut: Refusing to continue'
+    fixes:
+      - "Read the text after 'dracut: FATAL:' in the serial output - it names the exact failure (missing root, FIPS check, broken module)"
+      - "Rebuild the initramfs from rescue mode: sudo chroot /mnt/sysroot, then dracut -f"
+      - "Verify the root= kernel parameter matches a real device: sudo blkid vs the kernel command line in the serial output"
+
+  - name: initramfs_dracut_emergency
+    severity: critical
+    description: "Boot dropped into the dracut emergency shell (RHEL-family initramfs)"
+    regex:
+      # Anchored ONLY on dracut-specific strings: the generic 'Entering
+      # emergency mode' line on the same screen belongs to
+      # fstab_emergency_mode (see the overlap contract above).
+      - 'Generating "/run/initramfs/rdsosreport\.txt"'
+      - 'dracut:/#'
+      - 'Starting Dracut Emergency Shell'
+    fixes:
+      - "Review the dracut-initqueue warnings above this line in the serial output - they name the device dracut could not find"
+      - "Enter rescue mode and inspect the root filesystem and /mnt/sysroot/etc/fstab"
+      - "Rebuild the initramfs if drivers/config changed: sudo chroot /mnt/sysroot, then dracut -f"
+
+  - name: initramfs_busybox_shell
+    severity: critical
+    description: "Boot dropped into the BusyBox initramfs shell (Debian-family)"
+    regex:
+      - 'ALERT!.*does not exist.*Dropping to a shell'
+      - 'Gave up waiting for root (?:file system|device)'
+      # The bare BusyBox prompt line. [ \t]*$ (not \s*$) so the match can
+      # never swallow the trailing newline into detected_pattern.
+      - '^\(initramfs\)[ \t]*$'
+    fixes:
+      - "The ALERT! line names the root device the initramfs cannot find - compare it against real devices from rescue mode: sudo blkid"
+      - "If the root UUID changed, fix the root= parameter: sudo chroot /mnt/sysroot, then edit /etc/default/grub and run update-grub"
+      - "If a storage driver is missing from the initramfs, rebuild it: sudo chroot /mnt/sysroot, then update-initramfs -u"
+
+  - name: initramfs_sysroot_mount_failed
+    severity: critical
+    description: "initrd could not mount the real root filesystem at /sysroot (RHEL-family)"
+    regex:
+      # The single most common RHEL boot-failure form: systemd inside the
+      # initrd fails sysroot.mount. Distinct wording from the running
+      # system's fstab failures (fstab.yaml excludes /sysroot).
+      - 'Failed to mount /sysroot'
+      - 'Dependency failed for /sysroot'
+      - 'Dependency failed for Initrd Root File System'
+    fixes:
+      - "Check the kernel/mount error just above this line in the serial output (bad UUID, corrupt filesystem, unknown filesystem type)"
+      - "Verify the root filesystem from rescue mode: sudo blkid, then fsck -y /dev/sdX (ext4) or xfs_repair /dev/sdX (XFS) on the unmounted disk"
+      - "If root= points at the wrong UUID, fix the BLS entries: sudo chroot /mnt/sysroot, then grubby --update-kernel=ALL --args=root=UUID=NEW_UUID"
+
+  - name: initramfs_nvme_device_rename
+    severity: critical
+    description: "Root disk referenced by legacy /dev/sdX name that no longer exists (NVMe machine family)"
+    regex:
+      # GCE NVMe machine families (C3, C3D, H3, M3, ...) expose Persistent
+      # Disks as /dev/nvme0n1, so an image carrying root=/dev/sdaN or bare
+      # /dev/sdX fstab entries stops booting after a machine-type change.
+      - 'dracut-initqueue\[\d+\]: Warning: /dev/sd[a-z]\d* does not exist'
+    fixes:
+      - "This VM's machine family (C3/C3D/H3/M3 and newer) exposes disks as NVMe (/dev/nvme0n1) - the /dev/sdX name in the boot config no longer exists"
+      - "Switch root= and /etc/fstab to UUID references from rescue mode: sudo blkid to get the UUID, then sudo chroot /mnt/sysroot and grubby --update-kernel=ALL --args=root=UUID=REAL_UUID (RHEL-family) or edit /etc/default/grub + update-grub (Debian-family)"
+      - "Alternatively, move the VM back to a SCSI machine family (e.g. e2/n2) to boot, then convert the config to UUIDs"

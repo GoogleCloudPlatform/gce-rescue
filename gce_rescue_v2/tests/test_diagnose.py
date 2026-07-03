@@ -2432,3 +2432,761 @@ class TestFirmwareDetection:
         data = _diagnose(serial)
         assert data['diagnosis_status'] == 'healthy'
         assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestDracutInitramfsDetection (Wave 2: RHEL/Rocky/Alma/SLES dialect)
+# ---------------------------------------------------------------------------
+
+class TestDracutInitramfsDetection:
+    """Detection tests for the dracut initramfs dialect (RHEL-family).
+
+    Fixtures reproduce real Rocky 9 serial formatting: kernel timestamps
+    on dracut-initqueue lines, bare lines for the emergency shell.
+    """
+
+    ROCKY_DRACUT_TIMEOUT_SERIAL = (
+        "[  OK  ] Reached target Basic System.\n"
+        "[  135.209316] dracut-initqueue[550]: Warning: dracut-initqueue "
+        "timeout - starting timeout scripts\n"
+        "[  135.719813] dracut-initqueue[550]: Warning: dracut-initqueue "
+        "timeout - starting timeout scripts\n"
+        "[  191.964618] dracut-initqueue[550]: Warning: Could not boot.\n"
+        "[  191.976595] dracut-initqueue[550]: Warning: /dev/disk/by-uuid/"
+        "00000000-0000-0000-0000-000000000bad does not exist\n"
+        "         Starting Dracut Emergency Shell...\n"
+        "Warning: /dev/disk/by-uuid/00000000-0000-0000-0000-000000000bad "
+        "does not exist\n"
+        "\n"
+        "Generating \"/run/initramfs/rdsosreport.txt\"\n"
+        "\n"
+        "Entering emergency mode. Exit the shell to continue.\n"
+        "Type \"journalctl\" to view system logs.\n"
+        "You might want to save \"/run/initramfs/rdsosreport.txt\" to a "
+        "USB stick or /boot\n"
+        "after mounting them and attach it to a bug report.\n"
+        "\n"
+        "dracut:/# \n"
+    )
+
+    def test_rocky_dracut_timeout_and_emergency_detected(self):
+        """Full Rocky 9 bad-root-UUID buffer reports timeout + emergency."""
+        data = _diagnose(self.ROCKY_DRACUT_TIMEOUT_SERIAL)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_dracut_timeout' in names
+        assert 'initramfs_dracut_emergency' in names
+
+    def test_dracut_emergency_dedupes_fstab_emergency_mode(self):
+        """Overlap guard: the 'Entering emergency mode' line on a dracut
+        buffer fires fstab_emergency_mode (catch-all), but Tier-1 dedupe
+        must demote it in favor of the dracut root-cause findings --
+        never two findings for the same emergency state."""
+        data = _diagnose(self.ROCKY_DRACUT_TIMEOUT_SERIAL)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_emergency_mode' not in names
+
+    def test_dracut_emergency_alone_still_dedupes_fstab_emergency(self):
+        """Truncated buffer with only the emergency-shell tail: the dracut
+        emergency finding is the root cause; fstab_emergency_mode stays
+        deduped (no double-fire on 'Entering emergency mode')."""
+        serial = (
+            "Generating \"/run/initramfs/rdsosreport.txt\"\n"
+            "\n"
+            "Entering emergency mode. Exit the shell to continue.\n"
+            "Type \"journalctl\" to view system logs.\n"
+            "dracut:/# \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_dracut_emergency' in names
+        assert 'fstab_emergency_mode' not in names
+
+    def test_dracut_lines_do_not_fire_kernel_category(self):
+        """No panic string in the dracut buffer -- kernel must stay silent."""
+        data = _diagnose(self.ROCKY_DRACUT_TIMEOUT_SERIAL)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'kernel' not in categories
+
+    def test_dracut_fatal_detected(self):
+        serial = (
+            "[    2.113305] dracut: FATAL: FIPS integrity test failed\n"
+            "[    2.113400] dracut: Refusing to continue\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_dracut_fatal' in names
+
+    def test_sysroot_mount_failure_detected_as_initramfs_not_fstab(self):
+        """RHEL '/sysroot' failure is the initrd stage: it must report
+        initramfs_sysroot_mount_failed and must NOT fire the fstab
+        mount/dependency patterns (the (?!sysroot) carve-outs)."""
+        serial = (
+            "[    4.523310] XFS (sda4): Corruption warning: Metadata has "
+            "LSN ahead of current LSN\n"
+            "[FAILED] Failed to mount /sysroot.\n"
+            "See 'systemctl status sysroot.mount' for details.\n"
+            "[DEPEND] Dependency failed for Initrd Root File System.\n"
+            "[DEPEND] Dependency failed for Reload Configuration from the "
+            "Real Root.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_sysroot_mount_failed' in names
+        assert 'fstab_mount_failed' not in names
+        assert 'fstab_dependency_failed' not in names
+
+    def test_nvme_rename_sd_device_reports_guidance(self):
+        """dracut waiting for a legacy /dev/sdX device on an NVMe machine
+        family reports the rename guidance pattern (UUID advice)."""
+        serial = (
+            "[  138.210044] dracut-initqueue[544]: Warning: dracut-initqueue "
+            "timeout - starting timeout scripts\n"
+            "[  138.220000] dracut-initqueue[544]: Warning: /dev/sda1 does "
+            "not exist\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_nvme_device_rename' in names
+        finding = next(e for e in data['boot_errors']
+                       if e['name'] == 'initramfs_nvme_device_rename')
+        fixes = ' '.join(finding['suggested_fixes']).lower()
+        assert 'nvme' in fixes
+        assert 'uuid' in fixes
+
+    def test_healthy_rocky_boot_no_initramfs_findings(self):
+        """Healthy Rocky 9 boot (normal dracut hooks) must report healthy."""
+        serial = (
+            "[    0.000000] Linux version 5.14.0-427.13.1.el9_4.x86_64 "
+            "(mockbuild@x86-64-01.stream)\n"
+            "[    1.612345] dracut-cmdline[214]: dracut-057-53.git20240104."
+            "el9_4 dracut\n"
+            "[    2.412345] XFS (sda4): Mounting V5 Filesystem\n"
+            "[    2.512345] XFS (sda4): Ending clean mount\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+            "rocky9 login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestBusyBoxInitramfsDetection (Wave 2: Debian/Ubuntu dialect)
+# ---------------------------------------------------------------------------
+
+class TestBusyBoxInitramfsDetection:
+    """Detection tests for the BusyBox initramfs dialect (Debian-family).
+
+    BusyBox output is bare lines with no timestamps or unit prefixes.
+    """
+
+    def test_busybox_alert_and_prompt_detected(self):
+        serial = (
+            "Begin: Waiting for root file system ... Begin: Running "
+            "/scripts/local-block ... done.\n"
+            "done.\n"
+            "Gave up waiting for root file system device.  Common problems:\n"
+            " - Boot args (cat /proc/cmdline)\n"
+            "   - Check rootdelay= (did the system wait long enough?)\n"
+            " - Missing modules (cat /proc/modules; ls /dev)\n"
+            "ALERT!  /dev/disk/by-uuid/deadbeef-cafe-4bad-8bad-2bad2bad2bad "
+            "does not exist.  Dropping to a shell!\n"
+            "\n"
+            "BusyBox v1.35.0 (Debian 1:1.35.0-4+b3) built-in shell (ash)\n"
+            "Enter 'help' for a list of built-in commands.\n"
+            "\n"
+            "(initramfs) \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_busybox_shell' in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'kernel' not in categories
+
+    def test_bare_initramfs_prompt_detected(self):
+        """A truncated buffer ending at the bare '(initramfs)' prompt line
+        must still be detected (line-start anchored, parens literal)."""
+        serial = (
+            "BusyBox v1.30.1 (Ubuntu 1:1.30.1-7ubuntu3) built-in shell "
+            "(ash)\n"
+            "Enter 'help' for a list of built-in commands.\n"
+            "\n"
+            "(initramfs) \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_busybox_shell' in names
+
+    def test_busybox_prompt_match_has_no_trailing_newline(self):
+        """The prompt regex uses [ \\t]*$ so the newline never leaks into
+        detected_pattern / JSON output."""
+        serial = (
+            "BusyBox v1.35.0 (Debian 1:1.35.0-4+b3) built-in shell (ash)\n"
+            "Enter 'help' for a list of built-in commands.\n"
+            "(initramfs) \n"
+        )
+        data = _diagnose(serial)
+        patterns = {e['name']: e['detected_pattern']
+                    for e in data['boot_errors']}
+        assert 'initramfs_busybox_shell' in patterns
+        assert '\n' not in patterns['initramfs_busybox_shell']
+
+    def test_gave_up_waiting_old_wording_detected(self):
+        """Older initramfs-tools prints 'Gave up waiting for root device.'"""
+        serial = (
+            "Begin: Running /scripts/local-premount ... done.\n"
+            "Gave up waiting for root device.  Common problems:\n"
+            " - Boot args (cat /proc/cmdline)\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_busybox_shell' in names
+
+    def test_healthy_debian_initramfs_lines_not_flagged(self):
+        """Normal initramfs-tools Begin/done chatter plus a completed boot
+        must not fire any initramfs pattern."""
+        serial = (
+            "Begin: Loading essential drivers ... done.\n"
+            "Begin: Running /scripts/init-premount ... done.\n"
+            "Begin: Mounting root file system ... done.\n"
+            "Begin: Running /scripts/init-bottom ... done.\n"
+            "[    2.412345] EXT4-fs (sda1): mounted filesystem with ordered "
+            "data mode. Quota mode: none.\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestInitramfsUnpackAndRootDevice (Wave 2: unpack variants + VFS form)
+# ---------------------------------------------------------------------------
+
+class TestInitramfsUnpackAndRootDevice:
+    """Unpack-failure variants and the non-panic root-device form."""
+
+    def test_invalid_magic_detected(self):
+        serial = (
+            "[    0.000000] Linux version 5.14.0-427.13.1.el9_4.x86_64\n"
+            "[    0.905566] Initramfs unpacking failed: invalid magic at "
+            "start of compressed archive\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_load_failure' in names
+
+    def test_failed_to_decompress_bound_to_initramfs(self):
+        serial = (
+            "[    0.000000] Linux version 5.14.0-427.13.1.el9_4.x86_64\n"
+            "[    0.905566] Failed to decompress external initrd "
+            "(/boot/initramfs-5.14.0.img)\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_load_failure' in names
+
+    def test_unrelated_decompress_failure_not_flagged(self):
+        """A 'Failed to decompress' line without initrd/initramfs context
+        (e.g. a firmware blob) must not fire initramfs_load_failure."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    3.101010] amdgpu: Failed to decompress firmware blob\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'initramfs' not in categories
+
+    def test_vfs_cannot_open_root_device_nonpanic_detected(self):
+        """The non-panic 'VFS: Cannot open root device' form (kernel keeps
+        retrying or panics much later) must report initramfs, and the
+        kernel catch-all must stay silent (no panic line present)."""
+        serial = (
+            "[    1.612345] VFS: Cannot open root device "
+            "\"PARTUUID=abcd1234-01\" or unknown-block(0,0): error -6\n"
+            "[    1.702211] Please append a correct \"root=\" boot option; "
+            "here are the available partitions:\n"
+            "[    1.750000] 0800     10485760 sda driver: sd\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_no_root_fs' in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'kernel' not in categories
+
+    def test_vfs_panic_form_still_single_initramfs_finding(self):
+        """When both the Cannot-open line and the Unable-to-mount panic are
+        present, initramfs_no_root_fs reports once and kernel_panic_generic
+        stays excluded (lookahead unchanged by the new regex)."""
+        serial = (
+            "[    1.612345] VFS: Cannot open root device \"sda1\" or "
+            "unknown-block(0,0): error -6\n"
+            "[    1.803992] Kernel panic - not syncing: VFS: Unable to "
+            "mount root fs on unknown-block(0,0)\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert names.count('initramfs_no_root_fs') == 1
+        assert 'kernel_panic_generic' not in names
+
+
+# ---------------------------------------------------------------------------
+# TestLvmDetection (Wave 2 new category)
+# ---------------------------------------------------------------------------
+
+class TestLvmDetection:
+    """Detection tests for lvm.yaml patterns."""
+
+    def test_vg_not_found_detected(self):
+        serial = (
+            "[    2.113305] dracut-cmdline[214]: dracut-057-53.git20240104"
+            ".el9_4\n"
+            "Volume group \"vg_root\" not found\n"
+            "Cannot process volume group vg_root\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'lvm_vg_not_found' in names
+
+    def test_escaped_mapper_timeout_is_lvm_not_fstab(self):
+        """dev-mapper device timeout (systemd \\x2d escaping) must report
+        lvm_device_timeout and must NOT fire fstab_device_timeout (the
+        (?!mapper) carve-outs)."""
+        serial = (
+            "systemd[1]: dev-mapper-vg\\x2droot.device: Job dev-mapper-"
+            "vg\\x2droot.device/start timed out.\n"
+            "systemd[1]: Timed out waiting for device dev-mapper-"
+            "vg\\x2droot.device - /dev/mapper/vg-root.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'lvm_device_timeout' in names
+        assert 'fstab_device_timeout' not in names
+
+    def test_plain_mapper_path_timeout_is_lvm_not_fstab(self):
+        serial = (
+            "systemd[1]: Timed out waiting for device /dev/mapper/"
+            "vgdata-lvdata.\n"
+            "[DEPEND] Dependency failed for /srv/data.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'lvm_device_timeout' in names
+        assert 'fstab_device_timeout' not in names
+
+    def test_dracut_mapper_wait_is_lvm_not_initramfs(self):
+        """dracut waiting on /dev/mapper/* is an LVM activation failure:
+        lvm.yaml owns it; the initramfs dracut regex excludes mapper."""
+        serial = (
+            "[  138.220000] dracut-initqueue[544]: Warning: "
+            "/dev/mapper/rhel-root does not exist\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'lvm_dracut_device_missing' in names
+        assert 'initramfs_dracut_timeout' not in names
+        assert 'initramfs_nvme_device_rename' not in names
+
+    def test_healthy_lvm_boot_not_flagged(self):
+        serial = (
+            "[    2.104501] lvm[321]: 1 logical volume(s) in volume group "
+            "\"vg00\" now active\n"
+            "Found volume group \"vg00\" using metadata type lvm2\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestCryptDetection (Wave 2 new category, detect-only)
+# ---------------------------------------------------------------------------
+
+class TestCryptDetection:
+    """Detection tests for crypt.yaml patterns (LUKS hangs)."""
+
+    def test_passphrase_prompt_detected(self):
+        """The prompt itself is the failure evidence (interactive hang)."""
+        serial = (
+            "[    4.104501] systemd[1]: Starting Cryptography Setup for "
+            "luks-2f4c...\n"
+            "Please enter passphrase for disk luks-2f4c8e11 on /: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'crypt_passphrase_prompt' in names
+
+    def test_please_unlock_disk_wording_detected(self):
+        serial = (
+            "systemd[1]: Starting Cryptography Setup for cr_root...\n"
+            "Please unlock disk cr_root: \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'crypt_passphrase_prompt' in names
+
+    def test_crypt_start_job_detected(self):
+        serial = (
+            "[ ***  ] A start job is running for Cryptography Setup for "
+            "luks-2f4c8e11 (1min 30s / no limit)\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'crypt_unlock_wait' in names
+
+    def test_benign_start_job_not_flagged(self):
+        """FP guard: 'A start job is running for' is a benign transient on
+        every boot -- it must ONLY match when bound to crypt/LUKS wording,
+        even with no boot-success marker in the buffer."""
+        serial = (
+            "[  *** ] A start job is running for Wait for Network to be "
+            "Configured (9s / 2min 30s)\n"
+            "[ ***  ] A start job is running for dev-sdb1.device "
+            "(5s / 1min 30s)\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'crypt' not in categories
+
+    def test_cryptsetup_failure_bound_wording_detected(self):
+        serial = (
+            "[FAILED] Failed to start Cryptography Setup for luks-2f4c.\n"
+            "See 'systemctl status systemd-cryptsetup@luks.service'.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'crypt_setup_failed' in names
+
+    def test_healthy_cryptsetup_start_not_flagged(self):
+        """Bare systemd-cryptsetup unit chatter on a healthy encrypted-disk
+        boot must not fire (patterns are bound to failure wording)."""
+        serial = (
+            "systemd[1]: Started systemd-cryptsetup@luks-2f4c.service - "
+            "Cryptography Setup for luks-2f4c.\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestRaidDetection (Wave 2 new category)
+# ---------------------------------------------------------------------------
+
+class TestRaidDetection:
+    """Detection tests for raid.yaml patterns (mdadm)."""
+
+    def test_dirty_degraded_array_detected(self):
+        serial = (
+            "[    3.104501] md/raid:md0: not enough operational devices "
+            "(2/4 failed)\n"
+            "[    3.104999] md: pers->run() failed ...\n"
+            "[    3.105501] md0: Cannot start dirty degraded array.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'raid_dirty_degraded' in names
+
+    def test_raid1_mirrors_wording_detected(self):
+        serial = (
+            "[    3.104501] md/raid1:md127: not enough operational mirrors.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'raid_dirty_degraded' in names
+
+    def test_mdadm_unable_to_start_detected(self):
+        serial = (
+            "mdadm: Unable to start array /dev/md0: Input/output error\n"
+            "[DEPEND] Dependency failed for /srv/raid.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'raid_start_failed' in names
+
+    def test_healthy_raid_boot_not_flagged(self):
+        serial = (
+            "[    3.104501] md/raid1:md0: active with 2 out of 2 mirrors\n"
+            "[    3.204501] md0: detected capacity change from 0 to "
+            "1073741824\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestMachineIdDetection (Wave 2 new category)
+# ---------------------------------------------------------------------------
+
+class TestMachineIdDetection:
+    """Detection tests for machine_id.yaml (badly cloned images)."""
+
+    def test_machine_id_unreadable_detected(self):
+        serial = (
+            "systemd[1]: Failed to read /etc/machine-id: No such file or "
+            "directory\n"
+            "dbus-daemon[512]: Failed to open \"/var/lib/dbus/machine-id\": "
+            "No such file or directory\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'machine_id_missing' in names
+
+    def test_could_not_get_machine_id_detected(self):
+        serial = (
+            "Linux version 6.1.0-18-cloud-amd64 (debian-kernel@lists)\n"
+            "dbus[401]: Could not get machine ID: unable to load "
+            "/var/lib/dbus/machine-id\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'machine_id_missing' in names
+
+    def test_machine_id_cleared_by_completed_boot(self):
+        """Boot continues with a transient ID, so a completed later boot
+        clears the finding (no survives_boot_success)."""
+        serial = (
+            "systemd[1]: Failed to read /etc/machine-id: No such file or "
+            "directory\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+
+
+# ---------------------------------------------------------------------------
+# TestFilesystemDistroBroadening (Wave 2: Btrfs, XFS log, ext4 features)
+# ---------------------------------------------------------------------------
+
+class TestFilesystemDistroBroadening:
+    """Detection tests for the Wave 2 filesystem.yaml additions."""
+
+    def test_btrfs_open_ctree_failed_detected(self):
+        """openSUSE Btrfs root corruption (open_ctree) reports filesystem."""
+        serial = (
+            "[    4.121004] BTRFS error (device sda2): bad tree block "
+            "start, want 268435456 have 0\n"
+            "[    4.122500] BTRFS error (device sda2): failed to read "
+            "chunk root\n"
+            "[    4.124904] BTRFS error (device sda2): open_ctree failed\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_btrfs_corruption' in names
+
+    def test_btrfs_chunk_tree_and_transid_detected(self):
+        serial = (
+            "[    4.121004] BTRFS: failed to read chunk tree on sda2\n"
+            "[    4.122500] parent transid verify failed on 30408704 "
+            "wanted 4096 found 4098\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_btrfs_corruption' in names
+
+    def test_healthy_btrfs_info_lines_not_flagged(self):
+        """BTRFS info chatter on healthy SUSE boots must not fire the
+        corruption pattern."""
+        serial = (
+            "[    2.121004] BTRFS info (device sda2): using crc32c "
+            "(crc32c-intel) checksum algorithm\n"
+            "[    2.122500] BTRFS info (device sda2): enabling ssd "
+            "optimizations\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_xfs_log_recovery_failure_detected(self):
+        serial = (
+            "[    3.812345] XFS (sda4): Starting recovery (logdev: "
+            "internal)\n"
+            "[    3.912345] XFS (sda4): log mount/recovery failed: "
+            "error -117\n"
+            "[    3.913345] XFS (sda4): log mount failed\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_xfs_log_failure' in names
+
+    def test_xfs_corruption_detected_unmount_wording(self):
+        """Modern combined-line XFS wording joins filesystem_corruption."""
+        serial = (
+            "[    3.912345] XFS (sda4): Corruption detected. Unmount and "
+            "run xfs_repair\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_corruption' in names
+
+    def test_ext4_unsupported_features_detected(self):
+        serial = (
+            "[    4.412345] EXT4-fs (sdb1): couldn't mount because of "
+            "unsupported optional features (4000)\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_ext4_feature_mismatch' in names
+
+    def test_xfs_duplicate_uuid_detected_with_rescue_guidance(self):
+        """The self-inflicted rescue-mode failure: original XFS disk
+        attached as secondary shares the rescue root's UUID. Fixes must
+        point at -o nouuid / xfs_admin -U generate."""
+        serial = (
+            "[  212.412345] XFS (sdb2): Filesystem has duplicate UUID "
+            "290cb251-77f1-46f5-9fc1-4bb2c767b0de - can't mount\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_xfs_duplicate_uuid' in names
+        finding = next(e for e in data['boot_errors']
+                       if e['name'] == 'filesystem_xfs_duplicate_uuid')
+        fixes = ' '.join(finding['suggested_fixes'])
+        assert 'nouuid' in fixes
+        assert 'xfs_admin -U generate' in fixes
+
+    def test_xfs_duplicate_uuid_survives_completed_boot(self):
+        """filesystem declares survives_boot_success -- the rescue VM boots
+        fine while the secondary mount keeps failing, so the finding must
+        not be cleared by the boot-success marker."""
+        serial = (
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+            "[  212.412345] XFS (sdb2): Filesystem has duplicate UUID "
+            "290cb251-77f1-46f5-9fc1-4bb2c767b0de - can't mount\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_xfs_duplicate_uuid' in names
+
+
+# ---------------------------------------------------------------------------
+# TestFstabDistroBroadening (Wave 2: \x2d units + maintenance prompt)
+# ---------------------------------------------------------------------------
+
+class TestFstabDistroBroadening:
+    """Wave 2 fstab.yaml additions: escaped device units, sulogin prompt."""
+
+    def test_escaped_uuid_timeout_matches_full_unit_name(self):
+        """RHEL/SLES escaped unit form: the explicit \\x2d regex must win
+        over the loose dev-\\w+ fallback so the FULL unit name (with the
+        UUID) lands in detected_pattern for identifier extraction."""
+        serial = (
+            "systemd[1]: Timed out waiting for device dev-disk-by\\x2duuid-"
+            "6c78e5d3\\x2d3672\\x2d4c05\\x2d8f65\\x2dfe4b9c1233a7.device.\n"
+            "[DEPEND] Dependency failed for /data.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_device_timeout' in names
+        finding = next(e for e in data['boot_errors']
+                       if e['name'] == 'fstab_device_timeout')
+        assert 'by\\x2duuid' in finding['detected_pattern']
+        assert '.device' in finding['detected_pattern']
+
+    def test_escaped_uuid_identifier_extracted(self):
+        """End-to-end: the formatter must decode the \\x2d escapes and
+        surface the real UUID as the finding identifier."""
+        from gce_rescue_v2.utils.report_formatter import _extract_identifier
+        serial = (
+            "systemd[1]: Timed out waiting for device dev-disk-by\\x2duuid-"
+            "6c78e5d3\\x2d3672\\x2d4c05\\x2d8f65\\x2dfe4b9c1233a7.device.\n"
+        )
+        data = _diagnose(serial)
+        finding = next(e for e in data['boot_errors']
+                       if e['name'] == 'fstab_device_timeout')
+        identifier = _extract_identifier(finding['detected_pattern'])
+        assert identifier == 'UUID=6c78e5d3-3672-4c05-8f65-fe4b9c1233a7'
+
+    def test_give_root_password_maintenance_prompt_detected(self):
+        """RHEL/SLES sulogin wording joins fstab_emergency_mode, and must
+        be detectable when the buffer holds nothing but the prompt."""
+        serial = (
+            "Give root password for maintenance\n"
+            "(or press Control-D to continue): \n"
+            "padding line so the buffer exceeds the minimum length .....\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_emergency_mode' in names
+
+    def test_live_rocky9_dracut_capture_detected_without_crypt_fp(self):
+        """LIVE (w2-rocky, Rocky 9.6, broken root=UUID): exact serial
+        wording differs from the canonical form ('dracut-initqueue:
+        timeout, still waiting for following initqueue hooks:'), and the
+        dumped devexists hook SCRIPT TEXT contains
+        'systemd-cryptsetup@*.service' - which must NOT fire the crypt
+        category (its patterns are bound to failure/prompt wording)."""
+        serial = (
+            "[  198.255076] dracut-initqueue[378]: Warning: "
+            "dracut-initqueue: timeout, still waiting for following "
+            "initqueue hooks:\n"
+            "[  198.269189] dracut-initqueue[378]: Warning: /lib/dracut/"
+            "hooks/initqueue/finished/devexists-\x2fdev\x2fdisk\x2fby-"
+            "uuid\x2f00000000-0000-0000-0000-000000000bad.sh: \"if ! "
+            "grep -q After=remote-fs-pre.target /run/systemd/generator/"
+            "systemd-cryptsetup@*.service 2>/dev/null; then\n"
+            "[  198.296147] dracut-initqueue[378]:     [ -e \"/dev/disk/"
+            "by-uuid/00000000-0000-0000-0000-000000000bad\" ]\n"
+            "[  198.839486] dracut-initqueue[378]: fi\"\n"
+            "[  198.839530] dracut-initqueue[378]: Warning: "
+            "dracut-initqueue: starting timeout scripts\n"
+            "[  198.839573] dracut-initqueue[378]: Warning: Could not "
+            "boot.\n"
+            "Warning: /dev/disk/by-uuid/00000000-0000-0000-0000-"
+            "000000000bad does not exist\n"
+            "\n"
+            "Generating \"/run/initramfs/rdsosreport.txt\"\n"
+            "\n"
+            "Entering emergency mode. Exit the shell to continue.\n"
+            "Type \"journalctl\" to view system logs.\n"
+            "dracut:/# \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_dracut_timeout' in names
+        assert 'initramfs_dracut_emergency' in names
+        assert 'fstab_emergency_mode' not in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'crypt' not in categories
+        assert 'kernel' not in categories
+
+    def test_live_opensuse_fstab_timeout_console_truncated_detected(self):
+        """LIVE (w2-suse, openSUSE Leap 16, bogus fstab UUID): the console
+        renders the device path ellipsized ('/dev/...000000bad'), and the
+        engine must still report the device timeout + UUID root cause."""
+        serial = (
+            "[ TIME ] Timed out waiting for device "
+            "/dev/…000000-0000-0000-0000-000000000bad.\n"
+            "[DEPEND] Dependency failed for File System "
+            "…000000-0000-0000-0000-000000000bad.\n"
+            "[DEPEND] Dependency failed for /data2.\n"
+            "[DEPEND] Dependency failed for Local File Systems.\n"
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_device_timeout' in names
+        assert 'fstab_emergency_mode' not in names

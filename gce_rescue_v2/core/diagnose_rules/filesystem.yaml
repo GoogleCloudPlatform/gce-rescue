@@ -53,6 +53,10 @@ patterns:
       # both variants ("Unmount and run xfs_repair").
       - 'XFS \([\w-]+\): Metadata CRC error detected'
       - 'XFS \([\w-]+\): Unmount and run xfs_repair'
+      # Combined-line form seen on modern kernels: "XFS (sda1): Corruption
+      # detected. Unmount and run xfs_repair" (no 'Metadata' prefix, and
+      # 'Unmount' is not at the message start).
+      - 'XFS \([\w-]+\): Corruption (?:detected|warning)\. Unmount'
       - 'EXT4-fs error \(device'
       # Severe corruption (superblock + partition table destroyed) makes the
       # device unopenable, so fsck/mount emit this instead of "Bad magic
@@ -61,3 +65,55 @@ patterns:
     fixes:
       - "From rescue mode, check the unmounted disk: fsck -y /dev/sdX (ext) or xfs_repair /dev/sdX (XFS)"
       - "If corruption persists, check disk health in GCP Console and restore from a snapshot"
+
+  - name: filesystem_btrfs_corruption
+    severity: critical
+    description: "Btrfs filesystem corruption detected (SLES/openSUSE root)"
+    regex:
+      # Bound to the kernel's '(device ...)' form so prose mentioning
+      # 'BTRFS error' can never match. 'BTRFS info'/'BTRFS warning' lines
+      # on healthy boots do not match any of these.
+      - 'BTRFS error \(device'
+      - 'BTRFS critical \(device'
+      - 'open_ctree failed'
+      - 'BTRFS: failed to read chunk tree'
+      - 'parent transid verify failed'
+    fixes:
+      - "From rescue mode, check the unmounted disk read-only first: sudo btrfs check /dev/sdX (do NOT use --repair without a snapshot)"
+      - "Try recovery mounts before repairing: sudo mount -o ro,rescue=usebackuproot /dev/sdX /mnt/recovery"
+      - "On SUSE root disks, a snapper snapshot rollback from the GRUB snapshot menu is often the safest fix"
+      - "If the chunk/root trees are unreadable, restore the disk from a snapshot"
+
+  - name: filesystem_xfs_log_failure
+    severity: critical
+    description: "XFS journal (log) mount or recovery failed"
+    regex:
+      - 'XFS \([\w-]+\): log mount/recovery failed'
+      - 'XFS \([\w-]+\): log mount failed'
+    fixes:
+      - "From rescue mode, replay/repair the log on the unmounted disk: sudo xfs_repair /dev/sdX"
+      - "If xfs_repair refuses because the log is dirty, retry with -L (zeroes the log; last transactions are lost): sudo xfs_repair -L /dev/sdX"
+      - "If corruption persists after repair, restore the disk from a snapshot"
+
+  - name: filesystem_ext4_feature_mismatch
+    severity: critical
+    description: "ext4 filesystem uses features unsupported by this kernel"
+    regex:
+      # Printed when a disk formatted by newer e2fsprogs (e.g.
+      # metadata_csum_seed, orphan_file) is mounted by an older kernel -
+      # typical after moving a disk to an older-distro rescue/host image.
+      - "couldn't mount (?:RDWR |read-only )?because of unsupported optional features"
+    fixes:
+      - "The disk was formatted with newer ext4 features than this kernel supports - mount it from a VM/rescue image at least as new as the OS that created it"
+      - "Check which features are set: sudo dumpe2fs -h /dev/sdX | grep features"
+      - "Some features can be disabled offline if you must mount on the older kernel, e.g.: sudo tune2fs -O ^orphan_file /dev/sdX (verify with e2fsck afterwards)"
+
+  - name: filesystem_xfs_duplicate_uuid
+    severity: error
+    description: "XFS refused to mount a filesystem whose UUID is already mounted (duplicate UUID)"
+    regex:
+      - "Filesystem has duplicate UUID [^\\n]{0,80}- can't mount"
+    fixes:
+      - "This is expected in rescue mode when the original XFS boot disk is attached as the secondary disk: the rescue image's root has the same UUID (same base image), so the kernel refuses the second mount"
+      - "Mount the original disk without UUID checking: sudo mount -o nouuid /dev/sdb1 /mnt/sysroot"
+      - "Or give the original filesystem a new UUID permanently: sudo xfs_admin -U generate /dev/sdb1 (then update fstab/grub references to the new UUID)"

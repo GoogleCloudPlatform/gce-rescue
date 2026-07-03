@@ -442,5 +442,9 @@ def _category_label(category: str) -> str:
         'disk_full': 'Free disk space',
         'ssh': 'Fix SSH configuration',
         'cpu_lockup': 'Investigate CPU lockup',
+        'lvm': 'Activate LVM volume group',
+        'crypt': 'Handle encrypted (LUKS) disk',
+        'raid': 'Repair RAID array',
+        'machine_id': 'Regenerate machine-id',
     }
     return labels.get(category, f'Fix {category}')

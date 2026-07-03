@@ -369,6 +369,91 @@ class TestShippedFixInfo:
                 "core/diagnose_rules/firmware.yaml"
             )
 
+    def test_lvm_fix_guidance_loaded(self):
+        assert 'lvm' in CATEGORY_FIX_GUIDANCE
+
+    def test_lvm_is_not_auto_repairable(self):
+        """lvm stays auto_repair: false until lvm_fix.sh lands."""
+        assert 'lvm' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_lvm_patterns_have_fixes(self):
+        """Every lvm pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        lvm_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'lvm']
+        assert len(lvm_patterns) > 0
+        for pattern in lvm_patterns:
+            fixes = get_fixes_for_pattern('lvm', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/lvm.yaml"
+            )
+
+    def test_crypt_fix_guidance_loaded(self):
+        """crypt is detect-only, so its fix_guidance is what the formatter
+        renders - it must be present in the catalog."""
+        assert 'crypt' in CATEGORY_FIX_GUIDANCE
+
+    def test_crypt_is_not_auto_repairable(self):
+        """crypt is detect-only forever: a LUKS disk cannot be unlocked
+        from the rescue disk without the passphrase/keyfile."""
+        assert 'crypt' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_crypt_patterns_have_fixes(self):
+        """Every crypt pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        crypt_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'crypt']
+        assert len(crypt_patterns) > 0
+        for pattern in crypt_patterns:
+            fixes = get_fixes_for_pattern('crypt', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/crypt.yaml"
+            )
+
+    def test_raid_fix_guidance_loaded(self):
+        assert 'raid' in CATEGORY_FIX_GUIDANCE
+
+    def test_raid_is_not_auto_repairable(self):
+        """raid stays auto_repair: false until raid_fix.sh lands."""
+        assert 'raid' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_raid_patterns_have_fixes(self):
+        """Every raid pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        raid_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'raid']
+        assert len(raid_patterns) > 0
+        for pattern in raid_patterns:
+            fixes = get_fixes_for_pattern('raid', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/raid.yaml"
+            )
+
+    def test_machine_id_fix_guidance_loaded(self):
+        assert 'machine_id' in CATEGORY_FIX_GUIDANCE
+
+    def test_machine_id_is_not_auto_repairable(self):
+        """machine_id stays auto_repair: false until machine_id_fix.sh lands."""
+        assert 'machine_id' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_machine_id_patterns_have_fixes(self):
+        """Every machine_id pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        mid_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'machine_id'
+        ]
+        assert len(mid_patterns) > 0
+        for pattern in mid_patterns:
+            fixes = get_fixes_for_pattern('machine_id', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/machine_id.yaml"
+            )
+
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
