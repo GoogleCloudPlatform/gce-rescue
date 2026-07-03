@@ -253,3 +253,27 @@ class TestShippedPatterns:
             assert len(pattern.fixes) > 0, (
                 f"Pattern '{pattern.name}' has no inline fixes"
             )
+
+    def test_disk_full_patterns_present(self):
+        disk_full_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'disk_full'
+        ]
+        assert len(disk_full_patterns) == 2
+
+    def test_disk_full_patterns_have_category_prefix(self):
+        """disk_full pattern names should be prefixed with the category."""
+        disk_full_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'disk_full'
+        ]
+        for pattern in disk_full_patterns:
+            assert pattern.name.startswith('disk_full_')
+
+    def test_disk_full_patterns_have_inline_fixes(self):
+        """All disk_full patterns should have inline fixes from merged YAML."""
+        disk_full_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'disk_full'
+        ]
+        for pattern in disk_full_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
