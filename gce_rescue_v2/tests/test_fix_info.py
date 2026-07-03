@@ -211,6 +211,28 @@ class TestShippedFixInfo:
                 f"Pattern '{pattern.name}' has no fixes in core/diagnose_rules/fstab.yaml"
             )
 
+    def test_disk_full_fix_guidance_loaded(self):
+        assert 'disk_full' in CATEGORY_FIX_GUIDANCE
+
+    def test_disk_full_is_not_auto_repairable(self):
+        """disk_full stays auto_repair: false until disk_full_fix.sh lands."""
+        assert 'disk_full' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_disk_full_patterns_have_fixes(self):
+        """Every disk_full pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        disk_full_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'disk_full'
+        ]
+        assert len(disk_full_patterns) > 0
+        for pattern in disk_full_patterns:
+            fixes = get_fixes_for_pattern('disk_full', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/disk_full.yaml"
+            )
+
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'

@@ -59,6 +59,14 @@ def _make_http_error(status_code, message="error"):
     return HttpError(resp, f'{{"error": {{"message": "{message}"}}}}'.encode())
 
 
+def _diagnose(serial: str):
+    """Run DiagnoseOperation against a serial excerpt, return rollback_data."""
+    compute = _make_compute(serial_output=serial)
+    op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+    result = op.execute('test-vm')
+    return result.rollback_data
+
+
 # ---------------------------------------------------------------------------
 # TestDiagnoseBasic
 # ---------------------------------------------------------------------------
@@ -478,3 +486,156 @@ class TestDiagnoseStabilization:
             result = op.execute('test-vm', stabilize=False)
             mock_stab.assert_not_called()
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseDiskFull
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseDiskFull:
+    """Detection tests for disk_full category patterns."""
+
+    def test_disk_full_no_space_detected(self):
+        """Kernel/journald ENOSPC message should trigger disk_full_no_space."""
+        serial = (
+            "[  241.693421] EXT4-fs (sda1): mounted filesystem with ordered data mode\n"
+            "[  242.104233] systemd-journald[312]: Failed to write entry "
+            "(23 items, 812 bytes), ignoring: No space left on device\n"
+            "[  242.512345] systemd[1]: Failed to start Rotate log files.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'disk_full_no_space' in names
+
+    def test_disk_full_guest_agent_detected(self):
+        """Guest agent temp-directory failure should trigger disk_full_guest_agent."""
+        serial = (
+            "[  120.001234] google_guest_agent[512]: ERROR instance_setup.go:160 "
+            "Failed to generate SSH host keys: [Errno 2] "
+            "No usable temporary directory found in ['/tmp', '/var/tmp', '/usr/tmp']\n"
+            "[  120.442211] OSConfigAgent Error: unexpected end of JSON input\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'disk_full_guest_agent' in names
+
+    def test_both_disk_full_patterns_detected_together(self):
+        """A truly full disk usually shows both symptoms; both should be reported."""
+        serial = (
+            "[  310.104233] systemd-journald[312]: Failed to write entry, "
+            "ignoring: No space left on device\n"
+            "[  312.001234] google_guest_agent[512]: ERROR non_windows_accounts.go:144 "
+            "Error updating SSH keys: [Errno 2] No usable temporary directory found "
+            "in ['/tmp', '/var/tmp', '/usr/tmp']\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'disk_full_no_space' in names
+        assert 'disk_full_guest_agent' in names
+
+    def test_disk_full_severities(self):
+        """disk_full_no_space is critical; disk_full_guest_agent is error."""
+        serial = (
+            "[  310.104233] systemd-journald[312]: Failed to write entry, "
+            "ignoring: No space left on device\n"
+            "[  312.001234] google_guest_agent[512]: [Errno 2] "
+            "No usable temporary directory found in ['/tmp', '/var/tmp']\n"
+        )
+        data = _diagnose(serial)
+        severities = {e['name']: e['severity'] for e in data['boot_errors']}
+        assert severities['disk_full_no_space'] == 'critical'
+        assert severities['disk_full_guest_agent'] == 'error'
+
+    def test_fstab_errors_do_not_trigger_disk_full_patterns(self):
+        """fstab-only failures must not produce disk_full findings."""
+        serial = (
+            "Linux version 5.15.0\n"
+            "Timed out waiting for device "
+            "/dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "Dependency failed for /mnt/data\n"
+            "You are in emergency mode\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'disk_full' not in categories
+
+    def test_healthy_boot_matches_no_disk_full_patterns(self):
+        """A normal boot with free space must not trigger disk_full."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[    2.104233] EXT4-fs (sda1): mounted filesystem with ordered data mode\n"
+            "[    4.512345] systemd[1]: Reached target Local File Systems.\n"
+            "login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_inotify_exhaustion_enospc_not_flagged(self):
+        """inotify watch exhaustion returns ENOSPC with a healthy disk.
+
+        These messages appear at RUNTIME (after boot success), so the
+        boot-success suppression does not protect against them — the
+        regex itself must exclude them.
+        """
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[   12.000000] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "systemd[1]: Failed to add /run/systemd/ask-password to "
+            "directory watch: No space left on device\n"
+            "tail: inotify cannot be used, reverting to polling: "
+            "no space left on device\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_cgroup_limit_enospc_not_flagged(self):
+        """cgroup-limit ENOSPC on container hosts is not a full disk."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[   12.000000] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "kubelet[1543]: mkdir /sys/fs/cgroup/memory/kubepods/pod9f3: "
+            "no space left on device\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_quoted_enospc_string_not_flagged(self):
+        """A line merely quoting the phrase mid-sentence must not match."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[   12.000000] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            'startup-script[900]: INFO: monitor app logs for '
+            '"No space left on device" and page oncall\n'
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_enospc_noise_does_not_mask_fstab_finding(self):
+        """inotify ENOSPC noise must not dedupe away a real fstab failure.
+
+        Regression for red-team D2: before the regex fix, the noise line
+        counted as a disk_full "root cause" and the generic-symptom tier
+        deleted the fstab dependency finding, hiding the actual problem.
+        Uses the engine directly with TERMINATED status (no suppression).
+        """
+        from gce_rescue_v2.core.diagnosis import analyze_serial_output
+
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "Dependency failed for /data.\n"
+            "tail: inotify cannot be used, reverting to polling: "
+            "no space left on device\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        categories = {e.category for e in result.boot_errors}
+        assert 'disk_full' not in categories
+        assert 'fstab' in categories
