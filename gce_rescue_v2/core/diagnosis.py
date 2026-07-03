@@ -362,12 +362,20 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                 for e in detected_errors
             )
             if not has_emergency:
+                # Filesystem corruption is never self-resolving noise the way
+                # fstab nofail/timeout errors are: a corrupt secondary disk
+                # marked nofail lets the VM boot fine while the disk stays
+                # broken. Keep filesystem findings even after a successful
+                # boot so "my data disk won't mount" doesn't report healthy.
+                kept = [
+                    e for e in detected_errors if e.category == 'filesystem'
+                ]
                 logger.debug(
                     f"VM booted successfully (success at pos {last_success_pos}, "
                     f"last error at pos {last_error_pos}) — clearing "
-                    f"{len(detected_errors)} non-blocking error(s)"
+                    f"{len(detected_errors) - len(kept)} non-blocking error(s)"
                 )
-                detected_errors = []
+                detected_errors = kept
 
     # Determine diagnosis status and recommendations
     if detected_errors:

@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch, MagicMock
 import pytest
 from googleapiclient.errors import HttpError
 
+from gce_rescue_v2.core.diagnosis import analyze_serial_output
 from gce_rescue_v2.operations.diagnose import DiagnoseOperation
 
 
@@ -621,3 +622,117 @@ class TestDiagnoseFilesystemPatterns:
         data = _diagnose(serial)
         assert data['diagnosis_status'] == 'healthy'
         assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseFilesystemRedTeamRegressions
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseFilesystemRedTeamRegressions:
+    """Regression tests for red-team findings against the filesystem category.
+
+    Each test uses the exact failing serial line from the red-team report.
+    """
+
+    # Healthy "try mount, else mkfs" startup-script probe on a blank disk.
+    # The VFS line lands AFTER the boot-success markers (the unit STARTS
+    # before the script output), which defeated ordering-based suppression.
+    _MKFS_PROBE_SERIAL = (
+        "[  OK  ] Reached target multi-user.target - Multi-User System.\n"
+        "[  OK  ] Started google-startup-scripts.service - Google Compute Engine Startup Scripts.\n"
+        "[   15.221133] EXT4-fs (sdb): VFS: Can't find ext4 filesystem\n"
+        "mke2fs 1.47.0 (5-Feb-2023)\n"
+        "Creating filesystem with 2621440 4k blocks and 655360 inodes\n"
+    )
+
+    def test_mkfs_probe_on_running_vm_is_healthy(self):
+        """C1: mount-probe-then-mkfs on a blank disk must not fire
+        filesystem_bad_superblock, even when the VFS line lands after the
+        last boot-success marker (RUNNING)."""
+        result = analyze_serial_output(
+            self._MKFS_PROBE_SERIAL, 'test-vm', 'zone-a', 'RUNNING'
+        )
+        assert result.diagnosis_status == 'healthy'
+        assert result.boot_errors == []
+
+    def test_mkfs_probe_on_terminated_vm_is_healthy(self):
+        """C1: same buffer on a TERMINATED VM (boot-success suppression is
+        skipped entirely) must also stay healthy — the anchored regex, not
+        suppression, has to reject the probe."""
+        result = analyze_serial_output(
+            self._MKFS_PROBE_SERIAL, 'test-vm', 'zone-a', 'TERMINATED'
+        )
+        assert result.diagnosis_status == 'healthy'
+        assert result.boot_errors == []
+
+    def test_vfs_cant_find_ext4_anchored_match_is_single_line(self):
+        """C1: the anchored regex must still fire on a real mount failure and
+        keep detected_pattern single-line (lookahead, no multi-line blob)."""
+        serial = (
+            "         Mounting mnt-data.mount - /mnt/data...\n"
+            "[    4.444497] EXT4-fs (sda): VFS: Can't find ext4 filesystem\n"
+            "[FAILED] Failed to mount mnt-data.mount - /mnt/data.\n"
+            "[DEPEND] Dependency failed for local-fs.target - Local File Systems.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        errors = {e.name: e for e in result.boot_errors}
+        assert 'filesystem_bad_superblock' in errors
+        assert '\n' not in errors['filesystem_bad_superblock'].detected_pattern
+
+    def test_xfs_metadata_corruption_on_device_mapper_detected(self):
+        """C2: XFS corruption on device-mapper devices (dm-0, LVM on
+        RHEL/SAP images) must fire filesystem_corruption; \\w+ missed the
+        hyphen in the device name."""
+        serial = (
+            "[  102.5] XFS (dm-0): Metadata corruption detected at xfs_inode_buf_verify+0x15a/0x180 [xfs]\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'filesystem_corruption' in names
+
+    def test_xfs_metadata_crc_error_detected(self):
+        """C3: modern-kernel XFS 'Metadata CRC error detected' wording must
+        fire filesystem_corruption."""
+        serial = (
+            "[   88.1] XFS (sda1): Metadata CRC error detected at xfs_agi_read_verify+0xd0/0xf0 [xfs], xfs_agi block 0x2\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'filesystem_corruption' in names
+
+    def test_xfs_unmount_and_run_xfs_repair_detected(self):
+        """C3: the canonical companion line emitted for both XFS corruption
+        wordings must fire filesystem_corruption on its own."""
+        serial = (
+            "[   88.1] XFS (sdb1): Mounting V5 Filesystem\n"
+            "[   88.2] XFS (sdb1): Unmount and run xfs_repair\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'filesystem_corruption' in names
+
+    def test_corrupt_nofail_secondary_disk_survives_boot_success(self):
+        """C4: a corrupt nofail secondary disk on a VM that boots fine must
+        still be reported on RUNNING — boot-success suppression must not
+        clear filesystem-category findings."""
+        serial = (
+            "[    5.1] EXT4-fs error (device sdb1): ext4_find_entry:1455: inode #2: comm systemd: reading directory lblock 0\n"
+            "[  OK  ] Reached target multi-user.target - Multi-User System.\n"
+            "[  OK  ] Startup finished in 5.2s.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'RUNNING')
+        assert result.diagnosis_status == 'boot_errors_detected'
+        names = [e.name for e in result.boot_errors]
+        assert 'filesystem_corruption' in names
+
+    def test_boot_success_still_clears_fstab_noise(self):
+        """C4 guard: the exemption is filesystem-only — fstab timeout noise
+        on a successfully booted RUNNING VM must still be cleared."""
+        serial = (
+            "Timed out waiting for device /dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "[  OK  ] Reached target multi-user.target - Multi-User System.\n"
+            "[  OK  ] Startup finished in 6.1s.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'RUNNING')
+        assert result.diagnosis_status == 'healthy'
+        assert result.boot_errors == []

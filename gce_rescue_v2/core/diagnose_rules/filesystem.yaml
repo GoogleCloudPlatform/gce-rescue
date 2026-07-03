@@ -25,8 +25,13 @@ patterns:
       - 'The superblock could not be read or does not describe a valid'
       # Kernel mount error observed live on GCE serial console (Debian 12) when a
       # superblock is wiped: systemd-fsck detail stays in the journal, but the
-      # kernel prints "EXT4-fs (sdX): VFS: Can't find ext4 filesystem"
-      - "VFS: Can't find ext4 filesystem"
+      # kernel prints "EXT4-fs (sdX): VFS: Can't find ext4 filesystem".
+      # Anchored to a real mount failure in the same boot window: healthy VMs
+      # whose startup scripts do "try mount, else mkfs" on a blank disk emit the
+      # same VFS line right before mkfs output and must NOT be flagged. The
+      # lookahead keeps match.group(0) single-line so evidence extraction in
+      # _extract_context_lines still renders a clean context window.
+      - 'VFS: Can''t find ext4 filesystem(?=[\s\S]{0,600}?(?:\[FAILED\] Failed to mount|Dependency failed for))'
     fixes:
       - "From rescue mode, run fsck with a backup superblock on the unmounted disk: fsck -b 32768 -y /dev/sdX"
       - "If fsck cannot recover the filesystem, restore the disk from a snapshot"
@@ -37,7 +42,14 @@ patterns:
     regex:
       - 'Either the superblock or the partition table is likely to be corrupt'
       - 'Corruption of in-memory data detected'
-      - 'XFS \(\w+\): Metadata corruption detected'
+      # [\w-]+ (not \w+): device-mapper names contain hyphens (dm-0, LVM on
+      # RHEL/SAP images) and \w alone silently misses them.
+      - 'XFS \([\w-]+\): Metadata corruption detected'
+      # Modern kernels report checksum-verified corruption with different
+      # wording; also match the canonical companion line the kernel emits for
+      # both variants ("Unmount and run xfs_repair").
+      - 'XFS \([\w-]+\): Metadata CRC error detected'
+      - 'XFS \([\w-]+\): Unmount and run xfs_repair'
       - 'EXT4-fs error \(device'
     fixes:
       - "From rescue mode, check the unmounted disk: fsck -y /dev/sdX (ext) or xfs_repair /dev/sdX (XFS)"
