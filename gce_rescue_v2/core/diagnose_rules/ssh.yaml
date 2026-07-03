@@ -12,10 +12,14 @@ patterns:
     severity: critical
     description: "SSH daemon failed to start due to invalid sshd_config"
     regex:
-      - 'sshd_config: line \d+: Bad configuration option'
-      - 'sshd_config: terminating, \d+ bad configuration options'
+      # OpenSSH prints "sshd_config: line N" or "sshd_config line N"
+      # depending on version, so the colon is optional.
+      - 'sshd_config:? line \d+: Bad configuration option'
+      - 'sshd_config:? terminating, \d+ bad configuration options'
       - 'Failed to start .*OpenBSD Secure Shell server'
       - 'Failed to start .*OpenSSH server daemon'
+      # SLES unit description; older systemd omits the unit name.
+      - 'Failed to start .*OpenSSH Daemon'
       - 'Failed to start sshd?\.service'
     fixes:
       - "Fix or remove the invalid directive in /mnt/sysroot/etc/ssh/sshd_config"
@@ -25,11 +29,13 @@ patterns:
     severity: error
     description: "Google Compute Engine guest agent failed (SSH key provisioning may not work)"
     regex:
+      # "Failed with result" alone is dropped: it also fires on shutdown
+      # transients; the "Failed to start" line covers real boot failures.
       - 'Failed to start .*Google Compute Engine Guest Agent'
-      - 'google-guest-agent\.service.*Failed with result'
-      - 'google[-_]guest[-_]agent.*(?:fatal|panic)'
+      # Lookbehind excludes benign "non-fatal" agent log lines.
+      - 'google[-_]guest[-_]agent.*(?:panic|(?<!non-)fatal)'
     fixes:
-      - "Reinstall the guest agent from rescue mode: sudo chroot /mnt/sysroot apt-get install --reinstall google-guest-agent"
+      - "Reinstall the guest agent from rescue mode: sudo chroot /mnt/sysroot apt-get install --reinstall google-guest-agent (Debian/Ubuntu) or sudo chroot /mnt/sysroot dnf reinstall google-guest-agent (RHEL/Rocky)"
       - "Check agent logs under /mnt/sysroot/var/log for the failure reason"
 
   - name: ssh_auth_permissions

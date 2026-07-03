@@ -608,3 +608,139 @@ class TestDiagnoseSshPatterns:
         data = _diagnose(serial)
         assert data['diagnosis_status'] == 'healthy'
         assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseSshRedTeamRegressions
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseSshRedTeamRegressions:
+    """Regressions from red-team review of the ssh diagnose category.
+
+    Each test reproduces a confirmed failing serial-console scenario; serial
+    buffers accumulate across reboots, so several tests mix stale lines from
+    old boots with the failure of the latest boot.
+    """
+
+    def test_stale_ssh_noise_does_not_mask_fstab_emergency(self):
+        """C1: a stale ssh auth line must not erase fstab boot-blockers.
+
+        The stale 'Authentication refused' line is followed by a success
+        marker, then the VM reboots into an fstab emergency-mode failure.
+        Cross-category dedupe previously deleted the fstab criticals (and
+        in this ordering even reported the VM as healthy).
+        """
+        serial = (
+            "sshd[900]: Authentication refused: bad ownership or modes "
+            "for directory /home/bob/.ssh\n"
+            "systemd[1]: Startup finished in 1.2s (kernel) + 9.0s "
+            "(userspace) = 10.2s.\n"
+            "-- reboot --\n"
+            "systemd[1]: Dependency failed for /data.\n"
+            "systemd[1]: data.mount: Job data.mount/start failed with "
+            "result 'dependency'.\n"
+            "You are in emergency mode. After logging in, type "
+            '"journalctl -xb" to view\n'
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        categories = {e['category'] for e in data['boot_errors']}
+        # fstab findings must survive so `repair` can still auto-fix them
+        assert 'fstab' in categories
+        assert any(
+            e['category'] == 'fstab' and e['severity'] == 'critical'
+            for e in data['boot_errors']
+        )
+
+    def test_guest_agent_failure_survives_completed_boot(self):
+        """C2: guest agent failure never blocks boot, so a 'Startup
+        finished' marker must not suppress the finding on a RUNNING VM."""
+        serial = (
+            "systemd[1]: Starting google-guest-agent.service - "
+            "Google Compute Engine Guest Agent...\n"
+            "google_guest_agent[412]: panic: runtime error: invalid memory "
+            "address or nil pointer dereference\n"
+            "systemd[1]: google-guest-agent.service: Start request repeated "
+            "too quickly.\n"
+            "systemd[1]: Failed to start google-guest-agent.service - "
+            "Google Compute Engine Guest Agent.\n"
+            "systemd[1]: Reached target multi-user.target - Multi-User System.\n"
+            "systemd[1]: Startup finished in 1.226s (kernel) + 15.379s "
+            "(userspace) = 16.605s.\n"
+        )
+        data = _diagnose(serial)  # vm_status is RUNNING in this helper
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_guest_agent_failed' in names
+
+    def test_sshd_failure_survives_completed_boot(self):
+        """C2: sshd StartLimit exhausted before 'Startup finished' must
+        still be reported on a RUNNING VM (boot completes without sshd)."""
+        serial = (
+            "sshd[836]: /etc/ssh/sshd_config: line 124: Bad configuration "
+            "option: ThisIsNotAValidDirective\n"
+            "systemd[1]: ssh.service: Start request repeated too quickly.\n"
+            "systemd[1]: Failed to start ssh.service - OpenBSD Secure "
+            "Shell server.\n"
+            "systemd[1]: Startup finished in 1.226s (kernel) + 15.379s "
+            "(userspace) = 16.605s.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_auth_error_survives_later_sshd_restart(self):
+        """C2: an sshd restart (e.g. unattended-upgrades) after the auth
+        error must not re-suppress the ssh_auth_permissions finding."""
+        serial = (
+            "systemd[1]: Started ssh.service - OpenBSD Secure Shell server.\n"
+            "systemd[1]: Startup finished in 1.2s (kernel) + 9.0s "
+            "(userspace) = 10.2s.\n"
+            "sshd[900]: Authentication refused: bad ownership or modes "
+            "for directory /home/bob/.ssh\n"
+            "systemd[1]: Stopping ssh.service - OpenBSD Secure Shell server...\n"
+            "systemd[1]: Started ssh.service - OpenBSD Secure Shell server.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_auth_permissions' in names
+
+    def test_sshd_config_error_without_colon_detected(self):
+        """C3: OpenSSH variants print 'sshd_config line N' without a colon."""
+        serial = (
+            "sshd[512]: /etc/ssh/sshd_config line 12: "
+            "Bad configuration option: FooBar\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_sles_openssh_daemon_failure_detected(self):
+        """C4: SLES unit description is 'OpenSSH Daemon' (no unit name on
+        older systemd)."""
+        serial = (
+            "systemd[1]: Reached target Basic System.\n"
+            "systemd[1]: Failed to start OpenSSH Daemon.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_non_fatal_agent_log_not_matched(self):
+        """C5: 'non-fatal' agent lines must not match the fatal/panic regex."""
+        serial = (
+            "google_guest_agent[583]: retrying non-fatal metadata error\n"
+        )
+        data = _diagnose(serial)
+        assert 'ssh' not in {e['category'] for e in data['boot_errors']}
+        assert data['diagnosis_status'] == 'healthy'
+
+    def test_agent_shutdown_transient_not_matched(self):
+        """C6: 'Failed with result' during shutdown is a transient, not a
+        boot-time agent failure."""
+        serial = (
+            "systemd[1]: google-guest-agent.service: "
+            "Failed with result 'exit-code'.\n"
+        )
+        data = _diagnose(serial)
+        assert 'ssh' not in {e['category'] for e in data['boot_errors']}
+        assert data['diagnosis_status'] == 'healthy'
