@@ -6,8 +6,13 @@ patterns:
   - name: disk_full_no_space
     severity: critical
     description: "Boot disk has no free space (writes are failing)"
+    # Match only lines ENDING with the ENOSPC phrase, and exclude sources
+    # that return ENOSPC without the disk being full:
+    #   - inotify watch/instance exhaustion (systemd "directory watch", tail)
+    #   - cgroup limits on container hosts (kubelet/docker mkdir /sys/fs/cgroup)
+    # Lines merely quoting the phrase mid-sentence no longer match either.
     regex:
-      - 'No space left on device'
+      - '^(?!.*(?:inotify|directory watch|/sys/fs/cgroup)).*No space left on device\s*$'
     fixes:
       - "Free space from rescue mode: clear journals (/mnt/sysroot/var/log/journal), /mnt/sysroot/tmp and old kernels/packages"
       - "Or resize the boot disk: gcloud compute disks resize DISK_NAME --zone=ZONE --size=NEW_SIZE_GB, then reboot to auto-expand"

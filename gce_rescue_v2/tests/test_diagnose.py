@@ -572,3 +572,70 @@ class TestDiagnoseDiskFull:
         data = _diagnose(serial)
         assert data['diagnosis_status'] == 'healthy'
         assert data['boot_errors'] == []
+
+    def test_inotify_exhaustion_enospc_not_flagged(self):
+        """inotify watch exhaustion returns ENOSPC with a healthy disk.
+
+        These messages appear at RUNTIME (after boot success), so the
+        boot-success suppression does not protect against them — the
+        regex itself must exclude them.
+        """
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[   12.000000] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "systemd[1]: Failed to add /run/systemd/ask-password to "
+            "directory watch: No space left on device\n"
+            "tail: inotify cannot be used, reverting to polling: "
+            "no space left on device\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_cgroup_limit_enospc_not_flagged(self):
+        """cgroup-limit ENOSPC on container hosts is not a full disk."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[   12.000000] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "kubelet[1543]: mkdir /sys/fs/cgroup/memory/kubepods/pod9f3: "
+            "no space left on device\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_quoted_enospc_string_not_flagged(self):
+        """A line merely quoting the phrase mid-sentence must not match."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[   12.000000] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            'startup-script[900]: INFO: monitor app logs for '
+            '"No space left on device" and page oncall\n'
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_enospc_noise_does_not_mask_fstab_finding(self):
+        """inotify ENOSPC noise must not dedupe away a real fstab failure.
+
+        Regression for red-team D2: before the regex fix, the noise line
+        counted as a disk_full "root cause" and the generic-symptom tier
+        deleted the fstab dependency finding, hiding the actual problem.
+        Uses the engine directly with TERMINATED status (no suppression).
+        """
+        from gce_rescue_v2.core.diagnosis import analyze_serial_output
+
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "Dependency failed for /data.\n"
+            "tail: inotify cannot be used, reverting to polling: "
+            "no space left on device\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        categories = {e.category for e in result.boot_errors}
+        assert 'disk_full' not in categories
+        assert 'fstab' in categories
