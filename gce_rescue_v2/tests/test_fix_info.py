@@ -141,7 +141,7 @@ class TestBuildExports:
     def test_guidance_extracted(self, tmp_path):
         _write_yaml(tmp_path, 'test.yaml', VALID_FIX_YAML)
         fix_data = _load_fix_files(tmp_path)
-        guidance, _, _ = _build_exports(fix_data)
+        guidance, _, _, _ = _build_exports(fix_data)
 
         assert guidance == {'test_cat': "sudo nano /mnt/sysroot/etc/test"}
 
@@ -149,7 +149,7 @@ class TestBuildExports:
         _write_yaml(tmp_path, 'a.yaml', VALID_FIX_YAML)
         _write_yaml(tmp_path, 'b.yaml', NO_AUTO_REPAIR_YAML)
         fix_data = _load_fix_files(tmp_path)
-        _, supported, _ = _build_exports(fix_data)
+        _, supported, _, _ = _build_exports(fix_data)
 
         assert 'test_cat' in supported
         assert 'manual_cat' not in supported
@@ -157,7 +157,7 @@ class TestBuildExports:
     def test_pattern_fixes_extracted(self, tmp_path):
         _write_yaml(tmp_path, 'test.yaml', VALID_FIX_YAML)
         fix_data = _load_fix_files(tmp_path)
-        _, _, pattern_fixes = _build_exports(fix_data)
+        _, _, _, pattern_fixes = _build_exports(fix_data)
 
         assert 'test_cat' in pattern_fixes
         assert pattern_fixes['test_cat']['test_pattern_a'] == [
@@ -268,6 +268,27 @@ class TestShippedFixInfo:
             assert len(fixes) > 0, (
                 f"Pattern '{pattern.name}' has no fixes in "
                 "core/diagnose_rules/filesystem.yaml"
+            )
+
+    def test_cpu_lockup_fix_guidance_loaded(self):
+        assert 'cpu_lockup' in CATEGORY_FIX_GUIDANCE
+
+    def test_cpu_lockup_is_not_auto_repairable(self):
+        """cpu_lockup is detect-only; auto_repair stays false until a
+        startup_scripts/fixes/cpu_lockup_fix.sh lands (lockups are workload
+        conditions, not on-disk boot configuration)."""
+        assert 'cpu_lockup' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_cpu_lockup_patterns_have_fixes(self):
+        """Every cpu_lockup pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        cpu_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'cpu_lockup']
+        for pattern in cpu_patterns:
+            fixes = get_fixes_for_pattern('cpu_lockup', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                f"core/diagnose_rules/cpu_lockup.yaml"
             )
 
     def test_fix_script_exists_for_supported_categories(self):
