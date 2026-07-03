@@ -1979,6 +1979,86 @@ class TestGrubDetection:
         names = [e['name'] for e in data['boot_errors']]
         assert 'grub_file_not_found' in names
 
+    def test_rhel_prefixed_grub_errors_detected(self):
+        """RHEL/Fedora grub2 prefixes every error with its source location
+        (error: ../../grub-core/<file>.c:<line>:<message>). Red-team C1:
+        these exact lines produced ZERO findings before the optional
+        (?:\\S+\\.c:\\d+:)? prefix was added to every message-bound regex."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: ../../grub-core/fs/fshelp.c:258:file "
+            "`/vmlinuz-4.18.0-513.el8_9.x86_64' not found.\n"
+            "error: ../../grub-core/loader/i386/efi/linux.c:94:you need to "
+            "load the kernel first.\n"
+            "\n"
+            "Press any key to continue...\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_kernel_not_found' in names
+        assert 'grub_load_kernel_first' in names
+
+    def test_rhel_prefixed_filesystem_and_disk_errors_detected(self):
+        """Remaining RHEL-prefixed forms from the red-team C1 corpus."""
+        serial = (
+            "GRUB loading.\n"
+            "Welcome to GRUB!\n"
+            "\n"
+            "error: ../../grub-core/kern/fs.c:120:unknown filesystem.\n"
+            "error: ../../grub-core/kern/disk.c:236:disk `hd0,gpt2' "
+            "not found.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_unknown_filesystem' in names
+        assert 'grub_disk_not_found' in names
+        assert 'grub_rescue_prompt' in names
+
+    def test_benign_rhel_grubenv_line_not_flagged(self):
+        """The well-known BENIGN RHEL-on-XFS line (grubenv unwritable, boot
+        continues fine) must NOT fire grub_file_not_found — without the
+        (?!grubenv) exclusion this is a critical FP on healthy RHEL VMs."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "error: ../../grub-core/fs/fshelp.c:257:file "
+            "`/boot/grub2/grubenv' not found.\n"
+            "[    0.000000] Linux version 4.18.0-513.el8_9.x86_64\n"
+            "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 8.102s (userspace) = 12.306s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_unprefixed_grubenv_line_not_flagged(self):
+        """Same grubenv exclusion for the unprefixed (Debian-style) form,
+        with no completed boot in the buffer — proves the lookahead alone
+        (not boot-success suppression) rejects the line."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "error: file `/boot/grub2/grubenv' not found.\n"
+        )
+        data = _diagnose(serial)
+        assert data['boot_errors'] == []
+
+    def test_broken_grub2_module_still_flagged_despite_grubenv_exclusion(self):
+        """The (?!grubenv) lookahead must not swallow real /boot/grub2/*
+        failures (e.g. a missing module)."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: ../../grub-core/fs/fshelp.c:258:file "
+            "`/boot/grub2/i386-pc/normal.mod' not found.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'grub_file_not_found' in names
+
     def test_grub_kernel_not_found_detected(self):
         """Missing vmlinuz referenced by grub.cfg, plus the follow-up
         'you need to load the kernel first' error."""
@@ -2244,6 +2324,48 @@ class TestFirmwareDetection:
         names = [e['name'] for e in data['boot_errors']]
         assert 'firmware_secure_boot_violation' in names
         assert 'grub_load_kernel_first' in names
+
+    def test_rhel_prefixed_bad_shim_signature_detected(self):
+        """RHEL grub2 source-location prefix on the shim rejection line
+        (red-team C1 companion fix in firmware.yaml)."""
+        serial = (
+            "GNU GRUB  version 2.06\n"
+            "\n"
+            "error: ../../grub-core/kern/verifiers.c:119:bad shim "
+            "signature.\n"
+            "error: ../../grub-core/loader/i386/efi/linux.c:94:you need to "
+            "load the kernel first.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'firmware_secure_boot_violation' in names
+        assert 'grub_load_kernel_first' in names
+
+    def test_prose_mention_of_no_bootable_device_not_flagged(self):
+        """Red-team C4: a startup-script echo merely MENTIONING the phrase
+        mid-line must not fire firmware_no_bootable_device (start anchor)."""
+        serial = (
+            "[   12.345678] startup-script: INFO Watching for the "
+            "'No bootable device' marker in guest logs\n"
+            "[   13.000000] startup-script: INFO handler installed\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'firmware' not in categories
+
+    def test_glued_seabios_no_bootable_device_still_detected(self):
+        """Live S4 capture: SeaBIOS glues its banner onto the failure line
+        without a newline ('No bootable device.SeaBIOS ...'). The phrase
+        still starts the line, so the start anchor must keep matching."""
+        serial = (
+            "Booting from Hard Disk 0...\n"
+            "Boot failed: not a bootable disk\n"
+            "\n"
+            "No bootable device.SeaBIOS (version 1.8.2-google)\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'firmware_no_bootable_device' in names
 
     def test_gpt_corrupt_detected(self):
         serial = (

@@ -27,7 +27,12 @@ patterns:
       # Deliberately NOT matched: 'Booting from Hard Disk...' — SeaBIOS
       # prints that on EVERY healthy boot; only the explicit failure
       # strings below are reliable signals.
-      - 'No bootable device'
+      # Start-anchored so a startup-script echo merely MENTIONING the
+      # phrase mid-line cannot fire. The live SeaBIOS capture starts the
+      # line with the phrase ('No bootable device.SeaBIOS ...'), and when
+      # SeaBIOS glues it after 'Boot failed: could not read the boot
+      # disk', that line's own pattern below still reports the finding.
+      - '^\s*No bootable device'
       - '^\s*Boot failed: not a bootable disk'
       - '^\s*Boot failed: could not read the boot disk'
     fixes:
@@ -53,10 +58,12 @@ patterns:
     description: "Secure Boot rejected the bootloader or kernel (unsigned or wrongly signed)"
     regex:
       - 'Verification failed: \(0x1A\) Security Violation'
-      # shim/GRUB-emitted forms — line-start 'error:' bound like grub.yaml.
-      - '^\s*error: bad shim signature'
-      - '^\s*error: shim_lock protocol not found'
-      - '^\s*error: prohibited by secure boot policy'
+      # shim/GRUB-emitted forms — line-start 'error:' bound like grub.yaml,
+      # with the same optional RHEL/Fedora source-location prefix
+      # (error: ../../grub-core/...c:NNN:<message>).
+      - '^\s*error: (?:\S+\.c:\d+:)?bad shim signature'
+      - '^\s*error: (?:\S+\.c:\d+:)?shim_lock protocol not found'
+      - '^\s*error: (?:\S+\.c:\d+:)?prohibited by secure boot policy'
     fixes:
       - "Advise-only: Secure Boot violations cannot be fixed by editing the disk from rescue mode - the Shielded VM firmware rejects the boot chain itself"
       - "If a custom/unsigned kernel or bootloader was installed, reinstall the distro-signed shim and GRUB packages from a chroot: apt-get install --reinstall shim-signed grub-efi-amd64-signed (Debian-family) or dnf reinstall shim-x64 grub2-efi-x64 (RHEL-family)"
