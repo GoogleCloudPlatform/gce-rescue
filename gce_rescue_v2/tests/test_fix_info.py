@@ -233,6 +233,24 @@ class TestShippedFixInfo:
                 "core/diagnose_rules/disk_full.yaml"
             )
 
+    def test_ssh_fix_guidance_loaded(self):
+        assert 'ssh' in CATEGORY_FIX_GUIDANCE
+
+    def test_ssh_is_not_auto_repairable(self):
+        """ssh must stay auto_repair: false until startup_scripts/fixes/ssh_fix.sh lands."""
+        assert 'ssh' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_ssh_patterns_have_fixes(self):
+        """Every ssh pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        ssh_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'ssh']
+        for pattern in ssh_patterns:
+            fixes = get_fixes_for_pattern('ssh', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in core/diagnose_rules/ssh.yaml"
+            )
+
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'

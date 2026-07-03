@@ -1,0 +1,48 @@
+category: ssh
+fix_guidance: "sudo nano /mnt/sysroot/etc/ssh/sshd_config"
+auto_repair: false
+
+# Scope: only SSH failures that are visible in the VM serial console are
+# patterned here. Client-side errors such as "Permission denied (publickey)"
+# are printed by the SSH client on the user's machine and never reach the
+# serial console, so they are intentionally not covered.
+
+patterns:
+  - name: ssh_sshd_config_error
+    severity: critical
+    description: "SSH daemon failed to start due to invalid sshd_config"
+    regex:
+      # OpenSSH prints "sshd_config: line N" or "sshd_config line N"
+      # depending on version, so the colon is optional.
+      - 'sshd_config:? line \d+: Bad configuration option'
+      - 'sshd_config:? terminating, \d+ bad configuration options'
+      - 'Failed to start .*OpenBSD Secure Shell server'
+      - 'Failed to start .*OpenSSH server daemon'
+      # SLES unit description; older systemd omits the unit name.
+      - 'Failed to start .*OpenSSH Daemon'
+      - 'Failed to start sshd?\.service'
+    fixes:
+      - "Fix or remove the invalid directive in /mnt/sysroot/etc/ssh/sshd_config"
+      - "Validate the config from rescue mode: sudo sshd -t -f /mnt/sysroot/etc/ssh/sshd_config"
+
+  - name: ssh_guest_agent_failed
+    severity: error
+    description: "Google Compute Engine guest agent failed (SSH key provisioning may not work)"
+    regex:
+      # "Failed with result" alone is dropped: it also fires on shutdown
+      # transients; the "Failed to start" line covers real boot failures.
+      - 'Failed to start .*Google Compute Engine Guest Agent'
+      # Lookbehind excludes benign "non-fatal" agent log lines.
+      - 'google[-_]guest[-_]agent.*(?:panic|(?<!non-)fatal)'
+    fixes:
+      - "Reinstall the guest agent from rescue mode: sudo chroot /mnt/sysroot apt-get install --reinstall google-guest-agent (Debian/Ubuntu) or sudo chroot /mnt/sysroot dnf reinstall google-guest-agent (RHEL/Rocky)"
+      - "Check agent logs under /mnt/sysroot/var/log for the failure reason"
+
+  - name: ssh_auth_permissions
+    severity: error
+    description: "SSH authentication refused due to bad ownership or permissions on .ssh files"
+    regex:
+      - 'Authentication refused: bad ownership or modes'
+    fixes:
+      - "Fix permissions from rescue mode: sudo chmod 700 /mnt/sysroot/home/USER/.ssh and sudo chmod 600 /mnt/sysroot/home/USER/.ssh/authorized_keys"
+      - "Fix ownership: sudo chown -R USER:USER /mnt/sysroot/home/USER/.ssh (run inside chroot or use numeric UID)"

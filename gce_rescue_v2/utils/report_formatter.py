@@ -371,5 +371,6 @@ def _category_label(category: str) -> str:
         'filesystem': 'Fix filesystem',
         'initramfs': 'Rebuild initramfs',
         'disk_full': 'Free disk space',
+        'ssh': 'Fix SSH configuration',
     }
     return labels.get(category, f'Fix {category}')

@@ -67,6 +67,14 @@ def _diagnose(serial: str):
     return result.rollback_data
 
 
+def _diagnose(serial: str):
+    """Run DiagnoseOperation against a serial excerpt, return rollback_data."""
+    compute = _make_compute(serial_output=serial)
+    op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+    result = op.execute('test-vm')
+    return result.rollback_data
+
+
 # ---------------------------------------------------------------------------
 # TestDiagnoseBasic
 # ---------------------------------------------------------------------------
@@ -639,3 +647,261 @@ class TestDiagnoseDiskFull:
         categories = {e.category for e in result.boot_errors}
         assert 'disk_full' not in categories
         assert 'fstab' in categories
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseSshPatterns
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseSshPatterns:
+    """Detection tests for the ssh diagnose category."""
+
+    def test_sshd_config_bad_option_detected(self):
+        """Invalid sshd_config directive should match ssh_sshd_config_error."""
+        serial = (
+            "[   10.312478] cloud-init[498]: Cloud-init v. 22.4.2 running 'modules:final'\n"
+            "[   10.812345] sshd[512]: /etc/ssh/sshd_config: line 122: "
+            "Bad configuration option: ThisIsNotAValidDirective\n"
+            "[   10.812999] systemd[1]: ssh.service: Control process exited, "
+            "code=exited, status=255/EXCEPTION\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_sshd_config_terminating_detected(self):
+        """sshd 'terminating, N bad configuration options' should match."""
+        serial = (
+            "[   11.102938] sshd[512]: /etc/ssh/sshd_config: terminating, "
+            "1 bad configuration options\n"
+            "[   11.104001] systemd[1]: ssh.service: Main process exited, "
+            "code=exited, status=255/EXCEPTION\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_sshd_service_failed_debian_detected(self):
+        """Debian-style ssh.service failure line should match."""
+        serial = (
+            "[   12.001234] systemd[1]: ssh.service: Start request repeated too quickly.\n"
+            "[FAILED] Failed to start ssh.service - OpenBSD Secure Shell server.\n"
+            "See 'systemctl status ssh.service' for details.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_sshd_service_failed_rhel_detected(self):
+        """RHEL-style sshd.service failure line should match."""
+        serial = (
+            "[   13.442210] systemd[1]: sshd.service: Start request repeated too quickly.\n"
+            "[FAILED] Failed to start sshd.service - OpenSSH server daemon.\n"
+            "See 'systemctl status sshd.service' for details.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_guest_agent_failed_to_start_detected(self):
+        """systemd failure of google-guest-agent should match ssh_guest_agent_failed."""
+        serial = (
+            "[   12.481000] systemd[1]: google-guest-agent.service: "
+            "Start request repeated too quickly.\n"
+            "[FAILED] Failed to start google-guest-agent.service - "
+            "Google Compute Engine Guest Agent.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_guest_agent_failed' in names
+
+    def test_guest_agent_fatal_log_detected(self):
+        """Guest agent fatal log line should match ssh_guest_agent_failed."""
+        serial = (
+            "[   13.001111] systemd[1]: Starting google-guest-agent.service...\n"
+            "[   13.123456] google_guest_agent[655]: FATAL main.go:118 "
+            "error creating instance config: invalid config\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_guest_agent_failed' in names
+
+    def test_guest_agent_benign_log_not_matched(self):
+        """Normal guest agent startup logs should not trigger any ssh pattern."""
+        serial = (
+            "[    9.881234] google_guest_agent[652]: GCE Agent Started (version 20230601.00)\n"
+            "[    9.991234] google_guest_agent[652]: Adding existing user gokull to google-sudoers group.\n"
+        )
+        data = _diagnose(serial)
+        assert 'ssh' not in {e['category'] for e in data['boot_errors']}
+
+    def test_auth_permissions_detected(self):
+        """sshd 'bad ownership or modes' should match ssh_auth_permissions."""
+        serial = (
+            "[  241.601000] sshd[1042]: Connection from 192.168.1.7 port 51522\n"
+            "[  241.693421] sshd[1042]: Authentication refused: "
+            "bad ownership or modes for directory /home/gokull/.ssh\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_auth_permissions' in names
+
+    def test_fstab_errors_do_not_trigger_ssh_patterns(self):
+        """fstab root-cause lines must not produce ssh findings."""
+        serial = (
+            "[    5.102938] systemd[1]: Timed out waiting for device "
+            "/dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "[    5.104001] systemd[1]: Dependency failed for /mnt/data\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        assert 'ssh' not in {e['category'] for e in data['boot_errors']}
+
+    def test_healthy_boot_matches_no_ssh_patterns(self):
+        """A clean boot with normal ssh/guest-agent lines should stay healthy."""
+        serial = (
+            "[    8.812345] systemd[1]: Started ssh.service - OpenBSD Secure Shell server.\n"
+            "[    9.881234] google_guest_agent[652]: GCE Agent Started (version 20230601.00)\n"
+            "[   10.101234] systemd[1]: Startup finished in 4.102s (kernel) + 6.204s (userspace) = 10.306s.\n"
+            "login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseSshRedTeamRegressions
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseSshRedTeamRegressions:
+    """Regressions from red-team review of the ssh diagnose category.
+
+    Each test reproduces a confirmed failing serial-console scenario; serial
+    buffers accumulate across reboots, so several tests mix stale lines from
+    old boots with the failure of the latest boot.
+    """
+
+    def test_stale_ssh_noise_does_not_mask_fstab_emergency(self):
+        """C1: a stale ssh auth line must not erase fstab boot-blockers.
+
+        The stale 'Authentication refused' line is followed by a success
+        marker, then the VM reboots into an fstab emergency-mode failure.
+        Cross-category dedupe previously deleted the fstab criticals (and
+        in this ordering even reported the VM as healthy).
+        """
+        serial = (
+            "sshd[900]: Authentication refused: bad ownership or modes "
+            "for directory /home/bob/.ssh\n"
+            "systemd[1]: Startup finished in 1.2s (kernel) + 9.0s "
+            "(userspace) = 10.2s.\n"
+            "-- reboot --\n"
+            "systemd[1]: Dependency failed for /data.\n"
+            "systemd[1]: data.mount: Job data.mount/start failed with "
+            "result 'dependency'.\n"
+            "You are in emergency mode. After logging in, type "
+            '"journalctl -xb" to view\n'
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        categories = {e['category'] for e in data['boot_errors']}
+        # fstab findings must survive so `repair` can still auto-fix them
+        assert 'fstab' in categories
+        assert any(
+            e['category'] == 'fstab' and e['severity'] == 'critical'
+            for e in data['boot_errors']
+        )
+
+    def test_guest_agent_failure_survives_completed_boot(self):
+        """C2: guest agent failure never blocks boot, so a 'Startup
+        finished' marker must not suppress the finding on a RUNNING VM."""
+        serial = (
+            "systemd[1]: Starting google-guest-agent.service - "
+            "Google Compute Engine Guest Agent...\n"
+            "google_guest_agent[412]: panic: runtime error: invalid memory "
+            "address or nil pointer dereference\n"
+            "systemd[1]: google-guest-agent.service: Start request repeated "
+            "too quickly.\n"
+            "systemd[1]: Failed to start google-guest-agent.service - "
+            "Google Compute Engine Guest Agent.\n"
+            "systemd[1]: Reached target multi-user.target - Multi-User System.\n"
+            "systemd[1]: Startup finished in 1.226s (kernel) + 15.379s "
+            "(userspace) = 16.605s.\n"
+        )
+        data = _diagnose(serial)  # vm_status is RUNNING in this helper
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_guest_agent_failed' in names
+
+    def test_sshd_failure_survives_completed_boot(self):
+        """C2: sshd StartLimit exhausted before 'Startup finished' must
+        still be reported on a RUNNING VM (boot completes without sshd)."""
+        serial = (
+            "sshd[836]: /etc/ssh/sshd_config: line 124: Bad configuration "
+            "option: ThisIsNotAValidDirective\n"
+            "systemd[1]: ssh.service: Start request repeated too quickly.\n"
+            "systemd[1]: Failed to start ssh.service - OpenBSD Secure "
+            "Shell server.\n"
+            "systemd[1]: Startup finished in 1.226s (kernel) + 15.379s "
+            "(userspace) = 16.605s.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_auth_error_survives_later_sshd_restart(self):
+        """C2: an sshd restart (e.g. unattended-upgrades) after the auth
+        error must not re-suppress the ssh_auth_permissions finding."""
+        serial = (
+            "systemd[1]: Started ssh.service - OpenBSD Secure Shell server.\n"
+            "systemd[1]: Startup finished in 1.2s (kernel) + 9.0s "
+            "(userspace) = 10.2s.\n"
+            "sshd[900]: Authentication refused: bad ownership or modes "
+            "for directory /home/bob/.ssh\n"
+            "systemd[1]: Stopping ssh.service - OpenBSD Secure Shell server...\n"
+            "systemd[1]: Started ssh.service - OpenBSD Secure Shell server.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_auth_permissions' in names
+
+    def test_sshd_config_error_without_colon_detected(self):
+        """C3: OpenSSH variants print 'sshd_config line N' without a colon."""
+        serial = (
+            "sshd[512]: /etc/ssh/sshd_config line 12: "
+            "Bad configuration option: FooBar\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_sles_openssh_daemon_failure_detected(self):
+        """C4: SLES unit description is 'OpenSSH Daemon' (no unit name on
+        older systemd)."""
+        serial = (
+            "systemd[1]: Reached target Basic System.\n"
+            "systemd[1]: Failed to start OpenSSH Daemon.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_sshd_config_error' in names
+
+    def test_non_fatal_agent_log_not_matched(self):
+        """C5: 'non-fatal' agent lines must not match the fatal/panic regex."""
+        serial = (
+            "google_guest_agent[583]: retrying non-fatal metadata error\n"
+        )
+        data = _diagnose(serial)
+        assert 'ssh' not in {e['category'] for e in data['boot_errors']}
+        assert data['diagnosis_status'] == 'healthy'
+
+    def test_agent_shutdown_transient_not_matched(self):
+        """C6: 'Failed with result' during shutdown is a transient, not a
+        boot-time agent failure."""
+        serial = (
+            "systemd[1]: google-guest-agent.service: "
+            "Failed with result 'exit-code'.\n"
+        )
+        data = _diagnose(serial)
+        assert 'ssh' not in {e['category'] for e in data['boot_errors']}
+        assert data['diagnosis_status'] == 'healthy'

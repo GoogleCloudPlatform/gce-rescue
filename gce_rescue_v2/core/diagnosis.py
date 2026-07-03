@@ -303,6 +303,10 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         "Failed to mount filesystem listed in /etc/fstab",
         "Mount point dependency failed (device not available)",
     }
+    # Snapshot the full evidence set before dedupe: the boot-success
+    # suppression below must reason over everything that matched (positions,
+    # emergency-mode presence), not just the deduped survivors.
+    all_detected = list(detected_errors)
     if len(detected_errors) > 1:
         has_non_catchall = any(
             e.description not in _CATCH_ALL for e in detected_errors
@@ -313,14 +317,19 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                 if e.description not in _CATCH_ALL
             ]
     if len(detected_errors) > 1:
-        has_root_cause = any(
-            e.description not in _GENERIC_SYMPTOM for e in detected_errors
-        )
-        if has_root_cause:
-            detected_errors = [
-                e for e in detected_errors
-                if e.description not in _GENERIC_SYMPTOM
-            ]
+        # Tier 2 is category-scoped: a generic symptom is only demoted when
+        # a specific root-cause finding of the SAME category exists.
+        # A finding from an unrelated category (e.g. a stale ssh auth error
+        # in the serial buffer) must never erase fstab boot-blockers.
+        root_cause_categories = {
+            e.category for e in detected_errors
+            if e.description not in _GENERIC_SYMPTOM
+        }
+        detected_errors = [
+            e for e in detected_errors
+            if e.description not in _GENERIC_SYMPTOM
+            or e.category not in root_cause_categories
+        ]
 
     # Boot success detection: if VM is RUNNING and the LATEST boot completed
     # successfully, clear non-emergency errors entirely.
@@ -336,16 +345,27 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         r'Started .*OpenBSD Secure Shell server',
         r'Started .*Google Compute Engine Startup Scripts',
     ]
-    if vm_status == 'RUNNING' and detected_errors:
+    # ssh failures are boot-completing by nature (sshd or the guest agent
+    # fails while the rest of the boot reaches multi-user.target), so a
+    # "Startup finished" marker does not mean they are resolved. They are
+    # therefore exempt from boot-success suppression.
+    _SUPPRESSION_EXEMPT_CATEGORIES = {'ssh'}
+    suppressible = [
+        e for e in detected_errors
+        if e.category not in _SUPPRESSION_EXEMPT_CATEGORIES
+    ]
+    if vm_status == 'RUNNING' and suppressible:
         # Find the position of the last boot success marker
         last_success_pos = -1
         for marker in _BOOT_SUCCESS_MARKERS:
             for match in re.finditer(marker, serial_output, re.IGNORECASE):
                 last_success_pos = max(last_success_pos, match.end())
 
-        # Find the position of the last detected error
+        # Find the position of the last detected error. Use the full
+        # pre-dedupe evidence set: a finding removed by dedupe (e.g.
+        # emergency mode) still proves the latest boot failed.
         last_error_pos = -1
-        for err in detected_errors:
+        for err in all_detected:
             for match in re.finditer(
                 re.escape(err.detected_pattern), serial_output, re.IGNORECASE
             ):
@@ -359,15 +379,18 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         if boot_completed:
             has_emergency = any(
                 'emergency mode' in e.description.lower()
-                for e in detected_errors
+                for e in all_detected
             )
             if not has_emergency:
                 logger.debug(
                     f"VM booted successfully (success at pos {last_success_pos}, "
                     f"last error at pos {last_error_pos}) — clearing "
-                    f"{len(detected_errors)} non-blocking error(s)"
+                    f"{len(suppressible)} non-blocking error(s)"
                 )
-                detected_errors = []
+                detected_errors = [
+                    e for e in detected_errors
+                    if e.category in _SUPPRESSION_EXEMPT_CATEGORIES
+                ]
 
     # Determine diagnosis status and recommendations
     if detected_errors:
