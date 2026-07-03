@@ -253,3 +253,23 @@ class TestShippedPatterns:
             assert len(pattern.fixes) > 0, (
                 f"Pattern '{pattern.name}' has no inline fixes"
             )
+
+    def test_cpu_lockup_patterns_present(self):
+        cpu_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'cpu_lockup']
+        assert len(cpu_patterns) == 4
+
+    def test_cpu_lockup_patterns_have_inline_fixes(self):
+        """All cpu_lockup patterns should have inline fixes from merged YAML."""
+        cpu_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'cpu_lockup']
+        for pattern in cpu_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_cpu_lockup_pattern_names_prefixed(self):
+        """cpu_lockup pattern names should carry the category prefix."""
+        cpu_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'cpu_lockup']
+        for pattern in cpu_patterns:
+            assert pattern.name.startswith('cpu_lockup_'), (
+                f"Pattern '{pattern.name}' missing 'cpu_lockup_' prefix"
+            )

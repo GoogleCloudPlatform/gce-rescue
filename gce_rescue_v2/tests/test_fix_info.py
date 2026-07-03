@@ -211,6 +211,27 @@ class TestShippedFixInfo:
                 f"Pattern '{pattern.name}' has no fixes in core/diagnose_rules/fstab.yaml"
             )
 
+    def test_cpu_lockup_fix_guidance_loaded(self):
+        assert 'cpu_lockup' in CATEGORY_FIX_GUIDANCE
+
+    def test_cpu_lockup_is_not_auto_repairable(self):
+        """cpu_lockup is detect-only; auto_repair stays false until a
+        startup_scripts/fixes/cpu_lockup_fix.sh lands (lockups are workload
+        conditions, not on-disk boot configuration)."""
+        assert 'cpu_lockup' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_cpu_lockup_patterns_have_fixes(self):
+        """Every cpu_lockup pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        cpu_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'cpu_lockup']
+        for pattern in cpu_patterns:
+            fixes = get_fixes_for_pattern('cpu_lockup', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                f"core/diagnose_rules/cpu_lockup.yaml"
+            )
+
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'

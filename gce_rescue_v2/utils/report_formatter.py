@@ -370,5 +370,6 @@ def _category_label(category: str) -> str:
         'kernel': 'Check kernel',
         'filesystem': 'Fix filesystem',
         'initramfs': 'Rebuild initramfs',
+        'cpu_lockup': 'Investigate CPU lockup',
     }
     return labels.get(category, f'Fix {category}')

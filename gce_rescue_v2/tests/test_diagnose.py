@@ -59,6 +59,14 @@ def _make_http_error(status_code, message="error"):
     return HttpError(resp, f'{{"error": {{"message": "{message}"}}}}'.encode())
 
 
+def _diagnose(serial: str):
+    """Run DiagnoseOperation against a serial excerpt, return rollback_data."""
+    compute = _make_compute(serial_output=serial)
+    op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+    result = op.execute('test-vm')
+    return result.rollback_data
+
+
 # ---------------------------------------------------------------------------
 # TestDiagnoseBasic
 # ---------------------------------------------------------------------------
@@ -478,3 +486,174 @@ class TestDiagnoseStabilization:
             result = op.execute('test-vm', stabilize=False)
             mock_stab.assert_not_called()
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseCpuLockup
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseCpuLockup:
+    """Detection tests for the cpu_lockup category (soft/hard lockups, bus
+    locks, RCU stalls)."""
+
+    def test_soft_lockup_detected(self):
+        """Canonical soft-lockup watchdog line should be detected as error."""
+        serial = (
+            "[  241.693421] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [stress-ng-cpu:1523]\n"
+            "[  241.702118] Modules linked in: nft_ct nf_tables binfmt_misc virtio_net\n"
+            "[  241.710233] CPU: 0 PID: 1523 Comm: stress-ng-cpu Not tainted 6.1.0-18-cloud-amd64 #1\n"
+            "[  241.719544] Hardware name: Google Google Compute Engine/Google Compute Engine\n"
+            "[  241.728901] RIP: 0010:queued_spin_lock_slowpath+0x5b/0x1d0\n"
+            "[  241.737010] Call Trace:\n"
+            "[  241.741232]  <IRQ>\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        errors = data['boot_errors']
+        names = [e['name'] for e in errors]
+        assert 'cpu_lockup_soft_lockup' in names
+        err = next(e for e in errors if e['name'] == 'cpu_lockup_soft_lockup')
+        assert err['category'] == 'cpu_lockup'
+        assert err['severity'] == 'error'
+        assert len(err['suggested_fixes']) > 0
+
+    def test_hard_lockup_detected(self):
+        """NMI watchdog hard lockup should be detected as critical."""
+        serial = (
+            "[  312.099873] Uhhuh. NMI received for unknown reason 3d on CPU 2.\n"
+            "[  312.104501] NMI watchdog: Watchdog detected hard LOCKUP on cpu 2\n"
+            "[  312.110276] Modules linked in: virtio_scsi virtio_pci virtio_ring\n"
+            "[  312.118440] CPU: 2 PID: 887 Comm: kworker/2:1 Tainted: G L 5.15.0-91-generic\n"
+            "[  312.127655] Hardware name: Google Google Compute Engine/Google Compute Engine\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        err = next(
+            e for e in data['boot_errors']
+            if e['name'] == 'cpu_lockup_hard_lockup'
+        )
+        assert err['severity'] == 'critical'
+
+    def test_bus_lock_trap_detected(self):
+        """Kernel split-lock-detection trap line should be detected as warning."""
+        serial = (
+            "[  102.328812] x86/split lock detection: warning about user-space bus_locks\n"
+            "[  102.334455] x86/split lock detection: #DB: myapp/2211 took a bus_lock trap at address: 0x7f3c2a1b4d20\n"
+            "[  102.341102] perf: interrupt took too long (2503 > 2500), lowering kernel.perf_event_max_sample_rate\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        err = next(
+            e for e in data['boot_errors']
+            if e['name'] == 'cpu_lockup_bus_lock'
+        )
+        assert err['severity'] == 'warning'
+
+    def test_split_lock_phrase_detected(self):
+        """Plain 'split lock detected' phrasing should also match."""
+        serial = (
+            "[   88.120933] core: split lock detected in workload process sampler/1877\n"
+            "[   88.127544] core: this access severely degrades memory bus performance\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cpu_lockup_bus_lock' in names
+
+    def test_rcu_stall_detected(self):
+        """rcu_sched stall report should be detected as error."""
+        serial = (
+            "[  455.220133] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:\n"
+            "[  455.226801] rcu: \t3-...0: (1 GPs behind) idle=8a2/1/0x4000000000000000 softirq=8412/8413 fqs=2626\n"
+            "[  455.235477] rcu: \t(detected by 0, t=5252 jiffies, g=24829, q=1290)\n"
+            "[  455.244103] Sending NMI from CPU 0 to CPUs 3:\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        err = next(
+            e for e in data['boot_errors']
+            if e['name'] == 'cpu_lockup_rcu_stall'
+        )
+        assert err['severity'] == 'error'
+
+    def test_rcu_self_detected_stall_variant(self):
+        """Older self-detected stall phrasing should match the same pattern."""
+        serial = (
+            "[  978.301220] INFO: rcu_sched self-detected stall on CPU { 1}  (t=5250 jiffies g=4294 c=4293 q=880)\n"
+            "[  978.309912] Task dump for CPU 1:\n"
+            "[  978.316733] cruncher        R  running task        0  2231      1 0x00000008\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cpu_lockup_rcu_stall' in names
+
+    def test_healthy_boot_matches_no_cpu_lockup_patterns(self):
+        """A clean boot must not produce any cpu_lockup findings."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel@lists.debian.org)\n"
+            "[    1.204551] EXT4-fs (sda1): mounted filesystem with ordered data mode\n"
+            "[    2.883104] systemd[1]: Detected virtualization google.\n"
+            "login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_benign_nmi_line_not_matched(self):
+        """'NMI received for unknown reason' alone is not a hard lockup."""
+        serial = (
+            "[  120.401220] Uhhuh. NMI received for unknown reason 31 on CPU 0.\n"
+            "[  120.407733] Do you have a strange power saving mode enabled?\n"
+            "[  120.414092] Dazed and confused, but trying to continue\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'cpu_lockup' not in categories
+
+    def test_fstab_errors_do_not_trigger_cpu_lockup_patterns(self):
+        """fstab failure lines must not produce cpu_lockup findings."""
+        serial = (
+            "[  241.693421] systemd[1]: Timed out waiting for device "
+            "/dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "[  241.702118] systemd[1]: Dependency failed for /mnt/data\n"
+            "[  241.710233] You are in emergency mode\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'cpu_lockup' not in categories
+        assert 'fstab' in categories
+
+    def test_cpu_lockup_lines_do_not_trigger_fstab_patterns(self):
+        """Lockup lines must not produce fstab findings."""
+        serial = (
+            "[  241.693421] watchdog: BUG: soft lockup - CPU#3 stuck for 26s! [dd:2210]\n"
+            "[  241.702118] CPU: 3 PID: 2210 Comm: dd Not tainted 6.1.0-18-cloud-amd64 #1\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert categories == {'cpu_lockup'}
+
+    def test_lockup_finding_suppresses_emergency_mode_catch_all(self):
+        """A cpu_lockup root cause should drop the emergency-mode catch-all
+        finding (tier-1 dedupe)."""
+        serial = (
+            "[  312.104501] NMI watchdog: Watchdog detected hard LOCKUP on cpu 1\n"
+            "[  320.220118] You are in emergency mode\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cpu_lockup_hard_lockup' in names
+        assert 'fstab_emergency_mode' not in names
+
+    def test_recovered_lockup_before_boot_success_is_suppressed(self):
+        """A lockup that happened BEFORE the last successful boot marker on a
+        RUNNING VM is history: boot-success suppression clears it and the VM
+        reports healthy. This is intentional — a recovered soft lockup needs
+        no rescue action."""
+        serial = (
+            "[  241.693421] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [stress-ng-cpu:1523]\n"
+            "[  241.702118] CPU: 0 PID: 1523 Comm: stress-ng-cpu Not tainted 6.1.0-18-cloud-amd64 #1\n"
+            "[  400.101332] systemd[1]: Startup finished in 4.512s (kernel) + 11.204s (userspace) = 15.716s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
