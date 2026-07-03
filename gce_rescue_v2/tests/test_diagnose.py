@@ -3190,3 +3190,25 @@ class TestFstabDistroBroadening:
         names = [e['name'] for e in data['boot_errors']]
         assert 'fstab_device_timeout' in names
         assert 'fstab_emergency_mode' not in names
+
+    def test_live_opensuse_plain_failed_to_mount_detected(self):
+        """LIVE (t-w2-suse, openSUSE Leap 16, wiped-superblock secondary
+        disk): the console prints the PLAIN form '[FAILED] Failed to mount
+        /mnt/data.' - no .mount suffix, no systemd[1]: prefix - and the
+        only DEPEND lines name non-path targets ('Local File Systems'),
+        so before the plain-form regex this buffer produced nothing but
+        the emergency-mode catch-all."""
+        serial = (
+            "[  OK  ] Mounted /var.\n"
+            "[FAILED] Failed to mount /mnt/data.\n"
+            "See 'systemctl status mnt-data.mount' for details.\n"
+            "[DEPEND] Dependency failed for Local File Systems.\n"
+            "[DEPEND] Dependency failed for Early Kernel Boot Messages.\n"
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_mount_failed' in names
+        # Root cause wins; the generic emergency catch-all stays demoted.
+        assert 'fstab_emergency_mode' not in names

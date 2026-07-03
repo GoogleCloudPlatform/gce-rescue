@@ -52,6 +52,11 @@ patterns:
       # line never fires both categories.
       - 'Dependency failed for .*\.mount'
       - 'Failed to mount (?!/sysroot).*\.mount'
+      # Plain console form (live openSUSE Leap 16 capture): systemd prints
+      # '[FAILED] Failed to mount /mnt/data.' with no .mount suffix and no
+      # systemd[1]: prefix. /sysroot stays carved out (initrd stage, owned
+      # by initramfs_sysroot_mount_failed).
+      - 'Failed to mount /(?!sysroot\b)\S+'
       - 'mount.*failed'
       - 'systemd.*Failed to mount (?!/sysroot)'
     fixes:
