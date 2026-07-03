@@ -1,0 +1,56 @@
+category: filesystem
+fix_guidance: "sudo umount /mnt/sysroot && sudo fsck -y /dev/sdb1"
+# auto_repair stays false until startup_scripts/fixes/filesystem_fix.sh exists
+# and repair orchestration is wired for it. Detect-only with manual guidance.
+auto_repair: false
+
+# Dedupe interplay with fstab.yaml:
+# fstab_fsck_failed matches generic boot-time fsck failure output (e.g.
+# "UNEXPECTED INCONSISTENCY", "fsck exited with status code"). The patterns
+# below match filesystem-level corruption evidence (superblock damage, kernel
+# EXT4/XFS corruption reports) and intentionally do NOT match plain fstab
+# configuration errors (bad UUID, missing device, mount timeouts). When a
+# corrupted filesystem causes a boot-time fsck failure, BOTH categories firing
+# on the same buffer is expected and correct: they are different, both-true
+# findings, and none of these descriptions belong in the _CATCH_ALL or
+# _GENERIC_SYMPTOM dedupe tiers in core/diagnosis.py.
+
+patterns:
+  - name: filesystem_bad_superblock
+    severity: critical
+    description: "Filesystem superblock is corrupt or unreadable"
+    regex:
+      - 'Bad magic number in super-block'
+      - 'Superblock invalid, trying backup blocks'
+      - 'The superblock could not be read or does not describe a valid'
+      # Kernel mount error observed live on GCE serial console (Debian 12) when a
+      # superblock is wiped: systemd-fsck detail stays in the journal, but the
+      # kernel prints "EXT4-fs (sdX): VFS: Can't find ext4 filesystem".
+      # Anchored to a real mount failure in the same boot window: healthy VMs
+      # whose startup scripts do "try mount, else mkfs" on a blank disk emit the
+      # same VFS line right before mkfs output and must NOT be flagged. The
+      # lookahead keeps match.group(0) single-line so evidence extraction in
+      # _extract_context_lines still renders a clean context window.
+      - 'VFS: Can''t find ext4 filesystem(?=[\s\S]{0,600}?(?:\[FAILED\] Failed to mount|Dependency failed for))'
+    fixes:
+      - "From rescue mode, run fsck with a backup superblock on the unmounted disk: fsck -b 32768 -y /dev/sdX"
+      - "If fsck cannot recover the filesystem, restore the disk from a snapshot"
+
+  - name: filesystem_corruption
+    severity: critical
+    description: "Filesystem corruption detected on a disk"
+    regex:
+      - 'Either the superblock or the partition table is likely to be corrupt'
+      - 'Corruption of in-memory data detected'
+      # [\w-]+ (not \w+): device-mapper names contain hyphens (dm-0, LVM on
+      # RHEL/SAP images) and \w alone silently misses them.
+      - 'XFS \([\w-]+\): Metadata corruption detected'
+      # Modern kernels report checksum-verified corruption with different
+      # wording; also match the canonical companion line the kernel emits for
+      # both variants ("Unmount and run xfs_repair").
+      - 'XFS \([\w-]+\): Metadata CRC error detected'
+      - 'XFS \([\w-]+\): Unmount and run xfs_repair'
+      - 'EXT4-fs error \(device'
+    fixes:
+      - "From rescue mode, check the unmounted disk: fsck -y /dev/sdX (ext) or xfs_repair /dev/sdX (XFS)"
+      - "If corruption persists, check disk health in GCP Console and restore from a snapshot"

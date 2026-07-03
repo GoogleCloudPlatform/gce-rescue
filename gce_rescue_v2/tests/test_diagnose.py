@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch, MagicMock
 import pytest
 from googleapiclient.errors import HttpError
 
+from gce_rescue_v2.core.diagnosis import analyze_serial_output
 from gce_rescue_v2.operations.diagnose import DiagnoseOperation
 
 
@@ -57,6 +58,14 @@ def _make_http_error(status_code, message="error"):
     resp = Mock()
     resp.status = status_code
     return HttpError(resp, f'{{"error": {{"message": "{message}"}}}}'.encode())
+
+
+def _diagnose(serial: str):
+    """Run DiagnoseOperation against a serial excerpt, return rollback_data."""
+    compute = _make_compute(serial_output=serial)
+    op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+    result = op.execute('test-vm')
+    return result.rollback_data
 
 
 def _diagnose(serial: str):
@@ -905,3 +914,254 @@ class TestDiagnoseSshRedTeamRegressions:
         data = _diagnose(serial)
         assert 'ssh' not in {e['category'] for e in data['boot_errors']}
         assert data['diagnosis_status'] == 'healthy'
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseFilesystemPatterns
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseFilesystemPatterns:
+    """Detection tests for the filesystem diagnose category."""
+
+    def test_bad_magic_number_detected(self):
+        """e2fsck bad superblock magic should fire filesystem_bad_superblock."""
+        serial = (
+            "[  OK  ] Reached target local-fs-pre.target - Preparation for Local File Systems.\n"
+            "         Starting systemd-fsck@dev-sdb.service - File System Check on /dev/sdb...\n"
+            "systemd-fsck[412]: fsck.ext4: Bad magic number in super-block while trying to open /dev/sdb\n"
+            "systemd-fsck[412]: fsck failed with exit status 8.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_bad_superblock' in names
+
+    def test_superblock_invalid_backup_blocks_detected(self):
+        """fsck falling back to backup superblocks should fire filesystem_bad_superblock."""
+        serial = (
+            "         Starting systemd-fsck@dev-sdb.service - File System Check on /dev/sdb...\n"
+            "systemd-fsck[388]: fsck.ext4: Superblock invalid, trying backup blocks...\n"
+            "systemd-fsck[388]: /dev/sdb was not cleanly unmounted, check forced.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_bad_superblock' in names
+
+    def test_superblock_could_not_be_read_detected(self):
+        """e2fsck superblock-unreadable guidance should fire filesystem_bad_superblock."""
+        serial = (
+            "systemd-fsck[395]: The superblock could not be read or does not describe a valid ext2/ext3/ext4\n"
+            "systemd-fsck[395]: filesystem.  If the device is valid and it really contains an ext2/ext3/ext4\n"
+            "systemd-fsck[395]: filesystem (and not swap or ufs or something else), then the superblock\n"
+            "systemd-fsck[395]: is corrupt, and you might try running e2fsck with an alternate superblock:\n"
+            "systemd-fsck[395]:     e2fsck -b 8193 <device>\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_bad_superblock' in names
+
+    def test_vfs_cant_find_ext4_detected(self):
+        """Kernel mount error for a wiped superblock (observed live on GCE
+        Debian 12 serial console) should fire filesystem_bad_superblock."""
+        serial = (
+            "         Mounting mnt-data.mount - /mnt/data...\n"
+            "[    4.444497] EXT4-fs (sda): VFS: Can't find ext4 filesystem\n"
+            "[FAILED] Failed to mount mnt-data.mount - /mnt/data.\n"
+            "[DEPEND] Dependency failed for local-fs.target - Local File Systems.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_bad_superblock' in names
+        # Tier-2 dedupe is category-scoped: a root cause only demotes generic
+        # symptoms of its OWN category, so the fstab-level mount symptom is
+        # reported alongside the filesystem root cause rather than hidden by
+        # a finding from a different category.
+        assert 'fstab_mount_failed' in names
+
+    def test_superblock_partition_table_corrupt_detected(self):
+        """e2fsck size-mismatch corruption verdict should fire filesystem_corruption."""
+        serial = (
+            "systemd-fsck[401]: The filesystem size (according to the superblock) is 2621440 blocks\n"
+            "systemd-fsck[401]: The physical size of the device is 2359296 blocks\n"
+            "systemd-fsck[401]: Either the superblock or the partition table is likely to be corrupt!\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_corruption' in names
+
+    def test_xfs_in_memory_corruption_detected(self):
+        """XFS in-memory corruption shutdown should fire filesystem_corruption."""
+        serial = (
+            "[  241.693421] XFS (sdb1): Corruption of in-memory data detected.  Shutting down filesystem\n"
+            "[  241.695832] XFS (sdb1): Please unmount the filesystem and rectify the problem(s)\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_corruption' in names
+
+    def test_xfs_metadata_corruption_detected(self):
+        """XFS metadata verifier failure should fire filesystem_corruption."""
+        serial = (
+            "[   88.114532] XFS (sdb1): Metadata corruption detected at xfs_inode_buf_verify+0x15e/0x180 [xfs], xfs_inode block 0x80\n"
+            "[   88.117201] XFS (sdb1): Unmount and run xfs_repair\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_corruption' in names
+
+    def test_ext4_fs_error_detected(self):
+        """Kernel EXT4-fs error report should fire filesystem_corruption."""
+        serial = (
+            "[  152.208814] EXT4-fs error (device sdb1): ext4_find_entry:1455: inode #2: comm systemd: reading directory lblock 0\n"
+            "[  152.211903] Aborting journal on device sdb1-8.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_corruption' in names
+
+    def test_benign_ext4_mount_message_not_matched(self):
+        """Normal EXT4-fs mount messages must not fire filesystem patterns."""
+        serial = (
+            "[    1.812345] EXT4-fs (sda1): mounted filesystem with ordered data mode. Quota mode: none.\n"
+            "[    2.104211] EXT4-fs (sdb): recovery complete\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+
+    def test_fstab_errors_do_not_trigger_filesystem_patterns(self):
+        """Plain fstab config errors must not fire filesystem patterns."""
+        serial = (
+            "Timed out waiting for device /dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "Dependency failed for /mnt/data\n"
+            "You are in emergency mode. After logging in, type journalctl -xb\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'filesystem' not in categories
+
+    def test_healthy_boot_matches_no_filesystem_patterns(self):
+        """A clean boot log should produce a healthy diagnosis."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel@lists.debian.org)\n"
+            "[    2.410394] EXT4-fs (sda1): mounted filesystem with ordered data mode.\n"
+            "[  OK  ] Reached target multi-user.target - Multi-User System.\n"
+            "Debian GNU/Linux 12 test-vm ttyS0\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseFilesystemRedTeamRegressions
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseFilesystemRedTeamRegressions:
+    """Regression tests for red-team findings against the filesystem category.
+
+    Each test uses the exact failing serial line from the red-team report.
+    """
+
+    # Healthy "try mount, else mkfs" startup-script probe on a blank disk.
+    # The VFS line lands AFTER the boot-success markers (the unit STARTS
+    # before the script output), which defeated ordering-based suppression.
+    _MKFS_PROBE_SERIAL = (
+        "[  OK  ] Reached target multi-user.target - Multi-User System.\n"
+        "[  OK  ] Started google-startup-scripts.service - Google Compute Engine Startup Scripts.\n"
+        "[   15.221133] EXT4-fs (sdb): VFS: Can't find ext4 filesystem\n"
+        "mke2fs 1.47.0 (5-Feb-2023)\n"
+        "Creating filesystem with 2621440 4k blocks and 655360 inodes\n"
+    )
+
+    def test_mkfs_probe_on_running_vm_is_healthy(self):
+        """C1: mount-probe-then-mkfs on a blank disk must not fire
+        filesystem_bad_superblock, even when the VFS line lands after the
+        last boot-success marker (RUNNING)."""
+        result = analyze_serial_output(
+            self._MKFS_PROBE_SERIAL, 'test-vm', 'zone-a', 'RUNNING'
+        )
+        assert result.diagnosis_status == 'healthy'
+        assert result.boot_errors == []
+
+    def test_mkfs_probe_on_terminated_vm_is_healthy(self):
+        """C1: same buffer on a TERMINATED VM (boot-success suppression is
+        skipped entirely) must also stay healthy — the anchored regex, not
+        suppression, has to reject the probe."""
+        result = analyze_serial_output(
+            self._MKFS_PROBE_SERIAL, 'test-vm', 'zone-a', 'TERMINATED'
+        )
+        assert result.diagnosis_status == 'healthy'
+        assert result.boot_errors == []
+
+    def test_vfs_cant_find_ext4_anchored_match_is_single_line(self):
+        """C1: the anchored regex must still fire on a real mount failure and
+        keep detected_pattern single-line (lookahead, no multi-line blob)."""
+        serial = (
+            "         Mounting mnt-data.mount - /mnt/data...\n"
+            "[    4.444497] EXT4-fs (sda): VFS: Can't find ext4 filesystem\n"
+            "[FAILED] Failed to mount mnt-data.mount - /mnt/data.\n"
+            "[DEPEND] Dependency failed for local-fs.target - Local File Systems.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        errors = {e.name: e for e in result.boot_errors}
+        assert 'filesystem_bad_superblock' in errors
+        assert '\n' not in errors['filesystem_bad_superblock'].detected_pattern
+
+    def test_xfs_metadata_corruption_on_device_mapper_detected(self):
+        """C2: XFS corruption on device-mapper devices (dm-0, LVM on
+        RHEL/SAP images) must fire filesystem_corruption; \\w+ missed the
+        hyphen in the device name."""
+        serial = (
+            "[  102.5] XFS (dm-0): Metadata corruption detected at xfs_inode_buf_verify+0x15a/0x180 [xfs]\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'filesystem_corruption' in names
+
+    def test_xfs_metadata_crc_error_detected(self):
+        """C3: modern-kernel XFS 'Metadata CRC error detected' wording must
+        fire filesystem_corruption."""
+        serial = (
+            "[   88.1] XFS (sda1): Metadata CRC error detected at xfs_agi_read_verify+0xd0/0xf0 [xfs], xfs_agi block 0x2\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'filesystem_corruption' in names
+
+    def test_xfs_unmount_and_run_xfs_repair_detected(self):
+        """C3: the canonical companion line emitted for both XFS corruption
+        wordings must fire filesystem_corruption on its own."""
+        serial = (
+            "[   88.1] XFS (sdb1): Mounting V5 Filesystem\n"
+            "[   88.2] XFS (sdb1): Unmount and run xfs_repair\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'filesystem_corruption' in names
+
+    def test_corrupt_nofail_secondary_disk_survives_boot_success(self):
+        """C4: a corrupt nofail secondary disk on a VM that boots fine must
+        still be reported on RUNNING — boot-success suppression must not
+        clear filesystem-category findings."""
+        serial = (
+            "[    5.1] EXT4-fs error (device sdb1): ext4_find_entry:1455: inode #2: comm systemd: reading directory lblock 0\n"
+            "[  OK  ] Reached target multi-user.target - Multi-User System.\n"
+            "[  OK  ] Startup finished in 5.2s.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'RUNNING')
+        assert result.diagnosis_status == 'boot_errors_detected'
+        names = [e.name for e in result.boot_errors]
+        assert 'filesystem_corruption' in names
+
+    def test_boot_success_still_clears_fstab_noise(self):
+        """C4 guard: the exemption is filesystem-only — fstab timeout noise
+        on a successfully booted RUNNING VM must still be cleared."""
+        serial = (
+            "Timed out waiting for device /dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678\n"
+            "[  OK  ] Reached target multi-user.target - Multi-User System.\n"
+            "[  OK  ] Startup finished in 6.1s.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'RUNNING')
+        assert result.diagnosis_status == 'healthy'
+        assert result.boot_errors == []

@@ -297,3 +297,21 @@ class TestShippedPatterns:
             assert pattern.name.startswith('ssh_'), (
                 f"Pattern '{pattern.name}' missing 'ssh_' prefix"
             )
+
+    def test_filesystem_patterns_present(self):
+        fs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'filesystem']
+        assert len(fs_patterns) == 2
+
+    def test_filesystem_pattern_names_prefixed(self):
+        """All filesystem pattern names should carry the category prefix."""
+        fs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'filesystem']
+        for pattern in fs_patterns:
+            assert pattern.name.startswith('filesystem_')
+
+    def test_filesystem_patterns_have_inline_fixes(self):
+        """All filesystem patterns should have inline fixes from merged YAML."""
+        fs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'filesystem']
+        for pattern in fs_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )

@@ -347,9 +347,11 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
     ]
     # ssh failures are boot-completing by nature (sshd or the guest agent
     # fails while the rest of the boot reaches multi-user.target), so a
-    # "Startup finished" marker does not mean they are resolved. They are
-    # therefore exempt from boot-success suppression.
-    _SUPPRESSION_EXEMPT_CATEGORIES = {'ssh'}
+    # "Startup finished" marker does not mean they are resolved. Filesystem
+    # corruption is never self-resolving noise either: a corrupt secondary
+    # disk marked nofail lets the VM boot fine while the disk stays broken.
+    # Both are therefore exempt from boot-success suppression.
+    _SUPPRESSION_EXEMPT_CATEGORIES = {'ssh', 'filesystem'}
     suppressible = [
         e for e in detected_errors
         if e.category not in _SUPPRESSION_EXEMPT_CATEGORIES
