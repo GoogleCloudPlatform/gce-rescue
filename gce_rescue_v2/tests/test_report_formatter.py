@@ -679,6 +679,15 @@ class TestWave2CategoryLabels:
         assert (_category_label('systemd_early')
                 == 'Fix early systemd boot failure')
 
+    def test_wave45_category_labels_defined(self):
+        from gce_rescue_v2.utils.report_formatter import _category_label
+        assert _category_label('readonly') == 'Recover read-only filesystem'
+        assert _category_label('oom') == 'Investigate out-of-memory kills'
+        assert _category_label('selinux') == 'Fix SELinux policy/relabel'
+        assert _category_label('startup_script') == 'Fix startup script'
+        assert _category_label('cloud_init') == 'Fix cloud-init configuration'
+        assert _category_label('network') == 'Fix network configuration'
+
     def test_crypt_rendered_as_detect_only_guidance(self, formatter):
         """crypt is detect-only: no rescue/restore workflow is offered."""
         diagnosis = {

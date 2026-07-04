@@ -513,7 +513,14 @@ class TestKernelPanicDetection:
         assert 'kernel_panic_generic' not in names
 
     def test_oom_panic_detected(self):
-        """OOM panic should report kernel_panic_oom, not generic."""
+        """OOM panic should report kernel_panic_oom, not generic.
+
+        CONTRACT CHANGE (Wave 4): the 'Out of memory: Killed process' line
+        used to match nothing; since oom.yaml landed it deliberately also
+        produces an oom finding (warning). Both are reported: the kill and
+        the panic are different, both-true findings, and the warning can
+        never suppress the critical (tier-1 requires CRITICAL severity and
+        _is_boot_root_cause excludes warnings/detect-only)."""
         serial = (
             "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
             "[  512.103311] Out of memory: Killed process 1234 (java) total-vm:8388608kB\n"
@@ -524,6 +531,10 @@ class TestKernelPanicDetection:
         names = [e['name'] for e in data['boot_errors']]
         assert 'kernel_panic_oom' in names
         assert 'kernel_panic_generic' not in names
+        assert 'oom_killed_process' in names
+        severities = {e['name']: e['severity'] for e in data['boot_errors']}
+        assert severities['kernel_panic_oom'] == 'critical'
+        assert severities['oom_killed_process'] == 'warning'
 
     def test_machine_check_panic_detected(self):
         """Fatal machine check panic should report kernel_panic_machine_check."""
@@ -588,6 +599,9 @@ class TestKernelPanicDetection:
         names = [e['name'] for e in data['boot_errors']]
         assert 'kernel_panic_oom' in names
         assert 'kernel_panic_generic' not in names
+        # Wave 4 contract change: the kill line now also reports oom
+        # (warning) alongside the critical panic - see oom.yaml header.
+        assert 'oom_killed_process' in names
 
     def test_compulsory_oom_panic_detected(self):
         """sysctl vm.panic_on_oom=2 variant ('compulsory ... is enabled')."""
@@ -2141,7 +2155,7 @@ class TestGrubDetection:
 
     def test_grub_out_of_memory_detected(self):
         """GRUB OOM is bound to the 'error:' prefix and must never be
-        confused with kernel OOM (kernel/disk_full categories)."""
+        confused with kernel OOM (kernel/disk_full/oom categories)."""
         serial = (
             "GRUB loading.\n"
             "Welcome to GRUB!\n"
@@ -2156,6 +2170,10 @@ class TestGrubDetection:
         categories = {e['category'] for e in data['boot_errors']}
         assert 'kernel' not in categories
         assert 'disk_full' not in categories
+        # Wave 4: the oom category's regexes are bound to kernel OOM-killer
+        # wording (PID / gfp_mask) - the GRUB 'error: out of memory.' line
+        # must not fire it either.
+        assert 'oom' not in categories
 
     def test_grub_invalid_magic_detected(self):
         serial = (
@@ -2193,7 +2211,10 @@ class TestGrubDetection:
 
     def test_kernel_oom_lines_do_not_trigger_grub(self):
         """Kernel OOM output (timestamp-prefixed 'Out of memory') must not
-        match grub_out_of_memory — proves the 'error:' line-start binding."""
+        match grub_out_of_memory — proves the 'error:' line-start binding.
+
+        (Wave 4: the same buffer now legitimately reports the oom
+        category — the guard here is only that grub must not fire.)"""
         serial = (
             "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
             "[  512.103311] Out of memory: Killed process 1234 (java) "
@@ -2204,6 +2225,7 @@ class TestGrubDetection:
         data = _diagnose(serial)
         categories = {e['category'] for e in data['boot_errors']}
         assert 'grub' not in categories
+        assert 'oom' in categories
 
     def test_mount_unknown_filesystem_type_does_not_trigger_grub(self):
         """The kernel/mount 'unknown filesystem type' wording never starts a
@@ -4038,6 +4060,708 @@ class TestWave3RedTeamRegressions:
             "myapp[1421]: Unable to handle request, retrying\n"
             "[   11.512345] systemd[1]: Startup finished in 3.1s (kernel) "
             "+ 8.4s (userspace) = 11.5s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestReadonlyDetection (Wave 4 - runtime read-only remount / disk I/O)
+# ---------------------------------------------------------------------------
+
+class TestReadonlyDetection:
+    """Detection tests for readonly.yaml (errors=remount-ro, I/O errors)."""
+
+    def test_ext4_remount_readonly_detected(self):
+        """The device-bound errors=remount-ro line is the critical signal."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[ 8123.412345] EXT4-fs error (device sda1): "
+            "ext4_journal_check_start:83: comm rsyslogd: Detected aborted "
+            "journal\n"
+            "[ 8123.512345] EXT4-fs (sda1): Remounting filesystem read-only\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'readonly_remount' in names
+        severities = {e['name']: e['severity'] for e in data['boot_errors']}
+        assert severities['readonly_remount'] == 'critical'
+
+    def test_bare_remount_readonly_detected(self):
+        """ext2/jbd2 print the remount line without the EXT4-fs prefix."""
+        serial = (
+            "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
+            "[ 4451.209871] Aborting journal on device sdb1-8.\n"
+            "[ 4451.312345] Remounting filesystem read-only\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'readonly_remount' in names
+
+    def test_block_io_errors_detected_as_error_severity(self):
+        """blk_update_request and the 5.18+ prefixless form both match;
+        severity stays error (degradation signal, not proof of fs death)."""
+        serial_old = (
+            "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
+            "[ 7211.101234] blk_update_request: I/O error, dev sdb, "
+            "sector 409600 op 0x0:(READ) flags 0x80700 phys_seg 1 prio "
+            "class 0\n"
+        )
+        serial_new = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[ 7211.101234] I/O error, dev sda, sector 2048 op 0x1:(WRITE) "
+            "flags 0x800 phys_seg 8 prio class 2\n"
+            "[ 7211.202345] Buffer I/O error on dev sda1, logical block 0, "
+            "lost async page write\n"
+        )
+        for serial in (serial_old, serial_new):
+            data = _diagnose(serial)
+            names = [e['name'] for e in data['boot_errors']]
+            assert 'readonly_io_error' in names
+            severities = {e['name']: e['severity']
+                          for e in data['boot_errors']}
+            assert severities['readonly_io_error'] == 'error'
+
+    def test_readonly_and_filesystem_both_fire_on_same_incident(self):
+        """Overlap guard: the 'EXT4-fs error (device ...)' line belongs to
+        filesystem_corruption and the remount-ro line to readonly_remount.
+        Both categories firing on the same buffer is expected and correct
+        (different, both-true findings); neither may dedupe the other."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[ 8123.412345] EXT4-fs error (device sda1): "
+            "ext4_find_entry:1683: inode #2: comm cron: reading directory "
+            "lblock 0\n"
+            "[ 8123.512345] EXT4-fs (sda1): Remounting filesystem read-only\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'filesystem' in categories
+        assert 'readonly' in categories
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'filesystem_corruption' in names
+        assert 'readonly_remount' in names
+
+    def test_readonly_survives_boot_success(self):
+        """A remount-ro BEFORE the boot-success marker must still be
+        reported on a RUNNING VM - the VM keeps 'running' while every
+        write fails, which is the entire point of this category."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    8.412345] EXT4-fs (sda1): Remounting filesystem read-only\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'readonly_remount' in names
+
+    def test_healthy_mount_lines_not_flagged(self):
+        """Healthy 'mounted filesystem' / 're-mounted' kernel lines must
+        not fire any readonly pattern."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    2.104233] EXT4-fs (sda1): mounted filesystem with ordered "
+            "data mode. Quota mode: none.\n"
+            "[    5.412345] EXT4-fs (sda1): re-mounted. Quota mode: none.\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestOomDetection (Wave 4 - live OOM kills, mode 55)
+# ---------------------------------------------------------------------------
+
+class TestOomDetection:
+    """Detection tests for oom.yaml (runtime OOM-killer events).
+
+    DELIBERATE CONTRACT CHANGE: before Wave 4 these lines matched nothing
+    (they only appeared as inert context in kernel_panic_oom fixtures and
+    as cross-fire negatives for grub/disk_full). They now produce a
+    warning-severity oom finding by design.
+    """
+
+    def test_historical_oom_kill_on_healthy_vm_is_warning_only(self):
+        """One historical OOM kill on a long-running, otherwise healthy VM:
+        the warning is shown (survives_boot_success), and it is the ONLY
+        finding - it must not drag in kernel/disk_full/grub."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "debian login: \n"
+            "[86412.103311] java invoked oom-killer: gfp_mask=0x140dca"
+            "(GFP_HIGHUSER_MOVABLE|__GFP_COMP|__GFP_ZERO), order=0, "
+            "oom_score_adj=0\n"
+            "[86412.209972] Out of memory: Killed process 1234 (java) "
+            "total-vm:8388608kB, anon-rss:3145728kB, file-rss:0kB\n"
+            "[86412.312345] oom_reaper: reaped process 1234 (java)\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        assert len(data['boot_errors']) == 1
+        err = data['boot_errors'][0]
+        assert err['name'] == 'oom_killed_process'
+        assert err['severity'] == 'warning'
+        assert err['category'] == 'oom'
+
+    def test_invoked_oom_killer_line_alone_detected(self):
+        """The invocation header alone (kill line lost to buffer rotation)
+        must still produce the single oom finding."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  512.103311] chrome invoked oom-killer: gfp_mask=0x140cca, "
+            "order=0, oom_score_adj=300\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert names.count('oom_killed_process') == 1
+
+    def test_panic_on_oom_reports_both_oom_and_kernel_panic(self):
+        """A panic_on_oom buffer reports BOTH the kill (oom, warning) and
+        the panic (kernel_panic_oom, critical) - and the warning does not
+        suppress or demote the critical (tier-1 suppressors require
+        CRITICAL severity; oom is warning + detect-only)."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  512.103311] Out of memory: Killed process 1234 (java) "
+            "total-vm:8388608kB\n"
+            "[  512.209972] Kernel panic - not syncing: Out of memory: "
+            "system-wide panic_on_oom is enabled\n"
+        )
+        data = _diagnose(serial)
+        severities = {e['name']: e['severity'] for e in data['boot_errors']}
+        assert severities.get('oom_killed_process') == 'warning'
+        assert severities.get('kernel_panic_oom') == 'critical'
+        assert 'kernel_panic_generic' not in severities
+
+    def test_panic_line_alone_does_not_fire_oom(self):
+        """The panic wording ('Out of memory: system-wide panic_on_oom is
+        enabled') carries no kill PID - the oom regexes must not match it,
+        proving they are bound to OOM-killer kill wording."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  600.001122] Kernel panic - not syncing: Out of memory: "
+            "system-wide panic_on_oom is enabled\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'kernel' in categories
+        assert 'oom' not in categories
+
+    def test_oom_warning_never_suppresses_emergency_mode(self):
+        """Tier-1 guard: emergency mode (catch-all, critical) may only be
+        replaced by a CRITICAL root cause - an oom warning must leave it
+        untouched, and both findings are reported."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  312.103311] Out of memory: Killed process 812 (mkfs.ext4) "
+            "total-vm:524288kB\n"
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view system logs.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'oom_killed_process' in names
+        assert 'fstab_emergency_mode' in names
+
+    def test_prose_oom_mentions_not_flagged(self):
+        """Prose quoting 'Out of memory' / 'oom-killer' without kernel kill
+        wording (PID, gfp_mask) must not match."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "startup-script[900]: INFO: page oncall if app logs show "
+            "\"Out of memory\" or the oom-killer was invoked\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestSelinuxDetection (Wave 4 - mode 51, RHEL family)
+# ---------------------------------------------------------------------------
+
+class TestSelinuxDetection:
+    """Detection tests for selinux.yaml."""
+
+    def test_policy_load_failure_freezing_detected(self):
+        """The classic one-line RHEL unbootable: 'Failed to load SELinux
+        policy, freezing.' - selinux fires; systemd_freeze must NOT
+        (its anchor is the distinct 'Freezing execution' wording)."""
+        serial = (
+            "[    1.912345] systemd[1]: Successfully made /usr/ read-only.\n"
+            "[    2.412345] systemd[1]: Failed to load SELinux policy, "
+            "freezing.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'selinux_policy_load_failure' in names
+        assert 'systemd_freeze' not in names
+        severities = {e.name: e.severity for e in result.boot_errors}
+        assert severities['selinux_policy_load_failure'] == 'critical'
+
+    def test_policy_load_failure_two_line_form_reports_both(self):
+        """Modern systemd splits cause and terminal action across lines:
+        selinux reports the cause, systemd_freeze the freeze - both are
+        true and both must surface."""
+        serial = (
+            "[    2.412345] systemd[1]: Failed to load SELinux policy.\n"
+            "[    2.412500] systemd[1]: Freezing execution.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'selinux_policy_load_failure' in names
+        assert 'systemd_freeze' in names
+
+    def test_kernel_policy_read_failure_detected(self):
+        """Kernel-side wording with its double space after 'SELinux:'."""
+        serial = (
+            "[    0.000000] Linux version 5.14.0-362.el9.x86_64\n"
+            "[    1.512345] SELinux:  policy read failure\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'selinux_policy_load_failure' in names
+
+    def test_relabel_banner_is_warning(self):
+        """The autorelabel banner is the start of a normal self-resolving
+        relabel run - warning, not critical."""
+        serial = (
+            "[    0.000000] Linux version 5.14.0-362.el9.x86_64\n"
+            "*** Warning -- SELinux targeted policy relabel is required. "
+            "***\n"
+            "*** Relabeling could take a very long time, depending on file "
+            "***\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        findings = [e for e in result.boot_errors
+                    if e.name == 'selinux_relabel_required']
+        assert findings
+        assert all(f.severity == 'warning' for f in findings)
+
+    def test_avc_denials_and_healthy_selinux_lines_not_flagged(self):
+        """Routine AVC denials and the healthy policy-load lines on an
+        enforcing RHEL boot must not produce selinux findings."""
+        serial = (
+            "[    0.000000] Linux version 5.14.0-362.el9.x86_64\n"
+            "[    1.512345] SELinux:  Initializing.\n"
+            "[    3.412345] systemd[1]: Successfully loaded SELinux policy "
+            "in 98.234ms.\n"
+            "[    9.812345] audit: type=1400 audit(1719900000.123:4): avc:  "
+            "denied  { read } for  pid=812 comm=\"httpd\" name=\"data\" "
+            "dev=\"sda1\" ino=1234\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_stale_selinux_failure_cleared_by_later_successful_boot(self):
+        """No survives_boot_success (deliberate): a later completed boot
+        proves the policy loaded, so the old failure is stale noise that
+        suppression must clear on a RUNNING VM."""
+        serial = (
+            "[    2.412345] systemd[1]: Failed to load SELinux policy, "
+            "freezing.\n"
+            "[    0.000000] Linux version 5.14.0-362.el9.x86_64 (second "
+            "boot)\n"
+            "[    3.412345] systemd[1]: Successfully loaded SELinux policy "
+            "in 98.234ms.\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestStartupScriptDetection (Wave 5 - GCE startup-script failures)
+# ---------------------------------------------------------------------------
+
+class TestStartupScriptDetection:
+    """Detection tests for startup_script.yaml."""
+
+    def test_nonzero_exit_status_detected_as_warning(self):
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  OK  ] Started google-startup-scripts.service - Google "
+            "Compute Engine Startup Scripts.\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "google_metadata_script_runner[712]: startup-script exit "
+            "status 1\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        err = data['boot_errors'][0]
+        assert err['name'] == 'startup_script_failed'
+        assert err['severity'] == 'warning'
+        assert err['category'] == 'startup_script'
+
+    def test_exit_status_zero_never_matches(self):
+        """Overlap guard: the healthy 'startup-script exit status 0' line
+        prints on every successful boot and must produce zero findings."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "google_metadata_script_runner[712]: startup-script exit "
+            "status 0\n"
+            "google_metadata_script_runner[712]: Finished running startup "
+            "scripts.\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_exit_status_zero_alongside_real_failure_stays_silent(self):
+        """A successful startup script next to an unrelated boot failure
+        must not add a startup_script finding."""
+        serial = (
+            "Linux version 5.15.0\n"
+            "Timed out waiting for device /dev/disk/by-uuid/"
+            "deadbeef-1234-5678-9abc-def012345678\n"
+            "google_metadata_script_runner[712]: startup-script exit "
+            "status 0\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        categories = {e.category for e in result.boot_errors}
+        assert 'fstab' in categories
+        assert 'startup_script' not in categories
+
+    def test_multidigit_exit_status_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "google_metadata_script_runner[712]: startup-script exit "
+            "status 127\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'startup_script_failed' in names
+
+    def test_startup_script_url_failure_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "google_metadata_script_runner[712]: startup-script-url exit "
+            "status 1\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'startup_script_failed' in names
+
+    def test_guest_agent_script_failed_wording_detected(self):
+        """Guest-agent variant: Script "startup-script" failed with error.
+        (No contiguous 'exit status' phrase - covered by the second
+        regex.)"""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "GCEMetadataScripts: Script \"startup-script\" failed with "
+            "error: exit status 127\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'startup_script_failed' in names
+
+
+# ---------------------------------------------------------------------------
+# TestCloudInitDetection (Wave 5 - cloud-init failures)
+# ---------------------------------------------------------------------------
+
+class TestCloudInitDetection:
+    """Detection tests for cloud_init.yaml."""
+
+    def test_module_traceback_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[   10.312478] cloud-init[981]: Traceback (most recent call "
+            "last):\n"
+            "[   10.312600] cloud-init[981]:   File \"/usr/lib/python3/"
+            "dist-packages/cloudinit/cmd/main.py\", line 761, in "
+            "status_wrapper\n"
+            "[   10.312700] cloud-init[981]: ValueError: bad user-data\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'cloud_init_stage_failure' in names
+
+    def test_failed_to_run_module_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[   11.412478] cloud-init[981]: 2026-07-04 10:00:00,123 - "
+            "util.py[WARNING]: Failed to run module scripts-user\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'cloud_init_stage_failure' in names
+
+    def test_cloud_init_unit_failure_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[FAILED] Failed to start Initial cloud-init job (metadata "
+            "service crawler).\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'cloud_init_unit_failed' in names
+
+    def test_cloud_config_unit_failure_detected(self):
+        """cloud-config.service's description carries no 'cloud-init'
+        token - covered by the dedicated cloud-(config|final) regex."""
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[FAILED] Failed to start Apply the settings specified in "
+            "cloud-config.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'cloud_init_unit_failed' in names
+
+    def test_healthy_cloud_init_lines_not_flagged(self):
+        """Normal cloud-init stage banners and the success 'finished'
+        line must produce zero findings."""
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[   10.312478] cloud-init[498]: Cloud-init v. 24.1.3 running "
+            "'modules:final' at Fri, 04 Jul 2026 10:00:00 +0000.\n"
+            "[   11.812345] cloud-init[498]: Cloud-init v. 24.1.3 finished "
+            "at Fri, 04 Jul 2026 10:00:01 +0000. Datasource DataSourceGCE. "
+            "Up 11.28 seconds\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_ordering_cycle_naming_cloud_init_does_not_fire_cloud_init(self):
+        """An ordering cycle that happens to delete cloud-init's job is a
+        systemd_early finding, not a cloud_init one."""
+        serial = (
+            "[    3.912345] systemd[1]: sysinit.target: Found ordering "
+            "cycle on sysinit.target/start\n"
+            "[    3.912400] systemd[1]: sysinit.target: Breaking ordering "
+            "cycle by deleting job cloud-init.service/start\n"
+            "[    3.912500] systemd[1]: cloud-init.service: Job "
+            "cloud-init.service/start deleted to break ordering cycle\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        categories = {e.category for e in result.boot_errors}
+        assert 'systemd_early' in categories
+        assert 'cloud_init' not in categories
+
+    def test_provisioning_failure_survives_boot_success(self):
+        """cloud-init failures coexist with a completed boot by nature -
+        a RUNNING VM with the success marker AFTER the failure must still
+        report it."""
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[   11.412478] cloud-init[981]: 2026-07-04 10:00:00,123 - "
+            "util.py[WARNING]: Failed to run module scripts-user\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'cloud_init_stage_failure' in names
+
+
+# ---------------------------------------------------------------------------
+# TestNetworkBootDetection (Wave 5 - network bring-up failures)
+# ---------------------------------------------------------------------------
+
+class TestNetworkBootDetection:
+    """Detection tests for network.yaml."""
+
+    def test_networkd_unit_failure_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[FAILED] Failed to start systemd-networkd.service - Network "
+            "Configuration.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'network_unit_failed' in names
+
+    def test_network_manager_unit_failure_detected(self):
+        serial = (
+            "[    0.000000] Linux version 5.14.0-362.el9.x86_64\n"
+            "[FAILED] Failed to start Network Manager.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'network_unit_failed' in names
+
+    def test_dhcp_no_offers_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "dhclient[612]: DHCPDISCOVER on eth0 to 255.255.255.255 port "
+            "67 interval 15\n"
+            "dhclient[612]: No DHCPOFFERS received.\n"
+            "dhclient[612]: No working leases in persistent database - "
+            "sleeping.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'network_dhcp_failure' in names
+
+    def test_failed_to_bring_up_eth0_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "ifup: failed to bring up eth0\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'network_dhcp_failure' in names
+
+    def test_post_boot_nic_death_reported_on_running_vm(self):
+        """THE support case this category exists for: the NIC dies after a
+        completed boot. The error lines sit AFTER the last success marker,
+        so the ordering check protects them from suppression even though
+        the category does not declare survives_boot_success."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "debian login: \n"
+            "dhclient[9812]: DHCPDISCOVER on eth0 to 255.255.255.255 port "
+            "67 interval 20\n"
+            "dhclient[9812]: No DHCPOFFERS received.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'network_dhcp_failure' in names
+
+    def test_benign_early_flap_cleared_by_boot_success(self):
+        """A bring-up failure that the boot recovered from (marker AFTER
+        the error) is exactly the transient noise survives_boot_success:
+        false exists to clear - the VM must report healthy."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "dhclient[612]: No DHCPOFFERS received.\n"
+            "[FAILED] Failed to start Wait for Network to be Configured.\n"
+            "dhclient[615]: DHCPACK of 10.128.0.14 from 169.254.169.254\n"
+            "[   22.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 18.1s (userspace) = 22.3s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_benign_unit_failures_do_not_fire_network(self):
+        """The healthy-noise units (apt-daily, motd-news style) must not
+        match the unit-bound network regexes."""
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[FAILED] Failed to start Update APT News.\n"
+            "[FAILED] Failed to start Download data for packages that "
+            "failed at package install time.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        categories = {e.category for e in result.boot_errors}
+        assert 'network' not in categories
+
+
+# ---------------------------------------------------------------------------
+# TestSerialGettyDetection (Wave 5 - serial console access, ssh category)
+# ---------------------------------------------------------------------------
+
+class TestSerialGettyDetection:
+    """Detection tests for ssh_serial_getty_failed (lives in ssh.yaml:
+    the ssh category is the operator-access-paths category, and getty
+    failures are boot-completing access failures exactly like sshd's)."""
+
+    def test_getty_failed_result_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   14.512345] systemd[1]: serial-getty@ttyS0.service: Failed "
+            "with result 'exit-code'.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_serial_getty_failed' in names
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'ssh' in categories
+
+    def test_getty_restart_loop_detected(self):
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   14.512345] systemd[1]: serial-getty@ttyS0.service: Start "
+            "request repeated too quickly.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_serial_getty_failed' in names
+
+    def test_failed_to_start_serial_getty_detected(self):
+        """Console status-line form (unit description, no unit name)."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[FAILED] Failed to start Serial Getty on ttyS0.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_serial_getty_failed' in names
+
+    def test_getty_survives_boot_success(self):
+        """A dead getty does not block boot (ssh category semantics): the
+        finding must survive a RUNNING VM's boot-success marker."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   14.512345] systemd[1]: serial-getty@ttyS0.service: Failed "
+            "with result 'exit-code'.\n"
+            "[   16.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 12.1s (userspace) = 16.3s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'ssh_serial_getty_failed' in names
+
+    def test_healthy_started_getty_not_flagged(self):
+        """The healthy 'Started serial-getty@ttyS0.service' journal line
+        and console '[  OK  ] Started Serial Getty on ttyS0.' must not
+        match."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   14.512345] systemd[1]: Started serial-getty@ttyS0.service "
+            "- Serial Getty on ttyS0.\n"
+            "[  OK  ] Started Serial Getty on ttyS0.\n"
+            "[   16.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 12.1s (userspace) = 16.3s.\n"
             "debian login: \n"
         )
         data = _diagnose(serial)

@@ -1,0 +1,57 @@
+# Network bring-up failure patterns (Stage 8, mode 46) - the noisiest FP
+# space in the taxonomy, so every regex is bound to a network unit name or
+# a DHCP-client-unique phrase; there is deliberately NO generic
+# 'Failed to bring up'/'link down' matching.
+#
+# survives_boot_success: false (DELIBERATE - reasoned, not defaulted):
+#   - Errors BEFORE the last boot-success marker are transient bring-up
+#     flaps that recovered (DHCP retried and got a lease, or the unit was
+#     restarted) - exactly the noise that suppression exists to clear.
+#   - The real support case - a NIC that died POST-boot - is still always
+#     reported: its error lines sit AFTER the last success marker, so the
+#     engine's ordering check (last_success_pos > last_error_pos) fails
+#     and nothing is suppressed. The flag is only reachable by pre-marker
+#     errors, and those are the recovered ones.
+category: network
+fix_guidance: "From rescue mode, inspect the network config on the mounted disk (/mnt/sysroot/etc/netplan/, /mnt/sysroot/etc/network/interfaces, /mnt/sysroot/etc/sysconfig/network-scripts/ or NetworkManager system-connections) and revert the most recent change"
+auto_repair: false
+
+patterns:
+  # JUSTIFICATION vs the no-generic-'Failed to start' rule (see
+  # systemd_early.yaml): each alternative is bound to a specific network
+  # manager unit name or description - none of the benign healthy-boot
+  # unit failures (apt-daily, fwupd, motd-news...) can match.
+  - name: network_unit_failed
+    severity: error
+    description: "A core network service failed to start"
+    regex:
+      - 'Failed to start .*systemd-networkd'
+      # Unit description 'Network Manager' (with space) and unit name
+      # 'NetworkManager.service'.
+      - 'Failed to start .*Network ?Manager'
+      # Debian ifupdown: networking.service - 'Raise network interfaces'.
+      - 'Failed to start .*networking\.service'
+      - 'Failed to start .*Raise network interfaces'
+      # systemd-networkd-wait-online / cloud-init's network wait.
+      - 'Failed to start .*Wait for Network to be Configured'
+    fixes:
+      - "Read the unit's error lines just above this one in the serial log - they name the bad config file/stanza"
+      - "From rescue mode, validate the config on the mounted disk: netplan (sudo chroot /mnt/sysroot netplan generate), ifupdown (/etc/network/interfaces), or NetworkManager connection files"
+      - "Revert the most recently changed network config file and restore the VM"
+
+  - name: network_dhcp_failure
+    severity: error
+    description: "DHCP failed - the interface did not obtain a lease"
+    regex:
+      # dhclient's give-up line; wording unique to ISC dhclient.
+      - 'No DHCPOFFERS received'
+      # ifupdown/dhclient companion: 'ifup: failed to bring up eth0'.
+      # Bound to real GCE interface name prefixes so prose about
+      # "bringing up" services can't match.
+      - '[Ff]ailed to bring up (?:eth|ens|enp)\d'
+      # google-guest-agent / netplan wording.
+      - 'Could not bring up interface'
+    fixes:
+      - "On GCE the metadata server always answers DHCP - a missing lease means the guest's network stack is broken (bad MTU/MAC config, wrong interface name, or a firewall in the guest), not the VPC"
+      - "Check for renamed interfaces: a config pinned to eth0 breaks if the image switched to predictable names (ens4) - update the config or add net.ifnames=0 to the kernel command line"
+      - "From rescue mode, revert recent changes under /mnt/sysroot/etc/netplan/ or /mnt/sysroot/etc/network/"

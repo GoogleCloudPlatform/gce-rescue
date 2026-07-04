@@ -1,0 +1,37 @@
+# GCE startup-script failure patterns (Stage 8 - late boot, mode 45 family).
+#
+# These fire AFTER multi-user.target: the VM booted fine, but the user's
+# provisioning code failed. Severity warning - it is the user's script,
+# not the platform, and the VM is up.
+category: startup_script
+fix_guidance: "Read the startup-script output lines above the exit-status line in the serial log, then fix the script in metadata: gcloud compute instances describe VM_NAME --zone=ZONE --format=\"value(metadata.items.extract(startup-script))\""
+auto_repair: false
+# detect_only: the failing code is the USER's startup script (VM metadata,
+# not on-disk boot configuration) - there is nothing on the rescued disk
+# for the repair command to edit, and disk swap would not change the
+# metadata the script runs from.
+detect_only: true
+# A booted VM whose provisioning failed is exactly the case this category
+# exists for - the boot-success marker always appears around these lines,
+# so without this flag every finding would be suppressed instantly.
+survives_boot_success: true
+
+patterns:
+  - name: startup_script_failed
+    severity: warning
+    description: "GCE startup script exited with a non-zero status"
+    regex:
+      # google_metadata_script_runner: "startup-script exit status 1".
+      # [1-9] makes zero UNMATCHABLE by construction: the healthy line
+      # 'startup-script exit status 0' on every successful boot must
+      # never fire this pattern. Multi-digit codes (e.g. 127) still
+      # match on their first digit. (?:-url)? covers startup-script-url.
+      - 'startup-script(?:-url)? exit status [1-9]'
+      # Guest-agent wording: Script "startup-script" failed with error:
+      # ... - .? tolerates the quote character (serial output sometimes
+      # mangles or drops it).
+      - 'Script .?startup-script.? failed'
+    fixes:
+      - "The script's own output (stdout/stderr) is in the serial log directly above the exit-status line - fix the failing command there"
+      - "View the current script: gcloud compute instances describe VM_NAME --zone=ZONE --format=\"value(metadata.items.extract(startup-script))\""
+      - "After fixing the metadata, re-run without a reboot: sudo google_metadata_script_runner startup (or reboot the VM)"

@@ -498,6 +498,140 @@ class TestShippedFixInfo:
                 "core/diagnose_rules/systemd_early.yaml"
             )
 
+    # -- Wave 4/5 categories ------------------------------------------------
+
+    def test_readonly_fix_guidance_loaded(self):
+        assert 'readonly' in CATEGORY_FIX_GUIDANCE
+
+    def test_readonly_is_not_auto_repairable(self):
+        """readonly stays auto_repair: false until readonly_fix.sh lands."""
+        assert 'readonly' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_readonly_patterns_have_fixes(self):
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        ro_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'readonly'
+        ]
+        assert len(ro_patterns) > 0
+        for pattern in ro_patterns:
+            fixes = get_fixes_for_pattern('readonly', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/readonly.yaml"
+            )
+
+    def test_oom_fix_guidance_loaded(self):
+        """oom is detect-only, so its fix_guidance is what the formatter
+        renders - it must be present in the catalog."""
+        assert 'oom' in CATEGORY_FIX_GUIDANCE
+
+    def test_oom_is_not_auto_repairable(self):
+        """oom is detect-only: nothing on the rescued disk to edit
+        (memory sizing/workload condition)."""
+        assert 'oom' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_oom_patterns_have_fixes(self):
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        oom_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'oom'
+        ]
+        assert len(oom_patterns) > 0
+        for pattern in oom_patterns:
+            fixes = get_fixes_for_pattern('oom', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/oom.yaml"
+            )
+
+    def test_selinux_fix_guidance_loaded(self):
+        assert 'selinux' in CATEGORY_FIX_GUIDANCE
+
+    def test_selinux_is_not_auto_repairable(self):
+        """selinux stays auto_repair: false until selinux_fix.sh lands
+        (future fix: touch /.autorelabel on the mounted root)."""
+        assert 'selinux' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_selinux_patterns_have_fixes(self):
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        se_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'selinux'
+        ]
+        assert len(se_patterns) > 0
+        for pattern in se_patterns:
+            fixes = get_fixes_for_pattern('selinux', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/selinux.yaml"
+            )
+
+    def test_startup_script_fix_guidance_loaded(self):
+        assert 'startup_script' in CATEGORY_FIX_GUIDANCE
+
+    def test_startup_script_is_not_auto_repairable(self):
+        """startup_script is detect-only: the failing code lives in VM
+        metadata, not on the rescued disk."""
+        assert 'startup_script' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_startup_script_patterns_have_fixes(self):
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        ss_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'startup_script'
+        ]
+        assert len(ss_patterns) > 0
+        for pattern in ss_patterns:
+            fixes = get_fixes_for_pattern('startup_script', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/startup_script.yaml"
+            )
+
+    def test_cloud_init_fix_guidance_loaded(self):
+        assert 'cloud_init' in CATEGORY_FIX_GUIDANCE
+
+    def test_cloud_init_is_not_auto_repairable(self):
+        """cloud_init is detect-only: user-data/datasource config, not
+        on-disk boot configuration a fix script could safely edit."""
+        assert 'cloud_init' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_cloud_init_patterns_have_fixes(self):
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        ci_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'cloud_init'
+        ]
+        assert len(ci_patterns) > 0
+        for pattern in ci_patterns:
+            fixes = get_fixes_for_pattern('cloud_init', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/cloud_init.yaml"
+            )
+
+    def test_network_fix_guidance_loaded(self):
+        assert 'network' in CATEGORY_FIX_GUIDANCE
+
+    def test_network_is_not_auto_repairable(self):
+        """network stays auto_repair: false until network_fix.sh lands."""
+        assert 'network' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_network_patterns_have_fixes(self):
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        net_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'network'
+        ]
+        assert len(net_patterns) > 0
+        for pattern in net_patterns:
+            fixes = get_fixes_for_pattern('network', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/network.yaml"
+            )
+
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'

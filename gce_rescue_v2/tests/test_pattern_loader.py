@@ -331,8 +331,10 @@ class TestShippedPatterns:
             )
 
     def test_ssh_patterns_present(self):
+        # 4 = 3 original + ssh_serial_getty_failed (Wave 5: the serial
+        # console is the second operator access path next to SSH).
         ssh_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'ssh']
-        assert len(ssh_patterns) == 3
+        assert len(ssh_patterns) == 4
 
     def test_ssh_patterns_have_inline_fixes(self):
         """All ssh patterns should have inline fixes from merged YAML."""
@@ -552,6 +554,180 @@ class TestShippedPatterns:
                 f"Pattern '{pattern.name}' has no inline fixes"
             )
 
+    # -- Wave 4/5 categories ------------------------------------------------
+
+    def test_readonly_patterns_present(self):
+        ro_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'readonly']
+        assert len(ro_patterns) == 2
+
+    def test_readonly_pattern_names_prefixed(self):
+        """readonly pattern names should carry the category prefix."""
+        ro_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'readonly']
+        for pattern in ro_patterns:
+            assert pattern.name.startswith('readonly_'), (
+                f"Pattern '{pattern.name}' missing 'readonly_' prefix"
+            )
+
+    def test_readonly_patterns_have_inline_fixes(self):
+        """All readonly patterns should have inline fixes."""
+        ro_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'readonly']
+        for pattern in ro_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_oom_patterns_present(self):
+        """One pattern only: 'invoked oom-killer' and 'Out of memory:
+        Killed process' are two halves of the same kill event and must
+        produce a single finding."""
+        oom_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'oom']
+        assert len(oom_patterns) == 1
+
+    def test_oom_pattern_is_warning(self):
+        """A single OOM kill on a running VM is non-alarmist by design -
+        severity warning, so it can never act as a dedupe suppressor
+        (_is_boot_root_cause excludes warnings)."""
+        oom_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'oom']
+        for pattern in oom_patterns:
+            assert pattern.severity == 'warning'
+
+    def test_oom_pattern_names_prefixed(self):
+        oom_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'oom']
+        for pattern in oom_patterns:
+            assert pattern.name.startswith('oom_'), (
+                f"Pattern '{pattern.name}' missing 'oom_' prefix"
+            )
+
+    def test_oom_patterns_have_inline_fixes(self):
+        oom_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'oom']
+        for pattern in oom_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_selinux_patterns_present(self):
+        se_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'selinux']
+        assert len(se_patterns) == 2
+
+    def test_selinux_pattern_names_prefixed(self):
+        se_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'selinux']
+        for pattern in se_patterns:
+            assert pattern.name.startswith('selinux_'), (
+                f"Pattern '{pattern.name}' missing 'selinux_' prefix"
+            )
+
+    def test_selinux_patterns_have_inline_fixes(self):
+        se_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'selinux']
+        for pattern in se_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_startup_script_patterns_present(self):
+        ss_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'startup_script']
+        assert len(ss_patterns) == 1
+
+    def test_startup_script_pattern_names_prefixed(self):
+        ss_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'startup_script']
+        for pattern in ss_patterns:
+            assert pattern.name.startswith('startup_script_'), (
+                f"Pattern '{pattern.name}' missing 'startup_script_' prefix"
+            )
+
+    def test_startup_script_patterns_have_inline_fixes(self):
+        ss_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'startup_script']
+        for pattern in ss_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_startup_script_regex_excludes_exit_status_zero(self):
+        """The success line 'startup-script exit status 0' prints on every
+        healthy boot - the exit-status regex must be structurally unable
+        to match a zero status."""
+        import re
+        ss_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'startup_script']
+        healthy = ("google_metadata_script_runner[712]: startup-script "
+                   "exit status 0")
+        for pattern in ss_patterns:
+            for regex in pattern.patterns:
+                assert not re.search(regex, healthy, re.IGNORECASE), (
+                    f"Regex '{regex}' matches the healthy exit-status-0 line"
+                )
+
+    def test_cloud_init_patterns_present(self):
+        ci_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'cloud_init']
+        assert len(ci_patterns) == 2
+
+    def test_cloud_init_pattern_names_prefixed(self):
+        ci_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'cloud_init']
+        for pattern in ci_patterns:
+            assert pattern.name.startswith('cloud_init_'), (
+                f"Pattern '{pattern.name}' missing 'cloud_init_' prefix"
+            )
+
+    def test_cloud_init_patterns_have_inline_fixes(self):
+        ci_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'cloud_init']
+        for pattern in ci_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_network_patterns_present(self):
+        net_patterns = [p for p in BOOT_ERROR_PATTERNS
+                        if p.category == 'network']
+        assert len(net_patterns) == 2
+
+    def test_network_pattern_names_prefixed(self):
+        net_patterns = [p for p in BOOT_ERROR_PATTERNS
+                        if p.category == 'network']
+        for pattern in net_patterns:
+            assert pattern.name.startswith('network_'), (
+                f"Pattern '{pattern.name}' missing 'network_' prefix"
+            )
+
+    def test_network_patterns_have_inline_fixes(self):
+        net_patterns = [p for p in BOOT_ERROR_PATTERNS
+                        if p.category == 'network']
+        for pattern in net_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_network_failed_to_start_regexes_are_unit_bound(self):
+        """network may use 'Failed to start' ONLY when bound to a specific
+        network unit name/description - a bare 'Failed to start .*' would
+        fire on every benign unit failure (the systemd_early scoping
+        rule)."""
+        net_patterns = [p for p in BOOT_ERROR_PATTERNS
+                        if p.category == 'network']
+        for pattern in net_patterns:
+            for regex in pattern.patterns:
+                if 'Failed to start' in regex:
+                    assert regex != 'Failed to start .*', (
+                        "Unbound 'Failed to start' regex in network category"
+                    )
+                    assert any(tok in regex for tok in (
+                        'networkd', 'Network ?Manager', 'networking',
+                        'Raise network interfaces', 'Wait for Network',
+                    )), (
+                        f"'Failed to start' regex not bound to a network "
+                        f"unit: {regex}"
+                    )
+
     def test_systemd_early_no_generic_failed_to_start(self):
         """systemd_early must never ship a bare 'Failed to start' regex -
         it fires on every non-fatal unit failure on healthy boots (the
@@ -569,23 +745,41 @@ class TestShippedPatterns:
         """ssh/filesystem/disk_full failures are not resolved by a completed
         boot (a full disk stays full after 'Startup finished'), so their YAML
         declares survives_boot_success; boot-blocking categories must not
-        declare it."""
+        declare it.
+
+        Wave 4/5 additions: readonly (errors=remount-ro is a RUNNING-VM
+        condition), oom (runtime kills persist), startup_script/cloud_init
+        (the boot-success marker always appears around provisioning
+        failures). selinux and network deliberately do NOT survive: a later
+        completed boot proves the policy loaded / the transient DHCP flap
+        recovered, and a post-boot NIC death sits after the last success
+        marker so ordering already protects it from suppression."""
         from gce_rescue_v2.core.diagnosis import (
             SURVIVES_BOOT_SUCCESS_CATEGORIES,
         )
         assert 'ssh' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'filesystem' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'disk_full' in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        assert 'readonly' in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        assert 'oom' in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        assert 'startup_script' in SURVIVES_BOOT_SUCCESS_CATEGORIES
+        assert 'cloud_init' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         for cat in ('fstab', 'kernel', 'initramfs', 'grub', 'firmware',
                     'lvm', 'crypt', 'raid', 'machine_id', 'switchroot',
-                    'systemd_early'):
+                    'systemd_early', 'selinux', 'network'):
             assert cat not in SURVIVES_BOOT_SUCCESS_CATEGORIES
 
     def test_detect_only_flags(self):
         """cpu_lockup/kernel/crypt are detect-only (manual investigation or,
         for crypt, an encrypted disk that rescue mode cannot unlock);
         detect_only does NOT imply survives_boot_success, and
-        rescue-workflow categories must not declare it."""
+        rescue-workflow categories must not declare it.
+
+        Wave 4/5 additions: oom (workload sizing, nothing on disk to edit),
+        startup_script (user code in VM metadata) and cloud_init (user-data/
+        datasource config) are detect-only; readonly, selinux and network
+        are NOT - they are fixable from rescue mode (offline fsck,
+        autorelabel/selinux=0, on-disk network config)."""
         from gce_rescue_v2.core.diagnosis import (
             DETECT_ONLY_CATEGORIES,
             SURVIVES_BOOT_SUCCESS_CATEGORIES,
@@ -593,12 +787,16 @@ class TestShippedPatterns:
         assert 'cpu_lockup' in DETECT_ONLY_CATEGORIES
         assert 'kernel' in DETECT_ONLY_CATEGORIES
         assert 'crypt' in DETECT_ONLY_CATEGORIES
+        assert 'oom' in DETECT_ONLY_CATEGORIES
+        assert 'startup_script' in DETECT_ONLY_CATEGORIES
+        assert 'cloud_init' in DETECT_ONLY_CATEGORIES
         assert 'cpu_lockup' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'kernel' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'crypt' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
         for cat in ('fstab', 'initramfs', 'disk_full', 'ssh', 'filesystem',
                     'grub', 'firmware', 'lvm', 'raid', 'machine_id',
-                    'switchroot', 'systemd_early'):
+                    'switchroot', 'systemd_early', 'readonly', 'selinux',
+                    'network'):
             assert cat not in DETECT_ONLY_CATEGORIES
 
     def test_detect_only_sets_agree(self):

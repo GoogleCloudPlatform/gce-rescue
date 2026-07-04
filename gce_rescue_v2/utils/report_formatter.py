@@ -448,5 +448,11 @@ def _category_label(category: str) -> str:
         'machine_id': 'Regenerate machine-id',
         'switchroot': 'Restore working init (switch_root)',
         'systemd_early': 'Fix early systemd boot failure',
+        'readonly': 'Recover read-only filesystem',
+        'oom': 'Investigate out-of-memory kills',
+        'selinux': 'Fix SELinux policy/relabel',
+        'startup_script': 'Fix startup script',
+        'cloud_init': 'Fix cloud-init configuration',
+        'network': 'Fix network configuration',
     }
     return labels.get(category, f'Fix {category}')

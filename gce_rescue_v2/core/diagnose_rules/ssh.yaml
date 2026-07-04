@@ -50,3 +50,26 @@ patterns:
     fixes:
       - "Fix permissions from rescue mode: sudo chmod 700 /mnt/sysroot/home/USER/.ssh and sudo chmod 600 /mnt/sysroot/home/USER/.ssh/authorized_keys"
       - "Fix ownership: sudo chown -R USER:USER /mnt/sysroot/home/USER/.ssh (run inside chroot or use numeric UID)"
+
+  # PLACEMENT: serial-getty lives here, not in systemd_early, because
+  # (a) this category is "operator access paths" - SSH and the serial
+  # console are the two ways into a VM, and a dead getty is the same
+  # class of boot-completing access failure as a dead sshd (which is
+  # exactly why survives_boot_success fits it), and (b) systemd_early's
+  # scoping contract forbids 'Failed to start' anchors entirely (it is
+  # PID1-fatal conditions only, enforced by a loader test).
+  - name: ssh_serial_getty_failed
+    severity: error
+    description: "Serial console login (serial-getty on ttyS0) failed to start"
+    regex:
+      # Bound to the serial-getty unit name; healthy boots only log
+      # 'Started serial-getty@ttyS0.service ...', which contains neither
+      # 'failed' nor the restart-loop wording.
+      - 'serial-getty@ttyS\d+\.service.*(?:failed|start request repeated too quickly)'
+      # Console status line form: '[FAILED] Failed to start Serial Getty
+      # on ttyS0.' - bound to the unit description.
+      - 'Failed to start .*Serial Getty on ttyS\d+'
+    fixes:
+      - "The interactive serial console has no login prompt - use SSH or rescue mode instead to reach the VM"
+      - "Check why getty failed from rescue mode: look for a missing agetty binary, a broken /etc/nsswitch.conf/PAM stack, or an overridden serial-getty@.service drop-in under /mnt/sysroot/etc/systemd/system/"
+      - "Verify the console kernel arg is present so the getty has a device: console=ttyS0,115200 on the kernel command line"
