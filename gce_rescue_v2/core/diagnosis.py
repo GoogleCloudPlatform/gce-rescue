@@ -362,8 +362,17 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                 and err.severity != 'warning')
 
     if len(detected_errors) > 1:
+        # Tier 1 is additionally gated on CRITICAL severity: emergency mode
+        # is itself a critical boot-blocker, so only a finding that names a
+        # critical root cause may replace it. Error-level companions (e.g.
+        # systemd_no_console, which fires on EVERY emergency entry because
+        # root is locked on GCP images, or an ordering-cycle report) are
+        # symptoms/context — letting them suppress the catch-all demotes a
+        # real emergency incident to a lone ERROR whose fix text points at
+        # a "failure reported above" that no longer exists.
         has_non_catchall = any(
-            _is_boot_root_cause(e) and e.description not in _CATCH_ALL
+            _is_boot_root_cause(e) and e.severity == 'critical'
+            and e.description not in _CATCH_ALL
             for e in detected_errors
         )
         if has_non_catchall:

@@ -3881,3 +3881,165 @@ class TestKernelEarlyFaultDetection:
         names = [e.name for e in result.boot_errors]
         assert 'kernel_decompress_fail' in names
         assert 'grub' not in categories
+
+
+# ---------------------------------------------------------------------------
+# TestWave3RedTeamRegressions
+# ---------------------------------------------------------------------------
+
+class TestWave3RedTeamRegressions:
+    """Regressions from the adversarial review of the Wave 3 branch
+    (switchroot / systemd_early / kernel early faults). Each test
+    reproduces a confirmed failing serial buffer from the red-team report."""
+
+    # C1: root is locked on every GCP image, so sulogin prints the
+    # locked-console line on EVERY emergency-mode entry. The error-level
+    # systemd_no_console companion must never suppress the CRITICAL
+    # emergency-mode catch-all via Tier-1 dedupe: only a finding that names
+    # a CRITICAL root cause may replace it.
+    def test_locked_console_does_not_erase_emergency_mode_running(self):
+        serial = (
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view system logs.\n"
+            "Cannot open access to console, the root account is locked. "
+            "See sulogin(8) man page for more details.\n"
+            "Press Enter to continue.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_emergency_mode' in names
+        assert 'systemd_no_console' in names
+        severities = {e['name']: e['severity'] for e in data['boot_errors']}
+        assert severities['fstab_emergency_mode'] == 'critical'
+
+    def test_locked_console_does_not_erase_emergency_mode_terminated(self):
+        serial = (
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view system logs.\n"
+            "Cannot open access to console, the root account is locked. "
+            "See sulogin(8) man page for more details.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'fstab_emergency_mode' in names
+        assert 'systemd_no_console' in names
+
+    def test_ordering_cycle_does_not_erase_emergency_mode(self):
+        """An error-level ordering-cycle report is context, not a root
+        cause: systemd_early.yaml documents that a cycle blocking boot is
+        'reported by the pattern that put the VM in emergency mode' - so
+        the emergency catch-all must survive alongside it."""
+        serial = (
+            "[    4.112345] systemd[1]: local-fs.target: Job "
+            "mnt-data.mount/start deleted to break ordering cycle starting "
+            "with local-fs.target/start\n"
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view system logs.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_emergency_mode' in names
+        assert 'systemd_ordering_cycle' in names
+
+    def test_critical_root_cause_still_demotes_emergency_catchall(self):
+        """Control (X3c): a CRITICAL fstab root cause still suppresses the
+        emergency catch-all under the tightened Tier-1 gate, and the
+        no-console companion keeps being reported next to it."""
+        serial = (
+            "[  TIME ] Timed out waiting for device "
+            "/dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678.\n"
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view system logs.\n"
+            "Cannot open access to console, the root account is locked. "
+            "See sulogin(8) man page for more details.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'fstab_device_timeout' in names
+        assert 'systemd_no_console' in names
+        assert 'fstab_emergency_mode' not in names
+
+    # C2: when journal-to-console forwarding is off, the '[FAILED]' unit
+    # status line is the ONLY switch-root output on the serial console -
+    # the journal 'Failed to switch root:' line never appears.
+    def test_rhel9_switch_root_unit_failed_line_detected(self):
+        serial = (
+            "[FAILED] Failed to start initrd-switch-root.service - "
+            "Switch Root.\n"
+            "See 'systemctl status initrd-switch-root.service' for "
+            "details.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'switchroot_failed' in names
+
+    def test_rhel8_switch_root_unit_failed_line_detected(self):
+        serial = (
+            "[  OK  ] Reached target Initrd File Systems.\n"
+            "         Starting Switch Root...\n"
+            "[FAILED] Failed to start Switch Root.\n"
+            "See 'systemctl status initrd-switch-root.service' for "
+            "details.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'switchroot_failed' in names
+
+    # C3: arm64 (T2A) fault headers differ from x86 - 'Internal error:
+    # Oops: <code>' and an unprefixed 'Unable to handle kernel ...' line.
+    # Modern x86 (>= 5.1) reports 'BUG: unable to handle page fault for
+    # address:'. All three were complete misses.
+    def test_arm64_oops_detected(self):
+        serial = (
+            "[  184.123456] Unable to handle kernel NULL pointer "
+            "dereference at virtual address 0000000000000010\n"
+            "[  184.130211] Mem abort info:\n"
+            "[  184.136122] Internal error: Oops: 96000004 [#1] PREEMPT "
+            "SMP\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'kernel_bug_oops' in names
+
+    def test_arm64_paging_request_header_alone_detected(self):
+        serial = (
+            "[   92.512345] Unable to handle kernel paging request at "
+            "virtual address ffff8000122d4000\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'kernel_bug_oops' in names
+
+    def test_modern_x86_page_fault_header_alone_detected(self):
+        """The >= 5.1 wording dropped 'kernel' from the BUG header; must be
+        caught even when the Oops line is truncated off the buffer."""
+        serial = (
+            "[  184.123456] BUG: unable to handle page fault for address: "
+            "ffffffffc0a01000\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'kernel_bug_oops' in names
+
+    def test_warn_on_trace_still_not_flagged_by_new_oops_regexes(self):
+        """A WARN_ON trace and userspace 'Unable to handle' prose must not
+        match the broadened kernel_bug_oops regexes."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   42.123456] WARNING: CPU: 0 PID: 42 at "
+            "kernel/sched/core.c:9999 finish_task_switch+0x1a/0x2b0\n"
+            "[   42.130211] Call Trace:\n"
+            "myapp[1421]: Unable to handle request, retrying\n"
+            "[   11.512345] systemd[1]: Startup finished in 3.1s (kernel) "
+            "+ 8.4s (userspace) = 11.5s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []

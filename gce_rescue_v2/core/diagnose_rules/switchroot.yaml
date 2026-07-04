@@ -35,6 +35,15 @@ patterns:
       # util-linux switch_root(8) form: 'switch_root: failed to mount
       # moving /dev to /sysroot/dev: Invalid argument'
       - 'switch_root: failed to mount moving'
+      # systemd unit-status form - the only guaranteed console output when
+      # journal-to-console forwarding is off (the journal 'Failed to switch
+      # root:' line above never reaches the serial console then):
+      #   RHEL9: '[FAILED] Failed to start initrd-switch-root.service -
+      #          Switch Root.'
+      #   RHEL8: '[FAILED] Failed to start Switch Root.'
+      # 'Switch Root' as a unit description is unique to
+      # initrd-switch-root.service, so FP risk is negligible.
+      - 'Failed to start (?:[\w-]+\.service - )?Switch Root'
     fixes:
       - "The mounted root filesystem is not a usable OS tree - inspect it from rescue mode: ls /mnt/sysroot (expect /sbin, /etc, /usr and /etc/os-release)"
       - "If /mnt/sysroot/etc/os-release is missing, the wrong partition is being mounted as root - compare root= on the kernel command line against sudo blkid"

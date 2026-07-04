@@ -84,6 +84,18 @@ patterns:
       # 4-digit error code, because bare 'Oops' appears in ordinary log
       # prose and application output.
       - '^(?:\[[\d\. ]+\] ?)?Oops: \d{4}'
+      # arm64 (T2A) Oops header: 'Internal error: Oops: 96000004 [#1]
+      # PREEMPT SMP' - the arm64 fault path prefixes 'Internal error: ',
+      # so the line-anchored x86 regex above never matches it.
+      - 'Internal error: Oops'
+      # Modern x86 (>= 5.1) page-fault header dropped the 'kernel' word:
+      # 'BUG: unable to handle page fault for address: ...'
+      - 'BUG: unable to handle page fault for address'
+      # arm64 fault header has no 'BUG:' prefix at all: 'Unable to handle
+      # kernel NULL pointer dereference at virtual address ...' /
+      # 'Unable to handle kernel paging request at ...'. Kernel-only
+      # wording - no prose collision (WARN_ON traces match none of these).
+      - 'Unable to handle kernel (?:NULL pointer dereference|paging request)'
     fixes:
       - "Read the Oops/BUG block in the serial output - RIP: names the failing kernel function and the module list shows what was loaded"
       - "If the fault repeats, boot a previous kernel from the GRUB menu via the interactive serial console"
