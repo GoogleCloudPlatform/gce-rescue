@@ -47,18 +47,25 @@ patterns:
   - name: readonly_io_error
     severity: error
     description: "Disk I/O errors reported by the block layer"
+    # ALL four regexes are device-bound with a shared negative lookahead
+    # excluding loop/sr/fd/ram/zram devices (red-team C1): loop-device
+    # I/O errors are routine snapd refresh/remove noise on every Ubuntu
+    # GCE image, sr0/fd0 errors are phantom CD-ROM/floppy probes (the
+    # fd0 'end_request' line is the most famous benign I/O-error line in
+    # VM history), and none of them can be a boot/root disk on GCE.
+    # Real disks (sda, nvme0n1, dm-0, vd*) pass the lookahead.
     regex:
       # Kernels ~4.x-5.17: "blk_update_request: I/O error, dev sda, sector 2048"
-      - 'blk_update_request: I/O error'
+      - 'blk_update_request: I/O error, dev (?!loop|sr\d|fd\d|ram\d|zram)[\w-]+'
       # 5.18+ dropped the function-name prefix: "I/O error, dev sda,
       # sector 2048 op 0x1:(WRITE) ...". Bound to the ", dev X, sector N"
       # tail so prose mentioning "I/O error" can never match.
-      - 'I/O error, dev [\w-]+, sector \d+'
+      - 'I/O error, dev (?!loop|sr\d|fd\d|ram\d|zram)[\w-]+, sector \d+'
       # Page-cache level companion line, bound to a device name.
-      - 'Buffer I/O error on dev [\w-]+'
+      - 'Buffer I/O error on dev (?!loop|sr\d|fd\d|ram\d|zram)[\w-]+'
       # Pre-3.x kernels only (removed upstream years ago); kept for old
-      # custom images - the string is specific enough that it cannot FP.
-      - 'end_request: I/O error'
+      # custom images.
+      - 'end_request: I/O error, dev (?!loop|sr\d|fd\d|ram\d|zram)[\w-]+'
     fixes:
       - "The block layer is reporting failed reads/writes - check the disk in the GCP Console and the device named in the error"
       - "If the errors target the boot disk, snapshot it immediately (gcloud compute disks snapshot DISK_NAME --zone=ZONE) before any repair attempt"

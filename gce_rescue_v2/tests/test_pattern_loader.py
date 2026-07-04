@@ -687,9 +687,11 @@ class TestShippedPatterns:
             )
 
     def test_network_patterns_present(self):
+        # 3 since the red-team C2 fix split the benign wait-online
+        # timeout out of network_unit_failed into its own warning.
         net_patterns = [p for p in BOOT_ERROR_PATTERNS
                         if p.category == 'network']
-        assert len(net_patterns) == 2
+        assert len(net_patterns) == 3
 
     def test_network_pattern_names_prefixed(self):
         net_patterns = [p for p in BOOT_ERROR_PATTERNS

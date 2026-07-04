@@ -43,8 +43,15 @@ patterns:
       # cgroup-scoped kills ("Memory cgroup out of memory: Killed process
       # ...") already match the first regex; the oom-kill summary line
       # (4.19+) is a distinct wording:
+      # DECISION (red-team C5): memcg/container kills DELIBERATELY still
+      # match - a regex-level exclusion is impossible (the 'invoked
+      # oom-killer: gfp_mask=' header is byte-identical for global and
+      # memcg kills) and a memcg kill can still be the customer's real
+      # problem. The container-vs-VM distinction is handled in the fixes
+      # text instead; WARNING + detect_only keeps this safe.
       - 'oom-kill:constraint='
     fixes:
       - "Find the OOM report block in the serial output - it names the killed process and the per-process memory table"
+      - "If the line says 'Memory cgroup out of memory' or constraint=CONSTRAINT_MEMCG, a container/cgroup hit its OWN memory limit - raise the container/pod limit instead of resizing the VM"
       - "Resize the VM to a larger machine type: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
       - "Or reduce the workload's memory usage / add swap; if a critical service was killed, restart it or reboot the VM"

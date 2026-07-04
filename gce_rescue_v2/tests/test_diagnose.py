@@ -614,6 +614,23 @@ class TestKernelPanicDetection:
         assert 'kernel_panic_oom' in names
         assert 'kernel_panic_generic' not in names
 
+    def test_deadlocked_on_memory_panic_classified_as_oom(self):
+        """Red-team C4: mm/oom_kill.c panics 'System is deadlocked on
+        memory' when no killable process remains - it must classify as
+        kernel_panic_oom (resize/panic_on_oom fixes), not generic
+        (reset/previous-kernel fixes), and the generic lookahead must
+        mirror the new exclusion."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  712.103311] Kernel panic - not syncing: System is "
+            "deadlocked on memory\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_panic_oom' in names
+        assert 'kernel_panic_generic' not in names
+
     def test_evidence_anchors_on_actual_match_not_first_occurrence(self):
         """Evidence must quote the line the regex matched, not an earlier
         line containing the same text.
@@ -4161,6 +4178,60 @@ class TestReadonlyDetection:
         names = [e['name'] for e in data['boot_errors']]
         assert 'readonly_remount' in names
 
+    def test_loop_device_io_errors_not_flagged(self):
+        """Red-team C1: loop-device I/O errors are routine snapd
+        refresh/remove noise on every Ubuntu GCE image - with
+        survives_boot_success they stuck an ERROR to healthy VMs until
+        the buffer rotated. The device lookahead must exclude them."""
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "ubuntu login: \n"
+            "[ 8123.101234] blk_update_request: I/O error, dev loop3, "
+            "sector 0\n"
+            "[ 8123.202345] Buffer I/O error on dev loop3, logical "
+            "block 0, async page read\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_removable_and_ram_device_io_errors_not_flagged(self):
+        """Red-team C1: phantom CD-ROM (sr0), floppy (fd0 - the most
+        famous benign I/O-error line in VM history) and ram-disk probes
+        must not fire readonly_io_error."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            "[ 1201.101234] I/O error, dev sr0, sector 0 op 0x0:(READ) "
+            "flags 0x80700 phys_seg 1 prio class 0\n"
+            "[ 1202.202345] end_request: I/O error, dev fd0, sector 0\n"
+            "[ 1203.303456] Buffer I/O error on dev ram0, logical block 0\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_real_disk_io_errors_still_flagged_after_device_binding(self):
+        """The lookahead must not eat real disks: sda (end_request form)
+        and dm-0 (device-mapper/LVM) still fire readonly_io_error."""
+        serial_endreq = (
+            "[    0.000000] Linux version 3.10.0-1160.el7.x86_64\n"
+            "[ 7211.101234] end_request: I/O error, dev sda, sector "
+            "409600\n"
+        )
+        serial_dm = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[ 7211.101234] I/O error, dev dm-0, sector 2048 op "
+            "0x1:(WRITE) flags 0x800 phys_seg 8 prio class 2\n"
+        )
+        for serial in (serial_endreq, serial_dm):
+            data = _diagnose(serial)
+            names = [e['name'] for e in data['boot_errors']]
+            assert 'readonly_io_error' in names
+
     def test_healthy_mount_lines_not_flagged(self):
         """Healthy 'mounted filesystem' / 're-mounted' kernel lines must
         not fire any readonly pattern."""
@@ -4275,6 +4346,29 @@ class TestOomDetection:
         names = [e.name for e in result.boot_errors]
         assert 'oom_killed_process' in names
         assert 'fstab_emergency_mode' in names
+
+    def test_memcg_kill_matches_with_container_guidance(self):
+        """Red-team C5 (decision lock): cgroup/container kills
+        DELIBERATELY still match (the 'invoked oom-killer' header is
+        byte-identical for global and memcg kills, and a memcg kill can
+        be the real problem) - but the fixes must carry the
+        container-vs-VM distinction so 'resize the VM' is not the only
+        advice a GKE/Docker host gets."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[ 8123.101234] oom-kill:constraint=CONSTRAINT_MEMCG,"
+            "nodemask=(null),cpuset=cri-containerd-abc,mems_allowed=0\n"
+            "[ 8123.202345] Memory cgroup out of memory: Killed process "
+            "2201 (stress) total-vm:1048576kB\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        findings = [e for e in result.boot_errors
+                    if e.name == 'oom_killed_process']
+        assert len(findings) == 1
+        assert findings[0].severity == 'warning'
+        assert any('cgroup' in f.lower() for f in
+                   findings[0].suggested_fixes)
 
     def test_prose_oom_mentions_not_flagged(self):
         """Prose quoting 'Out of memory' / 'oom-killer' without kernel kill
@@ -4484,6 +4578,57 @@ class TestStartupScriptDetection:
         names = [e['name'] for e in data['boot_errors']]
         assert 'startup_script_failed' in names
 
+    def test_windows_startup_script_failures_detected(self):
+        """Red-team C3: Windows startup-script failures on COM1 were
+        completely undetected - both the exit-status form and the
+        guest-agent 'Script ... failed' form, across ps1/cmd and
+        sysprep-specialize variants, must now fire."""
+        lines = (
+            'GCEMetadataScripts: windows-startup-script-ps1 exit status 1',
+            'GCEMetadataScripts: Script "windows-startup-script-ps1" '
+            'failed with error: exit status 1',
+            'GCEMetadataScripts: windows-startup-script-cmd exit status 1',
+            'GCEMetadataScripts: sysprep-specialize-script-ps1 exit '
+            'status 1',
+        )
+        for line in lines:
+            serial = "Windows Boot Manager\n" + line + "\n"
+            result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                           'TERMINATED')
+            names = [e.name for e in result.boot_errors]
+            assert 'startup_script_failed' in names, line
+            severities = {e.name: e.severity for e in result.boot_errors}
+            assert severities['startup_script_failed'] == 'warning'
+
+    def test_windows_exit_status_zero_never_matches(self):
+        """The zero-unmatchable guard must survive the Windows
+        broadening: 'windows-startup-script-ps1 exit status 0' prints on
+        every healthy Windows boot."""
+        serial = (
+            "Windows Boot Manager\n"
+            "GCEMetadataScripts: windows-startup-script-ps1 exit "
+            "status 0\n"
+            "GCEMetadataScripts: Finished running startup scripts.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        categories = {e.category for e in result.boot_errors}
+        assert 'startup_script' not in categories
+
+    def test_shutdown_script_failure_still_not_matched(self):
+        """Overlap guard kept from round 1 (SS-5): shutdown-script exit
+        codes are not startup failures and must stay unmatched by the
+        broadened regexes."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "google_metadata_script_runner[912]: shutdown-script exit "
+            "status 1\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        categories = {e.category for e in result.boot_errors}
+        assert 'startup_script' not in categories
+
 
 # ---------------------------------------------------------------------------
 # TestCloudInitDetection (Wave 5 - cloud-init failures)
@@ -4679,6 +4824,44 @@ class TestNetworkBootDetection:
         data = _diagnose(serial)
         assert data['diagnosis_status'] == 'healthy'
         assert data['boot_errors'] == []
+
+    def test_wait_online_timeout_is_warning_not_unit_failure(self):
+        """Red-team C2: the wait-online console line contains BOTH the
+        unit name 'systemd-networkd-wait-online' and the description
+        'Wait for Network to be Configured' - on a stopped healthy VM it
+        was double-matched into ERROR 'core network service failed' with
+        rescue guidance. It is a benign timeout (boot continues, SSH
+        works): warning-severity wait-online pattern, and
+        network_unit_failed must NOT fire."""
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[FAILED] Failed to start systemd-networkd-wait-online."
+            "service - Wait for Network to be Configured.\n"
+            "[   42.512345] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 38.1s (userspace) = 42.3s.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'network_unit_failed' not in names
+        assert 'network_wait_online_timeout' in names
+        severities = {e.name: e.severity for e in result.boot_errors}
+        assert severities['network_wait_online_timeout'] == 'warning'
+
+    def test_networkd_failure_still_error_despite_wait_online_lookahead(self):
+        """The (?!-wait-online) lookahead must not eat the real thing:
+        a genuine systemd-networkd.service failure on a stopped VM stays
+        an error-severity network_unit_failed."""
+        serial = (
+            "[    0.000000] Linux version 6.8.0-31-generic\n"
+            "[FAILED] Failed to start systemd-networkd.service - Network "
+            "Configuration.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        severities = {e.name: e.severity for e in result.boot_errors}
+        assert severities.get('network_unit_failed') == 'error'
+        assert 'network_wait_online_timeout' not in severities
 
     def test_benign_unit_failures_do_not_fire_network(self):
         """The healthy-noise units (apt-daily, motd-news style) must not

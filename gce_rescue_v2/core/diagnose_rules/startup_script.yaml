@@ -25,12 +25,15 @@ patterns:
       # [1-9] makes zero UNMATCHABLE by construction: the healthy line
       # 'startup-script exit status 0' on every successful boot must
       # never fire this pattern. Multi-digit codes (e.g. 127) still
-      # match on their first digit. (?:-url)? covers startup-script-url.
-      - 'startup-script(?:-url)? exit status [1-9]'
+      # match on their first digit. Windows variants (red-team C3):
+      # GCEMetadataScripts prints 'windows-startup-script-ps1 exit
+      # status 1' (also -cmd/-bat/-url) and sysprep-specialize scripts
+      # fail the same way - all on COM1, previously undetected.
+      - '(?:windows-)?(?:startup|sysprep-specialize)-script(?:-(?:url|ps1|cmd|bat))? exit status [1-9]'
       # Guest-agent wording: Script "startup-script" failed with error:
       # ... - .? tolerates the quote character (serial output sometimes
-      # mangles or drops it).
-      - 'Script .?startup-script.? failed'
+      # mangles or drops it). Same Windows/sysprep suffixes as above.
+      - 'Script .?(?:windows-)?(?:startup|sysprep-specialize)-script(?:-(?:ps1|cmd|bat))?.? failed'
     fixes:
       - "The script's own output (stdout/stderr) is in the serial log directly above the exit-status line - fix the failing command there"
       - "View the current script: gcloud compute instances describe VM_NAME --zone=ZONE --format=\"value(metadata.items.extract(startup-script))\""

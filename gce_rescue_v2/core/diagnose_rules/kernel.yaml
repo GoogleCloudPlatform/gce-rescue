@@ -26,6 +26,12 @@ patterns:
       #                  / "compulsory panic_on_oom is enabled" (sysctl=2)
       - 'Kernel panic - not syncing: [Oo]ut of memory'
       - 'panic_on_oom is (?:selected|enabled)'
+      # mm/oom_kill.c panics with this wording when no killable process
+      # remains (red-team C4) - it is an OOM panic, and classifying it
+      # as generic gave reset/previous-kernel fixes instead of
+      # resize/panic_on_oom guidance. Mirrored in the
+      # kernel_panic_generic lookahead exclusions below.
+      - 'Kernel panic - not syncing: System is deadlocked on memory'
     fixes:
       - "Identify the memory-hungry process in the serial output (Out of memory: Killed process ...)"
       - "Resize the VM to a larger machine type: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
@@ -150,7 +156,7 @@ patterns:
     severity: critical
     description: "Kernel panic detected (unspecified cause)"
     regex:
-      - 'Kernel panic - not syncing(?!.*(?:hung_task: blocked tasks|[Oo]ut of memory|panic_on_oom is (?:selected|enabled)|Fatal Machine check|NMI: Not continuing|VFS: Unable to mount root fs on unknown-block|Attempted to kill init|No working init found|No init found\.\s*Try passing init=))'
+      - 'Kernel panic - not syncing(?!.*(?:hung_task: blocked tasks|[Oo]ut of memory|panic_on_oom is (?:selected|enabled)|System is deadlocked on memory|Fatal Machine check|NMI: Not continuing|VFS: Unable to mount root fs on unknown-block|Attempted to kill init|No working init found|No init found\.\s*Try passing init=))'
     fixes:
       - "Reset the VM: gcloud compute instances reset VM_NAME --zone=ZONE"
       - "Boot a previous kernel from the GRUB menu via the interactive serial console"
