@@ -439,20 +439,24 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         )
 
         if boot_completed:
-            has_emergency = any(
-                'emergency mode' in e.description.lower()
-                for e in all_detected
+            # No emergency-mode veto here: boot_completed already requires
+            # the last success marker to sit AFTER the last occurrence of
+            # every non-surviving finding in all_detected — including the
+            # emergency-mode line itself (fstab/initramfs, neither of which
+            # survives boot success). Any emergency evidence at this point
+            # is therefore provably from an older, resolved boot in the
+            # accumulating serial buffer; keeping a presence-based veto
+            # made every resolved emergency incident report CRITICAL
+            # forever until the buffer rotated.
+            logger.debug(
+                f"VM booted successfully (success at pos {last_success_pos}, "
+                f"last error at pos {last_error_pos}) — clearing "
+                f"{len(suppressible)} non-blocking error(s)"
             )
-            if not has_emergency:
-                logger.debug(
-                    f"VM booted successfully (success at pos {last_success_pos}, "
-                    f"last error at pos {last_error_pos}) — clearing "
-                    f"{len(suppressible)} non-blocking error(s)"
-                )
-                detected_errors = [
-                    e for e in detected_errors
-                    if e.category in SURVIVES_BOOT_SUCCESS_CATEGORIES
-                ]
+            detected_errors = [
+                e for e in detected_errors
+                if e.category in SURVIVES_BOOT_SUCCESS_CATEGORIES
+            ]
 
     # Determine diagnosis status and recommendations
     if detected_errors:

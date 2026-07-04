@@ -3212,3 +3212,186 @@ class TestFstabDistroBroadening:
         assert 'fstab_mount_failed' in names
         # Root cause wins; the generic emergency catch-all stays demoted.
         assert 'fstab_emergency_mode' not in names
+
+
+# ---------------------------------------------------------------------------
+# TestDistroBroadeningRedTeamRegressions
+# ---------------------------------------------------------------------------
+
+class TestDistroBroadeningRedTeamRegressions:
+    """Regressions from the adversarial review of the distro-broadening
+    branch (dracut/BusyBox/LVM/LUKS/RAID). Each test reproduces a confirmed
+    failing serial buffer from the red-team report."""
+
+    # C1: an S2-shaped dracut failure ALWAYS prints 'Entering emergency
+    # mode.' — once the incident is resolved and the VM boots, the stale
+    # emergency line must not veto boot-success suppression forever.
+    _RESOLVED_DRACUT_EMERGENCY = (
+        "[  135.209316] dracut-initqueue[550]: Warning: dracut-initqueue "
+        "timeout - starting timeout scripts\n"
+        "[  191.964618] dracut-initqueue[550]: Warning: Could not boot.\n"
+        "[  191.976595] dracut-initqueue[550]: Warning: /dev/disk/by-uuid/"
+        "00000000-0000-0000-0000-000000000bad does not exist\n"
+        "Generating \"/run/initramfs/rdsosreport.txt\"\n"
+        "Entering emergency mode. Exit the shell to continue.\n"
+        "dracut:/# \n"
+        "-- reboot --\n"
+        "[    2.412345] XFS (sda4): Ending clean mount\n"
+        "[    5.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+        "+ 8.102s (userspace) = 12.306s.\n"
+        "rocky9 login: \n"
+    )
+
+    def test_resolved_dracut_emergency_reports_healthy(self):
+        """C1: a resolved dracut emergency incident followed by a clean
+        boot on a RUNNING VM must report healthy — the stale 'Entering
+        emergency mode' line must not permanently block suppression."""
+        data = _diagnose(self._RESOLVED_DRACUT_EMERGENCY)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_resolved_fstab_emergency_reports_healthy(self):
+        """C1: same veto bug via the fstab wording ('You are in emergency
+        mode') — resolved incident + clean boot must report healthy."""
+        serial = (
+            "systemd[1]: Timed out waiting for device /dev/disk/by-uuid/"
+            "deadbeef-1234-5678-9abc-def012345678\n"
+            "systemd[1]: Dependency failed for /data.\n"
+            "You are in emergency mode. After logging in, type "
+            '"journalctl -xb" to view\n'
+            "-- reboot --\n"
+            "systemd[1]: Startup finished in 4.2s (kernel) + 8.1s "
+            "(userspace) = 12.3s.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_unresolved_dracut_emergency_still_reported(self):
+        """C1 guard: when the emergency shell is the LATEST evidence (stale
+        success marker from an older boot first), the findings must be
+        retained — suppression stays position-based, not presence-based."""
+        serial = (
+            "systemd[1]: Startup finished in 4.2s (kernel) + 8.1s "
+            "(userspace) = 12.3s.\n"
+            "-- reboot --\n"
+            "[  135.209316] dracut-initqueue[550]: Warning: dracut-initqueue "
+            "timeout - starting timeout scripts\n"
+            "Entering emergency mode. Exit the shell to continue.\n"
+            "dracut:/# \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_dracut_timeout' in names
+        assert 'initramfs_dracut_emergency' in names
+
+    def test_mdadm_failed_to_run_array_detected(self):
+        """C2: the actual mdadm wording for a refused array start
+        (Assemble.c: 'failed to RUN_ARRAY') must fire raid_start_failed."""
+        serial = (
+            "mdadm: failed to RUN_ARRAY /dev/md0: Input/output error\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'raid_start_failed' in names
+
+    def test_mdadm_not_enough_to_start_assemble_wording_detected(self):
+        """C2: degraded raid1 refusal via mdadm --assemble ('- not enough
+        to start the array.') must fire raid_start_failed."""
+        serial = (
+            "mdadm: /dev/md0 assembled from 1 drive - not enough to "
+            "start the array.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'raid_start_failed' in names
+
+    def test_mdadm_not_enough_to_start_incremental_wording_detected(self):
+        """C2: the udev incremental-assembly path modern boots use
+        (Incremental.c: 'attached to ..., not enough to start (1).') must
+        fire raid_start_failed."""
+        serial = (
+            "mdadm: /dev/sdb1 attached to /dev/md/0, not enough to "
+            "start (1).\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'raid_start_failed' in names
+
+    def test_completed_cryptswap_job_on_stopped_vm_not_flagged(self):
+        """C3: a transient cryptsetup start-job spinner that COMPLETES must
+        not fire crypt_unlock_wait on a TERMINATED VM (boot-success
+        suppression is skipped there — the regex itself must reject it)."""
+        serial = (
+            "[ ***  ] A start job is running for Cryptography Setup for "
+            "cryptswap1 (11s / no limit)\n"
+            "[  OK  ] Started Cryptography Setup for cryptswap1.\n"
+            "[    9.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 5.102s (userspace) = 9.306s.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        assert result.diagnosis_status == 'healthy'
+        assert result.boot_errors == []
+
+    def test_completed_crypt_device_unit_job_on_stopped_vm_not_flagged(self):
+        """C3: Ubuntu device-unit spinner form, resolved by 'Found device'
+        — must also stay silent on a TERMINATED VM."""
+        serial = (
+            "[ ***  ] A start job is running for "
+            "dev-mapper-cryptswap1.device (7s / 1min 30s)\n"
+            "[  OK  ] Found device /dev/mapper/cryptswap1.\n"
+            "[    9.204333] systemd[1]: Startup finished in 4.204s (kernel) "
+            "+ 5.102s (userspace) = 9.306s.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        assert result.diagnosis_status == 'healthy'
+        assert result.boot_errors == []
+
+    def test_hung_crypt_job_still_detected_on_stopped_vm(self):
+        """C3 guard: a real hang repeats the spinner with no completion
+        line — crypt_unlock_wait must still fire (TERMINATED)."""
+        serial = (
+            "[ ***  ] A start job is running for Cryptography Setup for "
+            "luks-2f4c8e11 (30s / no limit)\n"
+            "[***   ] A start job is running for Cryptography Setup for "
+            "luks-2f4c8e11 (1min 30s / no limit)\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'crypt_unlock_wait' in names
+
+    def test_busybox_alert_uuid_line_does_not_fire_fstab(self):
+        """C4: the BusyBox 'ALERT!  UUID=... does not exist' line names the
+        root= kernel parameter — initramfs_busybox_shell owns it; the
+        fstab auto-repair guidance (wrong file) must NOT co-fire."""
+        serial = (
+            "Gave up waiting for root file system device.  Common "
+            "problems:\n"
+            " - Boot args (cat /proc/cmdline)\n"
+            "ALERT!  UUID=11111111-2222-3333-4444-555555555555 does not "
+            "exist.  Dropping to a shell!\n"
+            "BusyBox v1.30.1 (Ubuntu 1:1.30.1-7ubuntu3) built-in shell "
+            "(ash)\n"
+            "(initramfs) \n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'initramfs_busybox_shell' in names
+        assert 'fstab_uuid_not_found' not in names
+
+    def test_non_alert_uuid_not_found_still_fires_fstab(self):
+        """C4 guard: the ALERT carve-out must not lose genuine fstab UUID
+        failures on ordinary systemd/mount lines."""
+        serial = (
+            "Linux version 6.1.0-18-cloud-amd64\n"
+            "mount: UUID=deadbeef-1234-5678-9abc-def012345678 does not "
+            "exist\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'fstab_uuid_not_found' in names

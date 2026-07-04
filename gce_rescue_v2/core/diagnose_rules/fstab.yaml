@@ -7,7 +7,11 @@ patterns:
     severity: critical
     description: "UUID specified in /etc/fstab cannot be found"
     regex:
-      - 'UUID=[\w-]+ does not exist'
+      # (?!.*ALERT!): the BusyBox initramfs line 'ALERT!  UUID=... does not
+      # exist.  Dropping to a shell!' names the root= KERNEL PARAMETER, not
+      # an fstab entry - it is owned by initramfs_busybox_shell, and the
+      # fstab auto-repair guidance would point at the wrong file.
+      - '^(?!.*ALERT!)[^\n]*UUID=[\w-]+ does not exist'
       - "can't find UUID=[\\w-]+"
       - 'Timed out waiting for device.*UUID='
       - 'Expecting device.*/dev/disk/by-uuid/'

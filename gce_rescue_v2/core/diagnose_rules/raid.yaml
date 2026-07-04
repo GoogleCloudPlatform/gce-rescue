@@ -25,6 +25,13 @@ patterns:
     regex:
       - 'mdadm: Unable to start array'
       - 'mdadm: failed to (?:start|run) array'
+      # Actual mdadm source wordings (verified against Assemble.c /
+      # Incremental.c): 'failed to RUN_ARRAY /dev/md0: ...' and the two
+      # degraded-assembly refusals '... - not enough to start the array.'
+      # (mdadm --assemble) / '... attached to /dev/md/0, not enough to
+      # start (1).' (udev incremental path used by modern boots).
+      - 'mdadm: failed to RUN_ARRAY'
+      - 'mdadm:[^\n]*not enough to start'
     fixes:
       - "From rescue mode, examine the members: sudo mdadm --examine /dev/sd[a-z]* and reassemble: sudo mdadm --assemble --scan --force"
       - "Update /mnt/sysroot/etc/mdadm.conf to match the real array UUIDs (sudo mdadm --detail --scan) and rebuild the initramfs"

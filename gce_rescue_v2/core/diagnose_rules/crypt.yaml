@@ -27,8 +27,19 @@ patterns:
     description: "systemd is stuck on a cryptsetup start job (encrypted device wait)"
     regex:
       # 'A start job is running for' alone is a benign transient on every
-      # boot - bound here to crypt/LUKS unit wording only.
-      - 'A start job is running for [^\n]*(?:crypt|luks)'
+      # boot - bound here to crypt/LUKS unit wording only. The negative
+      # lookahead requires that NO completion evidence for the cryptsetup
+      # job ('Started/Finished ... Cryptography Setup', or the device-unit
+      # form's 'Found device ... crypt/luks/mapper') follows anywhere later
+      # in the buffer: on a healthy boot the spinner always resolves into
+      # one of those lines (so every spinner occurrence is rejected), while
+      # a real hang repeats the spinner with no completion line ever - the
+      # last occurrence still matches. Unbounded (not a char window)
+      # because the engine keeps the LAST matching occurrence: a window
+      # would let an early spinner line far from the completion line keep
+      # firing on healthy-but-stopped VMs (TERMINATED skips boot-success
+      # suppression entirely).
+      - 'A start job is running for [^\n]*(?:crypt|luks)(?![\s\S]*?(?:(?:Started|Finished) [^\n]*Cryptography Setup|Found device [^\n]*(?:crypt|luks|mapper)))'
     fixes:
       - "The start job is waiting for an encrypted device to be unlocked - connect to the interactive serial console to supply the passphrase: gcloud compute connect-to-serial-port VM_NAME --zone=ZONE"
       - "If the underlying device is gone (deleted disk), remove its /etc/crypttab and /etc/fstab entries via rescue mode (the entries are readable even though the data is not)"
