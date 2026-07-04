@@ -1,0 +1,72 @@
+# Early systemd / PID 1 failure patterns (boot stage 7).
+#
+# SCOPING DECISION: this file deliberately does NOT ship a generic
+# 'Failed to start <unit>' pattern. That string fires on every non-fatal
+# unit failure (apt-daily, fwupd, motd-news, ...) on perfectly healthy
+# boots, so a bare match would be a constant false positive. Only
+# PID1-fatal or dead-end conditions are matched here; revisit generic
+# unit failures only with a healthy/failed serial corpus to tune against.
+#
+# Overlap contract: fstab.yaml owns the emergency-mode entry strings
+# ('You are in emergency mode', 'Give root password for maintenance').
+# Patterns here anchor only on wording those patterns never match.
+#
+# No survives_boot_success: a completed later boot means PID1 recovered
+# (ordering cycles are logged and broken, the console lockout only
+# matters while stuck in emergency mode), so boot-success suppression
+# must clear stale findings from an older boot.
+category: systemd_early
+fix_guidance: "In rescue mode, inspect the unit files named in the serial output under /mnt/sysroot/etc/systemd/system/ and fix the broken dependency or drop-in; for the locked-root emergency dead end, set a root password or add a systemd debug-shell via chroot"
+# auto_repair MUST stay false until startup_scripts/fixes/
+# systemd_early_fix.sh lands. RepairOrchestrator.validate() checks that
+# every category with auto_repair: true has a fix script, so flipping
+# this early makes `repair` fail preflight for ALL categories. Flip to
+# true in the same commit that adds the script.
+auto_repair: false
+
+patterns:
+  # severity: error, not critical — systemd resolves a cycle by deleting
+  # one job and boot usually continues (minus the deleted unit). It is a
+  # real on-disk misconfiguration worth reporting, but on its own it is
+  # not a boot-blocker; if it did block boot, the emergency-mode or
+  # dependency-failure patterns fire alongside it.
+  - name: systemd_ordering_cycle
+    severity: error
+    description: "systemd found an ordering cycle and deleted a job to break it"
+    regex:
+      - 'Found ordering cycle on'
+      - 'Breaking ordering cycle by deleting job'
+    fixes:
+      - "The serial lines after 'Found ordering cycle on' list the units in the cycle and which job was deleted - that unit did not start"
+      - "Fix the After=/Before=/Requires= loop in the listed unit files under /mnt/sysroot/etc/systemd/system/ from rescue mode"
+      - "Check recently added drop-ins for the looping units: ls /mnt/sysroot/etc/systemd/system/*.d/"
+
+  - name: systemd_freeze
+    severity: critical
+    description: "systemd (PID 1) froze execution - boot cannot continue"
+    regex:
+      # Printed by PID 1 as its terminal action after a crash or a fatal
+      # startup error ('systemd[1]: Freezing execution.'). The wording is
+      # unique to systemd's freeze() path, so no unit-prefix binding is
+      # needed.
+      - 'Freezing execution'
+    fixes:
+      - "Read the systemd[1] lines immediately before 'Freezing execution' in the serial output - they name the fatal error (segfault, failed to allocate manager, bad system.conf)"
+      - "If a recent systemd upgrade or /etc/systemd/system.conf change preceded this, revert it from rescue mode via chroot"
+      - "Reinstall systemd if its binaries are damaged: sudo chroot /mnt/sysroot apt-get install --reinstall systemd (Debian-family) or dnf reinstall systemd (RHEL-family)"
+
+  # severity: error — this is the sulogin lockout: the VM reached
+  # emergency/rescue mode but root has no password (the default on cloud
+  # images), so the maintenance shell is unreachable and emergency mode
+  # becomes a dead end. The underlying boot failure is reported by the
+  # pattern that put the VM in emergency mode (fstab/filesystem/...);
+  # this finding explains why the console prompt cannot be used.
+  - name: systemd_no_console
+    severity: error
+    description: "Emergency shell unreachable - root account is locked (no root password)"
+    regex:
+      - 'Cannot open access to console, the root account is locked'
+    fixes:
+      - "The emergency shell cannot be entered because root has no password (normal on GCP images) - use rescue mode instead of the serial console to repair the disk"
+      - "Fix the underlying boot failure reported above; this finding only explains why the emergency prompt is unusable"
+      - "To make future emergency shells usable, set a root password from a chroot (sudo chroot /mnt/sysroot passwd root) or enable the systemd debug-shell"

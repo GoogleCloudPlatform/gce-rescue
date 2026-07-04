@@ -256,7 +256,7 @@ class TestShippedPatterns:
 
     def test_kernel_patterns_present(self):
         kernel_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'kernel']
-        assert len(kernel_patterns) == 5
+        assert len(kernel_patterns) == 8
 
     def test_kernel_patterns_have_inline_fixes(self):
         """All kernel patterns should have inline fixes from merged YAML."""
@@ -499,6 +499,72 @@ class TestShippedPatterns:
                 f"Pattern '{pattern.name}' has no inline fixes"
             )
 
+    def test_switchroot_patterns_present(self):
+        sr_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'switchroot']
+        assert len(sr_patterns) == 3
+
+    def test_switchroot_pattern_names_prefixed(self):
+        """switchroot pattern names should carry the category prefix."""
+        sr_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'switchroot']
+        for pattern in sr_patterns:
+            assert pattern.name.startswith('switchroot_'), (
+                f"Pattern '{pattern.name}' missing 'switchroot_' prefix"
+            )
+
+    def test_switchroot_patterns_have_inline_fixes(self):
+        """All switchroot patterns should have inline fixes."""
+        sr_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'switchroot']
+        for pattern in sr_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_switchroot_patterns_all_critical(self):
+        """Stage-6 failures always leave the VM unbootable - all critical."""
+        sr_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'switchroot']
+        for pattern in sr_patterns:
+            assert pattern.severity == 'critical'
+
+    def test_systemd_early_patterns_present(self):
+        se_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'systemd_early']
+        assert len(se_patterns) == 3
+
+    def test_systemd_early_pattern_names_prefixed(self):
+        """systemd_early pattern names should carry the category prefix."""
+        se_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'systemd_early']
+        for pattern in se_patterns:
+            assert pattern.name.startswith('systemd_'), (
+                f"Pattern '{pattern.name}' missing 'systemd_' prefix"
+            )
+
+    def test_systemd_early_patterns_have_inline_fixes(self):
+        """All systemd_early patterns should have inline fixes."""
+        se_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'systemd_early']
+        for pattern in se_patterns:
+            assert len(pattern.fixes) > 0, (
+                f"Pattern '{pattern.name}' has no inline fixes"
+            )
+
+    def test_systemd_early_no_generic_failed_to_start(self):
+        """systemd_early must never ship a bare 'Failed to start' regex -
+        it fires on every non-fatal unit failure on healthy boots (the
+        scoping decision documented in systemd_early.yaml)."""
+        se_patterns = [p for p in BOOT_ERROR_PATTERNS
+                       if p.category == 'systemd_early']
+        for pattern in se_patterns:
+            for regex in pattern.patterns:
+                assert 'Failed to start' not in regex, (
+                    f"Pattern '{pattern.name}' carries the FP-prone "
+                    f"'Failed to start' anchor: {regex}"
+                )
+
     def test_survives_boot_success_flags(self):
         """ssh/filesystem/disk_full failures are not resolved by a completed
         boot (a full disk stays full after 'Startup finished'), so their YAML
@@ -511,7 +577,8 @@ class TestShippedPatterns:
         assert 'filesystem' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'disk_full' in SURVIVES_BOOT_SUCCESS_CATEGORIES
         for cat in ('fstab', 'kernel', 'initramfs', 'grub', 'firmware',
-                    'lvm', 'crypt', 'raid', 'machine_id'):
+                    'lvm', 'crypt', 'raid', 'machine_id', 'switchroot',
+                    'systemd_early'):
             assert cat not in SURVIVES_BOOT_SUCCESS_CATEGORIES
 
     def test_detect_only_flags(self):
@@ -530,7 +597,8 @@ class TestShippedPatterns:
         assert 'kernel' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
         assert 'crypt' not in SURVIVES_BOOT_SUCCESS_CATEGORIES
         for cat in ('fstab', 'initramfs', 'disk_full', 'ssh', 'filesystem',
-                    'grub', 'firmware', 'lvm', 'raid', 'machine_id'):
+                    'grub', 'firmware', 'lvm', 'raid', 'machine_id',
+                    'switchroot', 'systemd_early'):
             assert cat not in DETECT_ONLY_CATEGORIES
 
     def test_detect_only_sets_agree(self):

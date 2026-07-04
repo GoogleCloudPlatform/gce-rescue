@@ -552,15 +552,22 @@ class TestKernelPanicDetection:
         assert 'kernel_panic_generic' not in names
 
     def test_unrecognized_panic_reports_generic(self):
-        """A panic cause not covered by specific patterns falls to generic."""
+        """A panic cause not covered by specific patterns falls to generic.
+
+        'Attempted to kill the idle task!' deliberately sits one word away
+        from the kernel_attempted_kill_init exclusion ('Attempted to kill
+        init') - it must fall through to generic, proving the exclusion
+        term is exactly as tight as its positive.
+        """
         serial = (
             "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
-            "[    5.002311] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000009\n"
-            "[    5.008442] CPU: 0 PID: 1 Comm: init Not tainted 5.10.0-28-cloud-amd64 #1\n"
+            "[    5.002311] Kernel panic - not syncing: Attempted to kill the idle task!\n"
+            "[    5.008442] CPU: 0 PID: 0 Comm: swapper/0 Not tainted 5.10.0-28-cloud-amd64 #1\n"
         )
         data = _diagnose(serial)
         names = [e['name'] for e in data['boot_errors']]
         assert 'kernel_panic_generic' in names
+        assert 'kernel_attempted_kill_init' not in names
 
     def test_modern_oom_panic_detected(self):
         """Modern (>=4.x) OOM panic wording must be detected, not report healthy.
@@ -1839,7 +1846,7 @@ class TestDiagnoseUnifiedEngineRedTeamRegressions:
             '"journalctl -xb" to view system logs.\n'
             "-- reboot --\n"
             "[   12.310221] Kernel panic - not syncing: Attempted to kill "
-            "init! exitcode=0x00007f00\n"
+            "the idle task!\n"
         )
         data = _diagnose(serial)
         names = [e['name'] for e in data['boot_errors']]
@@ -3395,3 +3402,434 @@ class TestDistroBroadeningRedTeamRegressions:
                                        'TERMINATED')
         names = [e.name for e in result.boot_errors]
         assert 'fstab_uuid_not_found' in names
+
+
+# ---------------------------------------------------------------------------
+# TestSwitchrootDetection (Wave 3 - boot stage 6)
+# ---------------------------------------------------------------------------
+
+class TestSwitchrootDetection:
+    """Detection tests for switchroot.yaml (switch_root / init handover)."""
+
+    def test_systemd_switch_root_failure_detected(self):
+        """systemd's 'Failed to switch root' (not an OS tree) is detected."""
+        serial = (
+            "[    3.412345] systemd[1]: Starting Switch Root...\n"
+            "[    3.512345] systemd[1]: Failed to switch root: Specified "
+            "switch root path '/sysroot' does not seem to be an OS tree. "
+            "os-release file is missing.\n"
+            "[    3.612345] systemd[1]: Failed to start Switch Root.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'switchroot_failed' in names
+
+    def test_switch_root_mount_moving_detected(self):
+        """util-linux switch_root 'failed to mount moving' is detected."""
+        serial = (
+            "[    2.812345] EXT4-fs (sda1): mounted filesystem with ordered "
+            "data mode\n"
+            "switch_root: failed to mount moving /dev to /sysroot/dev: "
+            "Invalid argument\n"
+            "switch_root: forcing unmount of /dev\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'switchroot_failed' in names
+
+    def test_initramfs_tools_run_init_failure_detected(self):
+        """Debian initramfs-tools no-init sequence (run-init wording)."""
+        serial = (
+            "Begin: Running /scripts/init-bottom ... done.\n"
+            "run-init: can't execute '/sbin/init': No such file or "
+            "directory\n"
+            "Target filesystem doesn't have requested /sbin/init.\n"
+            "run-init: can't execute '/etc/init': No such file or directory\n"
+            "No init found. Try passing init= bootarg.\n"
+            "BusyBox v1.30.1 (Debian 1:1.30.1-6+b3) built-in shell (ash)\n"
+            "(initramfs) \n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'switchroot_no_init' in names
+        # The BusyBox prompt is a real second finding (different stage
+        # ownership), not an overlap bug.
+        assert 'initramfs_busybox_shell' in names
+
+    def test_no_working_init_panic_fires_switchroot_not_generic(self):
+        """Modern kernels panic 'No working init found.' - switchroot owns
+        that panic line, and the kernel_panic_generic lookahead must
+        mirror the exclusion (INVARIANT drift guard)."""
+        serial = (
+            "[    2.123456] Run /sbin/init as init process\n"
+            "[    2.124512] Failed to execute /sbin/init (error -2)\n"
+            "[    2.125624] Kernel panic - not syncing: No working init "
+            "found. Try passing init= option to kernel. See Linux "
+            "Documentation/admin-guide/init.rst for guidance.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'switchroot_no_init' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_old_kernel_no_init_panic_fires_switchroot_not_generic(self):
+        """Old-kernel wording 'No init found. Try passing init=' - same
+        exclusion-mirror guard as the modern form."""
+        serial = (
+            "[    1.912345] VFS: Mounted root (ext4 filesystem) readonly "
+            "on device 8:1.\n"
+            "[    2.025624] Kernel panic - not syncing: No init found.  "
+            "Try passing init= option to kernel. See Linux "
+            "Documentation/init.txt for guidance.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'switchroot_no_init' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_init_shared_library_failure_detected(self):
+        """init failing on a missing shared library is a switchroot finding."""
+        serial = (
+            "[    2.612345] Run /sbin/init as init process\n"
+            "/sbin/init: error while loading shared libraries: libc.so.6: "
+            "cannot open shared object file: No such file or directory\n"
+            "[    2.812345] Kernel panic - not syncing: Attempted to kill "
+            "init! exitcode=0x00007f00\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'switchroot_init_libs' in names
+
+    def test_userspace_shared_library_failure_not_flagged(self):
+        """'error while loading shared libraries' from an ordinary daemon
+        on a RUNNING vm must NOT fire switchroot_init_libs - unbound, the
+        string is a guaranteed false positive (any broken userspace
+        dependency prints it after a perfectly healthy boot)."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  OK  ] Started OpenBSD Secure Shell server.\n"
+            "[   11.512345] systemd[1]: Startup finished in 3.1s (kernel) "
+            "+ 8.4s (userspace) = 11.5s.\n"
+            "debian login: \n"
+            "myapp[1421]: /usr/local/bin/myapp: error while loading shared "
+            "libraries: libfoo.so.1: cannot open shared object file\n"
+            "cloud-init[892]: /usr/bin/cloud-init: error while loading "
+            "shared libraries: libpython3.11.so.1.0: cannot open shared "
+            "object file\n"
+            "systemd-networkd[315]: error while loading shared libraries: "
+            "libsystemd-shared-252.so: cannot open shared object file\n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'switchroot' not in categories
+
+    def test_busybox_root_device_drop_does_not_fire_switchroot(self):
+        """A BusyBox drop caused by a MISSING ROOT DEVICE (stage 4) has no
+        init strings - it must stay an initramfs finding only."""
+        serial = (
+            "Gave up waiting for root file system device.  Common "
+            "problems:\n"
+            "ALERT!  UUID=11111111-2222-3333-4444-555555555555 does not "
+            "exist.  Dropping to a shell!\n"
+            "BusyBox v1.30.1 (Ubuntu 1:1.30.1-7ubuntu3) built-in shell "
+            "(ash)\n"
+            "(initramfs) \n"
+        )
+        data = _diagnose(serial)
+        categories = {e['category'] for e in data['boot_errors']}
+        assert 'initramfs' in categories
+        assert 'switchroot' not in categories
+
+    def test_healthy_boot_no_switchroot_findings(self):
+        """A clean boot (including the healthy switch-root transition line)
+        must produce zero switchroot findings."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[    2.912345] systemd[1]: Starting Switch Root...\n"
+            "[    3.012345] systemd[1]: Switching root.\n"
+            "[    5.412345] EXT4-fs (sda1): re-mounted. Quota mode: none.\n"
+            "[   10.512345] systemd[1]: Startup finished in 3.1s (kernel) "
+            "+ 7.4s (userspace) = 10.5s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestSystemdEarlyDetection (Wave 3 - boot stage 7)
+# ---------------------------------------------------------------------------
+
+class TestSystemdEarlyDetection:
+    """Detection tests for systemd_early.yaml (PID1 / early services)."""
+
+    def test_ordering_cycle_detected_with_unit_names(self):
+        """Realistic ordering-cycle block (systemd <=v249 wording)."""
+        serial = (
+            "[    4.112345] systemd[1]: local-fs.target: Found ordering "
+            "cycle on local-fs.target/start\n"
+            "[    4.112400] systemd[1]: local-fs.target: Found dependency "
+            "on mnt-data.mount/start\n"
+            "[    4.112500] systemd[1]: local-fs.target: Job "
+            "mnt-data.mount/start deleted to break ordering cycle starting "
+            "with local-fs.target/start\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        findings = [e for e in result.boot_errors
+                    if e.name == 'systemd_ordering_cycle']
+        assert findings, "systemd_ordering_cycle should be detected"
+        assert all(f.severity == 'error' for f in findings)
+
+    def test_ordering_cycle_modern_wording_detected(self):
+        """systemd v250+ wording: 'Breaking ordering cycle by deleting job'."""
+        serial = (
+            "[    3.912345] systemd[1]: sysinit.target: Found ordering "
+            "cycle on sysinit.target/start\n"
+            "[    3.912400] systemd[1]: sysinit.target: Breaking ordering "
+            "cycle by deleting job cloud-init.service/start\n"
+            "[    3.912500] systemd[1]: cloud-init.service: Job "
+            "cloud-init.service/start deleted to break ordering cycle\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'systemd_ordering_cycle' in names
+
+    def test_ordering_cycle_suppressed_after_successful_boot(self):
+        """When systemd breaks the cycle and boot completes on a RUNNING
+        vm, boot-success suppression clears the finding - by design
+        (severity error, no survives_boot_success: diagnose targets boot
+        failures, and this boot succeeded)."""
+        serial = (
+            "[    4.112345] systemd[1]: local-fs.target: Found ordering "
+            "cycle on local-fs.target/start\n"
+            "[    4.112500] systemd[1]: local-fs.target: Job "
+            "mnt-data.mount/start deleted to break ordering cycle starting "
+            "with local-fs.target/start\n"
+            "[   12.512345] systemd[1]: Startup finished in 4.1s (kernel) "
+            "+ 8.4s (userspace) = 12.5s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+
+    def test_pid1_freeze_detected_as_critical(self):
+        """systemd[1] freezing execution is a hard boot stop."""
+        serial = (
+            "[    3.212345] systemd[1]: Caught <SEGV>, dumped core as pid "
+            "412.\n"
+            "[    3.312345] systemd[1]: Freezing execution.\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        findings = [e for e in result.boot_errors
+                    if e.name == 'systemd_freeze']
+        assert findings, "systemd_freeze should be detected"
+        assert all(f.severity == 'critical' for f in findings)
+
+    def test_root_locked_console_detected_alongside_root_cause(self):
+        """The sulogin lockout line (root account locked) must be reported
+        next to the fstab root cause - it explains why emergency mode is
+        a dead end on cloud images."""
+        serial = (
+            "[  TIME ] Timed out waiting for device "
+            "/dev/disk/by-uuid/deadbeef-1234-5678-9abc-def012345678.\n"
+            "[DEPEND] Dependency failed for /mnt/data.\n"
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view system logs.\n"
+            "Cannot open access to console, the root account is locked. "
+            "See sulogin(8) man page for more details.\n"
+            "Press Enter to continue.\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'systemd_no_console' in names
+        assert 'fstab_device_timeout' in names
+
+    def test_benign_unit_failures_do_not_fire_systemd_early(self):
+        """Scoping guard: ordinary '[FAILED] Failed to start ...' unit
+        failures on an otherwise healthy boot must produce ZERO
+        systemd_early findings (the category deliberately ships no
+        generic Failed-to-start pattern)."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[FAILED] Failed to start Update APT News.\n"
+            "[    8.412345] systemd[1]: apt-news.service: Main process "
+            "exited, code=exited, status=1/FAILURE\n"
+            "[FAILED] Failed to start Download data for packages that "
+            "failed at package install time.\n"
+            "[   11.512345] systemd[1]: Startup finished in 3.1s (kernel) "
+            "+ 8.4s (userspace) = 11.5s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+
+# ---------------------------------------------------------------------------
+# TestKernelEarlyFaultDetection (Wave 3 - kernel.yaml broadening)
+# ---------------------------------------------------------------------------
+
+class TestKernelEarlyFaultDetection:
+    """Detection tests for kernel_attempted_kill_init, kernel_bug_oops and
+    kernel_decompress_fail, including catch-all and grub overlap guards."""
+
+    def test_attempted_kill_init_fires_specific_not_generic(self):
+        """The Attempted-to-kill-init panic must report the specific
+        pattern; the generic lookahead mirrors it (INVARIANT guard)."""
+        serial = (
+            "[    0.000000] Linux version 5.10.0-28-cloud-amd64\n"
+            "[    5.002311] Kernel panic - not syncing: Attempted to kill "
+            "init! exitcode=0x0000000b\n"
+            "[    5.008442] CPU: 0 PID: 1 Comm: systemd Not tainted "
+            "5.10.0-28-cloud-amd64 #1\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'kernel_attempted_kill_init' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_run_init_failure_reports_switchroot_and_kill_init(self):
+        """run-init exec failure + resulting panic: the switchroot category
+        names the on-disk cause, kernel names the panic - both fire."""
+        serial = (
+            "run-init: can't execute '/sbin/init': No such file or "
+            "directory\n"
+            "[    2.512345] Kernel panic - not syncing: Attempted to kill "
+            "init! exitcode=0x00000100\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'switchroot_no_init' in names
+        assert 'kernel_attempted_kill_init' in names
+        assert 'kernel_panic_generic' not in names
+
+    def test_bug_unable_to_handle_and_oops_detected(self):
+        """Classic NULL-dereference Oops block reports kernel_bug_oops."""
+        serial = (
+            "[  184.123456] BUG: unable to handle kernel NULL pointer "
+            "dereference at 0000000000000000\n"
+            "[  184.130211] #PF: supervisor read access in kernel mode\n"
+            "[  184.136122] Oops: 0002 [#1] SMP PTI\n"
+            "[  184.141233] RIP: 0010:broken_driver_fn+0x12/0x40 "
+            "[broken_driver]\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        findings = [e for e in result.boot_errors
+                    if e.name == 'kernel_bug_oops']
+        assert findings, "kernel_bug_oops should be detected"
+        assert all(f.severity == 'error' for f in findings)
+
+    def test_kernel_bug_at_file_line_detected(self):
+        """'kernel BUG at <file>:<line>!' form reports kernel_bug_oops."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   92.512345] kernel BUG at fs/ext4/inode.c:1731!\n"
+            "[   92.518442] invalid opcode: 0000 [#1] PREEMPT SMP NOPTI\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'kernel_bug_oops' in names
+
+    def test_oops_in_prose_not_flagged(self):
+        """Bare 'Oops'/'oops' in ordinary log prose must never match - the
+        pattern requires the Oops header with a 4-digit error code."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "myapp[1421]: Oops! Upload failed, retrying in 5s\n"
+            "installer: we hit an oops in the parser, continuing\n"
+            "There was a kernel bug at startup last week, now fixed\n"
+            "[   11.512345] systemd[1]: Startup finished in 3.1s (kernel) "
+            "+ 8.4s (userspace) = 11.5s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_decompressor_corruption_detected(self):
+        """Corrupt vmlinuz: decompressor error + '-- System halted' stub."""
+        serial = (
+            "Loading Linux 6.1.0-18-cloud-amd64 ...\n"
+            "Loading initial ramdisk ...\n"
+            "Decompressing Linux... \n"
+            "\n"
+            "XZ-compressed data is corrupt\n"
+            "\n"
+            " -- System halted\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        findings = [e for e in result.boot_errors
+                    if e.name == 'kernel_decompress_fail']
+        assert findings, "kernel_decompress_fail should be detected"
+        assert all(f.severity == 'critical' for f in findings)
+
+    def test_healthy_decompress_line_not_flagged(self):
+        """The healthy 'Decompressing Linux... Parsing ELF... done.' line
+        must never match (same-line failed/error binding)."""
+        serial = (
+            "Loading Linux 6.1.0-18-cloud-amd64 ...\n"
+            "Decompressing Linux... Parsing ELF... Performing "
+            "relocations... done.\n"
+            "Booting the kernel.\n"
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[   11.512345] systemd[1]: Startup finished in 3.1s (kernel) "
+            "+ 8.4s (userspace) = 11.5s.\n"
+            "debian login: \n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_reboot_system_halted_not_flagged(self):
+        """The kernel's ordinary shutdown line 'reboot: System halted' has
+        no '-- ' stub prefix and must NOT fire kernel_decompress_fail."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "[  831.512345] systemd-shutdown[1]: Syncing filesystems and "
+            "block devices.\n"
+            "[  832.612345] reboot: System halted\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'kernel_decompress_fail' not in names
+
+    def test_decompress_fail_and_grub_invalid_magic_do_not_cross_fire(self):
+        """Overlap guard: GRUB's 'error: invalid magic number' stays a grub
+        finding; the decompressor stub stays a kernel finding."""
+        grub_serial = (
+            "GRUB loading.\n"
+            "error: invalid magic number.\n"
+            "Entering rescue mode...\n"
+            "grub rescue> \n"
+        )
+        result = analyze_serial_output(grub_serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'grub_invalid_magic' in names
+        assert 'kernel_decompress_fail' not in names
+
+        stub_serial = (
+            "Loading Linux 6.1.0-18-cloud-amd64 ...\n"
+            "Decompressing Linux... \n"
+            "LZ4-compressed data is corrupt\n"
+            " -- System halted\n"
+        )
+        result = analyze_serial_output(stub_serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        categories = {e.category for e in result.boot_errors}
+        names = [e.name for e in result.boot_errors]
+        assert 'kernel_decompress_fail' in names
+        assert 'grub' not in categories

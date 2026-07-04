@@ -51,23 +51,89 @@ patterns:
       - "If NMI panics repeat, stop and start the VM to move it to a different host"
       - "Check for unknown_nmi_panic or panic-on-NMI settings in kernel parameters"
 
+  - name: kernel_attempted_kill_init
+    severity: critical
+    description: "Kernel panic: init (PID 1) died (Attempted to kill init)"
+    regex:
+      # "Kernel panic - not syncing: Attempted to kill init! exitcode=0x..."
+      # PID 1 crashed or exited - broken init/systemd binary, missing
+      # libraries, or a run-init exec failure inside the initramfs (the
+      # switchroot category catches the companion run-init line).
+      # Mirrored in the kernel_panic_generic lookahead exclusions below.
+      - 'Kernel panic - not syncing: Attempted to kill init'
+    fixes:
+      - "PID 1 (init/systemd) crashed or exited - check the lines just above the panic for the init error (run-init: can't execute, error while loading shared libraries, segfault)"
+      - "Verify init on the mounted disk from rescue mode: ls -l /mnt/sysroot/sbin/init and sudo chroot /mnt/sysroot ldd /sbin/init"
+      - "Reinstall systemd via chroot if broken: sudo chroot /mnt/sysroot apt-get install --reinstall systemd systemd-sysv (Debian-family) or dnf reinstall systemd (RHEL-family)"
+
+  # severity: error, not critical — a BUG/Oops is fatal only for the
+  # faulting task; the machine often keeps running (panic follows only
+  # with panic_on_oops or when the fault is in a critical path, and that
+  # panic line is reported separately by the panic patterns).
+  - name: kernel_bug_oops
+    severity: error
+    description: "Kernel BUG or Oops (crash in kernel code)"
+    regex:
+      - 'BUG: unable to handle kernel'
+      # Real form is always "kernel BUG at <file>:<line>!" (e.g. fs/ext4/
+      # inode.c:1234). The engine is IGNORECASE, so require the :<line>
+      # suffix - prose like "a kernel bug at startup" can never match.
+      - 'kernel BUG at [\w/.-]+:\d+'
+      # Oops header: "Oops: 0002 [#1] SMP PTI". Bound tightly - the line
+      # must start with an optional kernel timestamp then 'Oops: ' and a
+      # 4-digit error code, because bare 'Oops' appears in ordinary log
+      # prose and application output.
+      - '^(?:\[[\d\. ]+\] ?)?Oops: \d{4}'
+    fixes:
+      - "Read the Oops/BUG block in the serial output - RIP: names the failing kernel function and the module list shows what was loaded"
+      - "If the fault repeats, boot a previous kernel from the GRUB menu via the interactive serial console"
+      - "Report the backtrace to the distro/kernel vendor if it reproduces on current kernels"
+
+  - name: kernel_decompress_fail
+    severity: critical
+    description: "Kernel image failed to decompress (corrupt vmlinuz)"
+    regex:
+      # Same-line binding: the healthy boot line 'Decompressing Linux...
+      # Parsing ELF... done.' contains neither 'failed' nor 'error', so
+      # only an actual decompressor failure on that line can match.
+      - 'Decompressing Linux\.\.\.[^\n]*(?:failed|error)'
+      # Decompressor self-reports: "XZ-compressed data is corrupt".
+      - '(?:XZ|LZ4|ZSTD|gzip)[- ]compressed data is corrupt'
+      # The decompression stub halts with the literal line '-- System
+      # halted'. It cannot be bound to a decompression context: the stub
+      # prints the corruption message and this line with nothing usable
+      # in between, and on some failures '-- System halted' is the ONLY
+      # output. Anchoring is instead structural - the line-start '-- '
+      # prefix is unique to the boot stub; the kernel's ordinary shutdown
+      # message is 'System halted.' with no dashes, which cannot match.
+      # Severity stays critical: when this line appears the VM is
+      # unbootable by definition (the stub halted the CPU).
+      - '^\s*-- System halted'
+    fixes:
+      - "The kernel image (vmlinuz) is corrupt or truncated - reinstall it from rescue mode via chroot: sudo chroot /mnt/sysroot apt-get install --reinstall linux-image-amd64 (Debian-family) or dnf reinstall kernel-core (RHEL-family)"
+      - "Check /boot for disk-full or filesystem damage before reinstalling: df -h /mnt/sysroot/boot and fsck -y on the unmounted /boot partition"
+      - "Regenerate the GRUB config after reinstalling: update-grub (Debian-family) or grub2-mkconfig -o /boot/grub2/grub.cfg (RHEL-family)"
+
   # Catch-all for panics not matched by the specific patterns above.
   # The negative lookahead prevents double-reporting the same panic line:
   # the engine only dedupes identical (category, description) pairs, so
   # without the lookahead both a specific pattern and this generic one
   # would be reported. Also excludes 'VFS: Unable to mount root fs on
-  # unknown-block' panics, which belong to the initramfs category.
+  # unknown-block' panics, which belong to the initramfs category, and
+  # the no-init panics ('No working init found', 'No init found. Try
+  # passing init='), which belong to switchroot_no_init in switchroot.yaml.
   #
   # INVARIANT: every exclusion term below must mirror the positive regex
-  # of the pattern it defers to (here or in initramfs.yaml). An exclusion
-  # broader than its positive creates a silent hole where a real panic
-  # matches nothing and the VM reports healthy. Guarded by
-  # test_diagnose.py::TestKernelPanicDetection exclusion-drift tests.
+  # of the pattern it defers to (here, in initramfs.yaml or in
+  # switchroot.yaml). An exclusion broader than its positive creates a
+  # silent hole where a real panic matches nothing and the VM reports
+  # healthy. Guarded by test_diagnose.py::TestKernelPanicDetection
+  # exclusion-drift tests.
   - name: kernel_panic_generic
     severity: critical
     description: "Kernel panic detected (unspecified cause)"
     regex:
-      - 'Kernel panic - not syncing(?!.*(?:hung_task: blocked tasks|[Oo]ut of memory|panic_on_oom is (?:selected|enabled)|Fatal Machine check|NMI: Not continuing|VFS: Unable to mount root fs on unknown-block))'
+      - 'Kernel panic - not syncing(?!.*(?:hung_task: blocked tasks|[Oo]ut of memory|panic_on_oom is (?:selected|enabled)|Fatal Machine check|NMI: Not continuing|VFS: Unable to mount root fs on unknown-block|Attempted to kill init|No working init found|No init found\.\s*Try passing init=))'
     fixes:
       - "Reset the VM: gcloud compute instances reset VM_NAME --zone=ZONE"
       - "Boot a previous kernel from the GRUB menu via the interactive serial console"

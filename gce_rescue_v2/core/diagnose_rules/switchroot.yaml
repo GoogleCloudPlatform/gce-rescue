@@ -1,0 +1,86 @@
+# switch_root / pivot_root failure patterns (boot stage 6).
+#
+# The initramfs found and mounted the real root filesystem but could not
+# hand control to it: switch_root itself failed, /sbin/init is missing or
+# not executable, or init exists but its shared libraries are broken.
+# All of these are on-disk damage that rescue mode can inspect and fix
+# (restore the /sbin/init symlink, reinstall systemd/libc via chroot),
+# so the category is NOT detect_only.
+#
+# Kernel-panic interplay: two positives here match text that also appears
+# on 'Kernel panic - not syncing:' lines ('No working init found' on
+# modern kernels, 'No init found. Try passing init=' on old kernels).
+# The kernel_panic_generic lookahead in kernel.yaml mirrors BOTH terms —
+# see the INVARIANT comment there before editing either regex.
+#
+# No survives_boot_success: if a later boot completes, init executed and
+# the failure is resolved, so boot-success suppression must clear these.
+category: switchroot
+fix_guidance: "In rescue mode, verify /mnt/sysroot/sbin/init exists and its symlink target resolves (ls -l /mnt/sysroot/sbin/init), check its libraries (chroot /mnt/sysroot ldd /sbin/init), and reinstall systemd from a chroot if broken"
+# auto_repair MUST stay false until startup_scripts/fixes/switchroot_fix.sh
+# lands. RepairOrchestrator.validate() checks that every category with
+# auto_repair: true has a fix script, so flipping this early makes
+# `repair` fail preflight for ALL categories. Flip to true in the same
+# commit that adds the script.
+auto_repair: false
+
+patterns:
+  - name: switchroot_failed
+    severity: critical
+    description: "switch_root failed to hand over to the real root filesystem"
+    regex:
+      # systemd form: 'Failed to switch root: Specified switch root path
+      # /sysroot does not seem to be an OS tree. os-release file is missing.'
+      - 'Failed to switch root'
+      # util-linux switch_root(8) form: 'switch_root: failed to mount
+      # moving /dev to /sysroot/dev: Invalid argument'
+      - 'switch_root: failed to mount moving'
+    fixes:
+      - "The mounted root filesystem is not a usable OS tree - inspect it from rescue mode: ls /mnt/sysroot (expect /sbin, /etc, /usr and /etc/os-release)"
+      - "If /mnt/sysroot/etc/os-release is missing, the wrong partition is being mounted as root - compare root= on the kernel command line against sudo blkid"
+      - "If the tree is damaged, restore the disk from a snapshot or reinstall the core packages via chroot"
+
+  - name: switchroot_no_init
+    severity: critical
+    description: "No usable init on the root filesystem (/sbin/init missing or not executable)"
+    regex:
+      # initramfs-tools (Debian/Ubuntu): "Target filesystem doesn't have
+      # requested /sbin/init." — .? absorbs the apostrophe, which serial
+      # rendering can mangle.
+      - 'Target filesystem doesn.t have requested /sbin/init'
+      # klibc run-init: "run-init: can't execute '/sbin/init': No such
+      # file or directory"
+      - 'run-init: can.t execute'
+      # Kernel (init/main.c): "Failed to execute /sbin/init (error -2)"
+      - 'Failed to execute /sbin/init'
+      # Modern kernels panic with "Kernel panic - not syncing: No working
+      # init found. Try passing init= option to kernel." — mirrored in the
+      # kernel_panic_generic lookahead exclusions.
+      - 'No working init found'
+      # Old kernels: "No init found. Try passing init= option to kernel."
+      # (also mirrored in the kernel_panic_generic lookahead).
+      - 'No init found\.\s*Try passing init='
+    fixes:
+      - "Check init on the mounted disk from rescue mode: ls -l /mnt/sysroot/sbin/init (it is normally a symlink to /lib/systemd/systemd)"
+      - "If the symlink or its target is missing, reinstall systemd via chroot: sudo chroot /mnt/sysroot apt-get install --reinstall systemd systemd-sysv (Debian-family) or dnf reinstall systemd (RHEL-family)"
+      - "If a custom init= parameter was set, remove or correct it in /etc/default/grub (Debian-family) or via grubby --update-kernel=ALL --remove-args=init (RHEL-family), then regenerate the GRUB config"
+
+  - name: switchroot_init_libs
+    severity: critical
+    description: "init found but its shared libraries are missing or broken"
+    regex:
+      # 'error while loading shared libraries' on its own appears in
+      # ORDINARY userspace failures on healthy running VMs (any daemon
+      # with a broken dependency prints it), so unbound it is a
+      # guaranteed false positive. It is only a boot failure when the
+      # failing BINARY is init itself, and the loader prints the binary
+      # name immediately before the message ("/sbin/init: error while
+      # loading shared libraries: libc.so.6: ..."), so the regex requires
+      # an init-context binary directly before the colon. 'systemd'
+      # must be followed by ':' so systemd-resolved / systemd-networkd
+      # and other systemd-* units failing at runtime can never match.
+      - '(?:/sbin/init|/init|run-init|systemd): error while loading shared libraries'
+    fixes:
+      - "Identify the missing library from the serial line, then check it from rescue mode: sudo chroot /mnt/sysroot ldd /sbin/init"
+      - "Reinstall the broken packages via chroot: sudo chroot /mnt/sysroot apt-get install --reinstall systemd libc6 (Debian-family) or dnf reinstall systemd glibc (RHEL-family)"
+      - "If the C library itself is damaged, chroot may fail - restore the disk from a snapshot instead"

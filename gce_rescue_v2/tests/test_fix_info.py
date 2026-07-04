@@ -454,6 +454,50 @@ class TestShippedFixInfo:
                 "core/diagnose_rules/machine_id.yaml"
             )
 
+    def test_switchroot_fix_guidance_loaded(self):
+        assert 'switchroot' in CATEGORY_FIX_GUIDANCE
+
+    def test_switchroot_is_not_auto_repairable(self):
+        """switchroot stays auto_repair: false until switchroot_fix.sh lands."""
+        assert 'switchroot' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_switchroot_patterns_have_fixes(self):
+        """Every switchroot pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        sr_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'switchroot'
+        ]
+        assert len(sr_patterns) > 0
+        for pattern in sr_patterns:
+            fixes = get_fixes_for_pattern('switchroot', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/switchroot.yaml"
+            )
+
+    def test_systemd_early_fix_guidance_loaded(self):
+        assert 'systemd_early' in CATEGORY_FIX_GUIDANCE
+
+    def test_systemd_early_is_not_auto_repairable(self):
+        """systemd_early stays auto_repair: false until systemd_early_fix.sh lands."""
+        assert 'systemd_early' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_systemd_early_patterns_have_fixes(self):
+        """Every systemd_early pattern should have at least one fix suggestion."""
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        se_patterns = [
+            p for p in BOOT_ERROR_PATTERNS if p.category == 'systemd_early'
+        ]
+        assert len(se_patterns) > 0
+        for pattern in se_patterns:
+            fixes = get_fixes_for_pattern('systemd_early', pattern.name)
+            assert len(fixes) > 0, (
+                f"Pattern '{pattern.name}' has no fixes in "
+                "core/diagnose_rules/systemd_early.yaml"
+            )
+
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'

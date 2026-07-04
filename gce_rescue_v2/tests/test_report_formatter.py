@@ -672,6 +672,13 @@ class TestWave2CategoryLabels:
         assert _category_label('raid') == 'Repair RAID array'
         assert _category_label('machine_id') == 'Regenerate machine-id'
 
+    def test_wave3_category_labels_defined(self):
+        from gce_rescue_v2.utils.report_formatter import _category_label
+        assert (_category_label('switchroot')
+                == 'Restore working init (switch_root)')
+        assert (_category_label('systemd_early')
+                == 'Fix early systemd boot failure')
+
     def test_crypt_rendered_as_detect_only_guidance(self, formatter):
         """crypt is detect-only: no rescue/restore workflow is offered."""
         diagnosis = {

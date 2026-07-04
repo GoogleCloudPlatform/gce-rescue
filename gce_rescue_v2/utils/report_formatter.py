@@ -446,5 +446,7 @@ def _category_label(category: str) -> str:
         'crypt': 'Handle encrypted (LUKS) disk',
         'raid': 'Repair RAID array',
         'machine_id': 'Regenerate machine-id',
+        'switchroot': 'Restore working init (switch_root)',
+        'systemd_early': 'Fix early systemd boot failure',
     }
     return labels.get(category, f'Fix {category}')
