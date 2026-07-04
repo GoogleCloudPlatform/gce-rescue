@@ -99,6 +99,11 @@ patterns:
       - 'Decompressing Linux\.\.\.[^\n]*(?:failed|error)'
       # Decompressor self-reports: "XZ-compressed data is corrupt".
       - '(?:XZ|LZ4|ZSTD|gzip)[- ]compressed data is corrupt'
+      # Live-validated on GCE (2026-07, Debian 12 UEFI, zstd kernel with
+      # corrupted payload): the EFI stub prints only 'Decoding failed'
+      # followed by ' -- System halted' - no 'Decompressing Linux...'
+      # line and no '*-compressed data is corrupt' message appear on the
+      # UEFI boot path, so this anchor is the pattern that fires there.
       # The decompression stub halts with the literal line '-- System
       # halted'. It cannot be bound to a decompression context: the stub
       # prints the corruption message and this line with nothing usable

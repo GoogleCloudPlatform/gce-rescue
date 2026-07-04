@@ -3459,6 +3459,24 @@ class TestSwitchrootDetection:
         # ownership), not an overlap bug.
         assert 'initramfs_busybox_shell' in names
 
+    def test_run_init_path_first_form_detected(self):
+        """Debian 12 klibc run-init prints the path-first form
+        'run-init: /sbin/init: No such file or directory' (no
+        "can't execute" wording) - exact sequence captured live on GCE
+        (2026-07). Fixture omits the 'Target filesystem' line so this
+        test proves the run-init regex alone carries detection."""
+        serial = (
+            "Begin: Running /scripts/init-bottom ... done.\n"
+            "run-init: /sbin/init: No such file or directory\n"
+            "run-init: /etc/init: No such file or directory\n"
+            "run-init: /bin/init: No such file or directory\n"
+            "/bin/sh: 0: can't access tty; job control turned off\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'switchroot_no_init' in names
+
     def test_no_working_init_panic_fires_switchroot_not_generic(self):
         """Modern kernels panic 'No working init found.' - switchroot owns
         that panic line, and the kernel_panic_generic lookahead must
@@ -3595,6 +3613,36 @@ class TestSystemdEarlyDetection:
             "cycle by deleting job cloud-init.service/start\n"
             "[    3.912500] systemd[1]: cloud-init.service: Job "
             "cloud-init.service/start deleted to break ordering cycle\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'systemd_ordering_cycle' in names
+
+    def test_ordering_cycle_job_deleted_wording_alone_detected(self):
+        """systemd 252 journal wording captured live on GCE (2026-07):
+        'Job X deleted to break ordering cycle starting with Y'. Must
+        fire even if the 'Found ordering cycle on' line is lost to
+        serial buffer truncation."""
+        serial = (
+            "[    2.661909] systemd[1]: cycleb.service: Job "
+            "cyclea.service/start deleted to break ordering cycle "
+            "starting with cycleb.service/start\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a',
+                                       'TERMINATED')
+        names = [e.name for e in result.boot_errors]
+        assert 'systemd_ordering_cycle' in names
+
+    def test_ordering_cycle_console_skip_line_detected(self):
+        """Console status line captured live on GCE (2026-07):
+        '[ SKIP ] Ordering cycle found, skipping cyclea.service' -
+        printed even when journal-to-console forwarding is off, so it
+        must fire on its own."""
+        serial = (
+            "[ SKIP ] Ordering cycle found, skipping cyclea.service\n"
+            "[  OK  ] Started cron.service - Regular background program "
+            "processing daemon.\n"
         )
         result = analyze_serial_output(serial, 'test-vm', 'zone-a',
                                        'TERMINATED')

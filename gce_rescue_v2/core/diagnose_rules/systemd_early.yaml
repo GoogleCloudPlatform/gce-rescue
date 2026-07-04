@@ -35,7 +35,18 @@ patterns:
     description: "systemd found an ordering cycle and deleted a job to break it"
     regex:
       - 'Found ordering cycle on'
+      # Pre-v250 systemd wording.
       - 'Breaking ordering cycle by deleting job'
+      # systemd >= 250 journal wording, observed live on Debian 12
+      # (systemd 252, 2026-07 GCE validation): "cyclea.service: Job
+      # cycleb.service/start deleted to break ordering cycle starting
+      # with cyclea.service/start".
+      - 'deleted to break ordering cycle'
+      # Console status line printed alongside the journal lines
+      # (observed live): "[ SKIP ] Ordering cycle found, skipping
+      # cycleb.service" - present even when journal-to-console
+      # forwarding is off.
+      - 'Ordering cycle found, skipping'
     fixes:
       - "The serial lines after 'Found ordering cycle on' list the units in the cycle and which job was deleted - that unit did not start"
       - "Fix the After=/Before=/Requires= loop in the listed unit files under /mnt/sysroot/etc/systemd/system/ from rescue mode"

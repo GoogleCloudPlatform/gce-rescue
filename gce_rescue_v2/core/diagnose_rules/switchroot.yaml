@@ -51,6 +51,12 @@ patterns:
       # klibc run-init: "run-init: can't execute '/sbin/init': No such
       # file or directory"
       - 'run-init: can.t execute'
+      # klibc run-init path-first form, observed live on Debian 12
+      # (2026-07 GCE validation): "run-init: /sbin/init: No such file or
+      # directory" (repeated for /etc/init and /bin/init fallbacks). The
+      # 'run-init: ' prefix is unique to the initramfs helper, so this
+      # cannot match userspace output.
+      - 'run-init: [^\n]*: No such file or directory'
       # Kernel (init/main.c): "Failed to execute /sbin/init (error -2)"
       - 'Failed to execute /sbin/init'
       # Modern kernels panic with "Kernel panic - not syncing: No working
