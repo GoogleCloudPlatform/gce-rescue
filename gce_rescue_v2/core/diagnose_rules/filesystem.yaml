@@ -61,7 +61,12 @@ patterns:
       # Severe corruption (superblock + partition table destroyed) makes the
       # device unopenable, so fsck/mount emit this instead of "Bad magic
       # number". Anchored to a real device path to avoid matching prose.
-      - "/dev/\\S+: Can't open blockdev"
+      # (?!root\b) carves out "/dev/root: Can't open blockdev" - /dev/root
+      # is the initramfs's ALIAS for the not-yet-resolved root device, and
+      # the line appears on every initramfs load failure with no corruption
+      # present (confirmed live: repair fsck reported NO_ISSUES). Those
+      # boots are owned by initramfs.yaml.
+      - "/dev/(?!root\\b)\\S+: Can't open blockdev"
     fixes:
       - "From rescue mode, check the unmounted disk: fsck -y /dev/sdX (ext) or xfs_repair /dev/sdX (XFS)"
       - "If corruption persists, check disk health in GCP Console and restore from a snapshot"
