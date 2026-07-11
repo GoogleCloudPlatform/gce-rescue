@@ -1,0 +1,119 @@
+# Windows Boot Manager / BCD failure patterns (UEFI boot stage).
+#
+# OS SCOPING: os: windows means these patterns ONLY run when diagnose has
+# detected a Windows VM (os_type == 'windows'), and are skipped on Linux
+# VMs. When OS detection is unavailable (degraded-permission path,
+# os_type == 'unknown') every pattern still runs. This is load-bearing:
+# a healthy Windows GCE serial buffer contains the literal string
+# "Windows Boot Manager" (BdsDxe firmware lines), plus the words error /
+# failed / not found (benign GCEGuestAgent + CorePlugin warnings), and
+# our own rescue script logs "Status: Offline" and "windows-startup-
+# script-ps1". Every regex below is therefore anchored on a Windows-
+# DISTINCTIVE failure literal (an 0xc0###### boot status code, the exact
+# "Windows failed to start" sentence, or "BOOTMGR is missing"), NEVER the
+# bare "Windows Boot Manager" title or a loose "Status:" prefix, so they
+# can match neither a healthy Windows boot, a Linux serial line, nor our
+# rescue-script output.
+#
+# ANCHORING NOTE: the whole Windows Boot Manager error screen arrives as a
+# single physical serial line riddled with ANSI cursor/color escapes, so
+# multi-sentence phrases are broken up by escape bytes. Regexes match one
+# contiguous fragment only (the status code, or one full sentence that the
+# corpus shows is not split), never sentence continuity across the screen.
+# The engine compiles with re.IGNORECASE, so lowercase serial codes
+# (0xc000000e) and the MS-documented uppercase form both match.
+category: windows_boot_manager
+os: windows
+# Windows boot repair (BCD rebuild via bcdedit / bootrec / Startup Repair)
+# is a future branch. This category is DETECT-ONLY today: it surfaces the
+# failure and hands back manual guidance, never an auto-fix.
+auto_repair: false
+detect_only: true
+fix_guidance: "Rescue the disk (gce-rescue rescue), attach the original disk as a secondary volume on the rescue VM, then repair the Boot Configuration Data: run Startup Repair, or from the rescue VM rebuild the BCD with bcdedit /store <secondary>:\\Boot\\BCD and bootrec /rebuildbcd / bootrec /fixboot against the recovered Windows volume"
+
+patterns:
+  # CORPUS-BACKED (rbwin-postrestore-serial.txt): the observed 0xc000000e
+  # Windows Boot Manager screen. Both the status code and the Info sentence
+  # are quoted verbatim from the capture.
+  - name: windows_boot_manager_device_inaccessible
+    severity: critical
+    description: "Windows Boot Manager failed (0xc000000e) - the BCD references a boot device that isn't connected or can't be accessed"
+    regex:
+      # Status code is contiguous in the buffer even though escapes sit
+      # between "Status:" and the code, so match the code directly. The
+      # trailing negative lookahead forbids a following hex digit so the
+      # literal cannot substring-match a longer hex value (e.g. a Linux
+      # kernel address like 0xc000000eab) on the os_type=='unknown' path.
+      - '0xc000000e(?![0-9a-fA-F])'
+      # The Info sentence is contiguous in the corpus; the apostrophes are
+      # plain ASCII. Distinctive enough to never collide with agent output.
+      - "A required device isn't connected or can't be accessed"
+    fixes:
+      - "The BCD points at a boot volume the firmware can no longer reach (device path or partition changed) - rescue the disk and inspect the store: bcdedit /store <secondary>:\\Boot\\BCD /enum"
+      - "Rebuild the boot configuration from the rescue VM: bootrec /rebuildbcd, then bootrec /fixboot / bootrec /fixmbr against the recovered Windows volume"
+      - "Alternatively boot the rescue flow and run Startup Repair to recreate the boot entries automatically"
+
+  # CORPUS-BACKED (every broken capture): the boot-manager failure header.
+  # Healthy GCE Windows buffers contain "Windows Boot Manager" (BdsDxe) but
+  # NEVER "Windows failed to start", so this sentence is a safe standalone
+  # anchor for the generic boot-manager failure.
+  - name: windows_boot_manager_failed_to_start
+    severity: critical
+    description: "Windows Boot Manager could not start Windows (boot configuration or boot volume unreadable)"
+    regex:
+      - 'Windows failed to start'
+    fixes:
+      - "The Windows Boot Manager loaded but could not hand off to Windows - check the accompanying 'Status: 0xc0######' code on the same screen for the specific cause"
+      - "Rescue the disk and rebuild the boot configuration: bootrec /rebuildbcd and bootrec /fixboot, or run Startup Repair via the rescue flow"
+
+  # NOT corpus-verified - validate live. Same Boot Manager screen family;
+  # 0xc0000225 / 0xc000000f are the classic 'boot selection failed because a
+  # required device is inaccessible' codes (winload or BCD entry invalid).
+  - name: windows_boot_manager_needs_repair
+    severity: critical
+    description: "Windows Boot Manager reports the boot selection failed - a required device is inaccessible (0xc0000225 / 0xc000000f, winload or BCD entry invalid)"
+    regex:
+      # Trailing lookahead forbids a following hex digit (see the note on
+      # windows_boot_manager_device_inaccessible) so these codes cannot
+      # substring-match a longer Linux hex value on the unknown-OS path.
+      - '0xc0000225(?![0-9a-fA-F])'
+      - '0xc000000f(?![0-9a-fA-F])'
+      # Distinctive winload path from this screen family; backslashes are
+      # escaped so this matches the literal EFI loader path, not prose.
+      - '\\Windows\\system32\\winload\.efi'
+    fixes:
+      - "The boot loader (winload.efi) or its BCD entry is missing/invalid - rescue the disk and repair it: bootrec /rebuildbcd, then verify \\Windows\\system32\\winload.efi exists on the recovered volume"
+      - "Run Startup Repair via the rescue flow to recreate the boot loader and BCD entries"
+
+  # NOT corpus-verified - validate live. BCD store itself is corrupt or
+  # missing required information: 0xc000014c (BCD file contains errors),
+  # 0xc0000034 (BCD entry missing), 0xc0000098 / 0xc0000102 (hive/store
+  # corrupt variants).
+  - name: windows_boot_manager_bcd_corrupt
+    severity: critical
+    description: "Boot Configuration Data store is missing or corrupt (0xc000014c / 0xc0000034 / 0xc0000098 / 0xc0000102)"
+    regex:
+      # Trailing lookahead forbids a following hex digit (see the note on
+      # windows_boot_manager_device_inaccessible) so these codes cannot
+      # substring-match a longer Linux hex value on the unknown-OS path.
+      - '0xc000014c(?![0-9a-fA-F])'
+      - '0xc0000034(?![0-9a-fA-F])'
+      - '0xc0000098(?![0-9a-fA-F])'
+      - '0xc0000102(?![0-9a-fA-F])'
+      # Distinctive BCD sentence from this screen family.
+      - 'Boot Configuration Data file'
+    fixes:
+      - "The BCD store is unreadable or incomplete - rescue the disk and rebuild it from scratch: bootrec /rebuildbcd against the recovered Windows volume"
+      - "If bootrec cannot locate the store, recreate it with bcdedit /createstore and re-add the Windows boot entries, or run Startup Repair via the rescue flow"
+
+  # NOT corpus-verified - validate live. Legacy BIOS/MBR message. GCE
+  # Windows Server 2022 images are UEFI, so this is expected only on older
+  # BIOS-mode images; anchored on the exact literal so it cannot match prose.
+  - name: windows_bootmgr_missing
+    severity: critical
+    description: "BOOTMGR is missing - the Windows boot manager binary is absent from the active/boot partition (legacy BIOS boot path)"
+    regex:
+      - 'BOOTMGR is missing'
+    fixes:
+      - "The boot manager binary is gone from the system/active partition - rescue the disk and restore it: bootrec /fixboot and bootrec /rebuildbcd, or copy bootmgr back from a known-good source"
+      - "Run Startup Repair via the rescue flow to reinstate the boot manager"

@@ -1,0 +1,112 @@
+# Windows recovery / repair-loop and update-rollback-loop patterns.
+#
+# CONFIDENCE: knowledge-based. None of these strings are present in the
+# captured GCE Windows Server 2022 serial corpus. The Windows Recovery
+# Environment (WinRE) "Automatic Repair" / "Your PC needs to be repaired"
+# screens and the Windows Update "Getting Windows ready" / rollback screens
+# are rendered on the GRAPHICAL console; whether they reach COM1 on GCE at
+# all is UNVERIFIED. Every pattern below is therefore marked with a
+# "# NOT corpus-verified - validate live" comment. They are shipped
+# detect-only so a false negative (screen never hits serial) simply means no
+# finding, and a match is high-signal because the phrases are verbatim
+# Windows UI text that cannot appear on a Linux boot or a healthy Windows
+# boot.
+#
+# OS scoping: os: windows means the engine only runs these against a serial
+# buffer whose VM is detected as Windows (or os_type == 'unknown' on the
+# degraded-permission path). They never fire on Linux boots.
+#
+# Anchoring: every regex is a verbatim, Windows-distinctive WinRE / Windows
+# Update sentence. The healthy GCE Windows corpus (firmware BdsDxe lines +
+# GCEGuestAgent/GCEInstanceSetup logging) contains NONE of these phrases, so
+# they cannot cross-fire on a good boot, and our own rescue-mode output
+# (GCE-RESCUE-COMPLETE / rescue_admin / windows-startup-script-ps1) does not
+# either. Apostrophes are matched with '.' because Windows UI text uses a
+# right single quote that may render as an arbitrary byte on serial.
+#
+# COORDINATION with windows_boot_manager: that category owns the specific
+# Boot Manager status codes (0xc000000e, 0xc0000225, 0xc000000f, ...). This
+# category deliberately carries NO 0xc0###### codes - it owns only the
+# recovery / repair-LOOP and update-rollback WORDING. A wedged boot that
+# shows both a Boot Manager status code and a WinRE repair screen may
+# legitimately produce one finding from each category; that is not a
+# duplicate (different root-cause framing).
+category: windows_recovery
+os: windows
+auto_repair: false
+# detect_only: Windows boot repair (BCD / bootrec / DISM / removing a stuck
+# pending.xml) is a future branch. Today we surface the condition and hand
+# the operator manual guidance via the rescue flow.
+detect_only: true
+fix_guidance: "Rescue the VM (gce-rescue rescue VM_NAME --zone=ZONE) to attach the boot disk as a data volume on the rescue instance, then clear the stuck state from the mounted disk: for an update-rollback loop, delete D:\\Windows\\WinSxS\\pending.xml and run DISM /Image:D:\\ /Cleanup-Image /RevertPendingActions; for an Automatic Repair loop, disable it (bcdedit /store D:\\Boot\\BCD /set {default} recoveryenabled No) and inspect C:\\Windows\\System32\\LogFiles\\Srt\\SrtTrail.txt on the mounted disk. Restore the VM afterwards (gce-rescue restore VM_NAME --zone=ZONE)."
+
+patterns:
+  # WinRE Automatic / Startup Repair loop: the VM keeps re-entering the
+  # recovery environment and never reaches the desktop.
+  - name: windows_recovery_automatic_repair
+    severity: critical
+    description: "Windows is stuck in an Automatic Repair / Startup Repair loop (boot never completes)"
+    regex:
+      # NOT corpus-verified - validate live
+      - 'Preparing Automatic Repair'
+      # NOT corpus-verified - validate live
+      - 'Diagnosing your PC'
+      # NOT corpus-verified - validate live
+      - '(?:Automatic|Startup) Repair could ?n.t repair your PC'
+      # NOT corpus-verified - validate live
+      - 'Your PC did ?n.t start correctly'
+    fixes:
+      - "Windows keeps re-entering the recovery environment instead of booting - inspect the repair log on the mounted disk after rescue: D:\\Windows\\System32\\LogFiles\\Srt\\SrtTrail.txt"
+      - "Break the loop by disabling automatic repair on the mounted disk: bcdedit /store D:\\Boot\\BCD /set {default} recoveryenabled No"
+      - "Address the underlying failure (corrupt system files or a bad driver/update) with DISM /Image:D:\\ /Cleanup-Image /RestoreHealth, then re-enable recovery"
+
+  # WinRE "Your PC/Device needs to be repaired" recovery screen, WITHOUT a
+  # Boot Manager 0xc0###### status code (those belong to
+  # windows_boot_manager). This is the generic recovery-screen wording.
+  - name: windows_recovery_needs_repair
+    severity: critical
+    description: "Windows dropped to the recovery screen reporting the PC needs to be repaired"
+    regex:
+      # NOT corpus-verified - validate live
+      - 'Your (?:PC|Device) needs to be repaired'
+    fixes:
+      - "Windows could not boot and dropped to the recovery screen - rescue the VM to inspect the boot configuration on the mounted disk"
+      - "Verify the BCD store and boot files on the mounted disk: bcdedit /store D:\\Boot\\BCD /enum, and confirm D:\\Windows\\System32\\winload.efi exists"
+      - "If the failure references a specific file or a Boot Manager status code, follow the windows_boot_manager guidance instead"
+
+  # Windows Update rollback loop: an update failed to apply and Windows is
+  # reverting on every boot, never completing.
+  - name: windows_recovery_update_rollback
+    severity: critical
+    description: "Windows is stuck reverting a failed update on boot (update-rollback loop)"
+    regex:
+      # NOT corpus-verified - validate live
+      - 'Failure configuring Windows updates'
+      # NOT corpus-verified - validate live
+      - 'We could ?n.t complete the updates'
+      # NOT corpus-verified - validate live
+      - 'Undoing changes made to your computer'
+    fixes:
+      - "A pending update is failing to apply and rolling back on every boot - rescue the VM and clear the pending operation on the mounted disk"
+      - "Remove the stuck pending transaction: delete D:\\Windows\\WinSxS\\pending.xml and run DISM /Image:D:\\ /Cleanup-Image /RevertPendingActions"
+      - "Review the servicing log for the failing package on the mounted disk: D:\\Windows\\Logs\\CBS\\CBS.log"
+
+  # "Getting Windows ready" update screen that never progresses. This text
+  # also appears during a NORMAL one-time update, and a stuck update renders
+  # identical text to an in-progress one in a single capture, so this pattern
+  # cannot be made false-positive-proof. The single regex requires the paired
+  # "Getting Windows ready ... Don't turn off your computer" co-occurrence to
+  # narrow it, and the fixes below instruct the operator to compare two
+  # captures minutes apart before intervening. The bare "Please wait while we
+  # install a system update" line was dropped: on its own it is verbatim
+  # healthy-update text and would flag a routine patch reboot as critical.
+  - name: windows_recovery_update_pending
+    severity: critical
+    description: "Windows is stuck applying a system update on boot (never completes)"
+    regex:
+      # NOT corpus-verified - validate live
+      - 'Getting Windows ready.{0,80}Don.t turn off your computer'
+    fixes:
+      - "If the VM has sat on this screen far longer than a normal update, the update is wedged - rescue the VM and clear the pending operation on the mounted disk"
+      - "Revert the pending update: delete D:\\Windows\\WinSxS\\pending.xml and run DISM /Image:D:\\ /Cleanup-Image /RevertPendingActions"
+      - "Confirm progress by comparing serial captures a few minutes apart before intervening - a genuinely in-progress update will advance"

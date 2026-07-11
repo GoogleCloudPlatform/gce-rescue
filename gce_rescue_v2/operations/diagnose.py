@@ -236,7 +236,8 @@ class DiagnoseOperation(BaseOperation):
             serial_output=serial_output,
             vm_name=vm_name,
             zone=self.zone,
-            vm_status=vm_status
+            vm_status=vm_status,
+            os_type=os_type
         )
 
         return {

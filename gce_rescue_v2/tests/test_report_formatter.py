@@ -688,6 +688,17 @@ class TestWave2CategoryLabels:
         assert _category_label('cloud_init') == 'Fix cloud-init configuration'
         assert _category_label('network') == 'Fix network configuration'
 
+    def test_windows_category_labels_defined(self):
+        """Windows detect-only categories render a distinct label, not the
+        generic 'Fix <category>' fallback."""
+        from gce_rescue_v2.utils.report_formatter import _category_label
+        assert (_category_label('windows_boot_manager')
+                == 'Repair Windows Boot Manager (BCD)')
+        assert (_category_label('windows_bugcheck')
+                == 'Investigate Windows bugcheck (BSOD)')
+        assert (_category_label('windows_recovery')
+                == 'Break Windows recovery/repair loop')
+
     def test_crypt_rendered_as_detect_only_guidance(self, formatter):
         """crypt is detect-only: no rescue/restore workflow is offered."""
         diagnosis = {

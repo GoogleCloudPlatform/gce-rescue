@@ -75,6 +75,10 @@ class RepairOrchestrator:
         self.session_id = session_id
         self.mode = mode
 
+        # OS type detected during validate(); 'unknown' until then.
+        # Used to OS-scope post-repair boot verification (issue #124).
+        self._os_type = 'unknown'
+
         # Progress tracking
         self._spinner_thread = None
         self._spinner_stop = False
@@ -160,6 +164,11 @@ class RepairOrchestrator:
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
         os_type = detect_os_type(vm_info)
+        # Keep the detected OS for post-repair boot verification, so the
+        # diagnosis engine only scores OS-appropriate patterns (issue #124:
+        # Windows boots were scored against Linux-only patterns and always
+        # verified as healthy).
+        self._os_type = os_type
         if os_type == 'windows' and not self.config.fix_script:
             self._log_error("Automated repair is only supported for Linux VMs.")
             print("", file=sys.stderr)
@@ -837,7 +846,8 @@ class RepairOrchestrator:
                 serial_output=serial_output,
                 vm_name=self.vm_name,
                 zone=self.zone,
-                vm_status='RUNNING'
+                vm_status='RUNNING',
+                os_type=self._os_type
             )
 
             sys.stdout.write("\r" + " " * 60 + "\r")

@@ -4950,3 +4950,110 @@ class TestSerialGettyDetection:
         data = _diagnose(serial)
         assert data['diagnosis_status'] == 'healthy'
         assert data['boot_errors'] == []
+
+
+class TestAnalyzeSerialOutputOsScoping:
+    """OS scoping of analyze_serial_output.
+
+    A pattern runs only when its os scope is 'any', or the caller's
+    os_type is 'unknown' (detection failed -> run everything, the
+    pre-scoping behavior), or the scopes match. This prevents Windows
+    boot-manager patterns from firing on a Linux buffer and vice versa.
+    """
+
+    # A buffer containing text that matches all three fabricated patterns
+    # below, plus padding to clear the >50-char minimum-length guard.
+    _MIXED_SERIAL = (
+        "Boot log capture for os-scoping test padding line one.\n"
+        "Windows failed to start. A recent hardware change might be.\n"
+        "[    1.234567] Kernel panic - not syncing: VFS unable to mount.\n"
+        "generic-cross-os-symptom appears in this buffer too.\n"
+    )
+
+    @staticmethod
+    def _scoped_patterns():
+        """Three controlled patterns: windows-only, linux-only, any."""
+        from gce_rescue_v2.core.diagnosis import BootErrorPattern
+        return [
+            BootErrorPattern(
+                name='win_boot_failed', category='win_boot',
+                patterns=[r'Windows failed to start'], severity='critical',
+                description='Windows boot manager failure', os='windows',
+            ),
+            BootErrorPattern(
+                name='kernel_panic', category='kernel',
+                patterns=[r'Kernel panic'], severity='critical',
+                description='Kernel panic', os='linux',
+            ),
+            BootErrorPattern(
+                name='generic_symptom', category='generic',
+                patterns=[r'generic-cross-os-symptom'], severity='critical',
+                description='Generic cross-OS symptom', os='any',
+            ),
+        ]
+
+    def _categories(self, os_type):
+        with patch('gce_rescue_v2.core.diagnosis.BOOT_ERROR_PATTERNS',
+                   self._scoped_patterns()):
+            result = analyze_serial_output(
+                self._MIXED_SERIAL, 'test-vm', 'zone-a', 'TERMINATED',
+                os_type=os_type,
+            )
+        return {e.category for e in result.boot_errors}
+
+    def test_windows_pattern_skipped_on_linux_vm(self):
+        """A Windows-scoped pattern must not fire when os_type is linux."""
+        categories = self._categories('linux')
+        assert 'win_boot' not in categories
+        assert 'kernel' in categories
+
+    def test_linux_pattern_skipped_on_windows_vm(self):
+        """A Linux-scoped pattern must not fire when os_type is windows."""
+        categories = self._categories('windows')
+        assert 'kernel' not in categories
+        assert 'win_boot' in categories
+
+    def test_any_pattern_runs_on_linux(self):
+        """An 'any'-scoped pattern runs regardless of os_type."""
+        assert 'generic' in self._categories('linux')
+
+    def test_any_pattern_runs_on_windows(self):
+        """An 'any'-scoped pattern runs regardless of os_type."""
+        assert 'generic' in self._categories('windows')
+
+    def test_unknown_os_type_runs_all_patterns(self):
+        """os_type='unknown' (detection failed / degraded permissions)
+        runs every pattern, preserving pre-scoping behavior."""
+        categories = self._categories('unknown')
+        assert categories == {'win_boot', 'kernel', 'generic'}
+
+    def test_default_os_type_runs_all_patterns(self):
+        """The default os_type (omitted by legacy callers) is 'unknown',
+        so all patterns run and existing callers are unaffected."""
+        with patch('gce_rescue_v2.core.diagnosis.BOOT_ERROR_PATTERNS',
+                   self._scoped_patterns()):
+            result = analyze_serial_output(
+                self._MIXED_SERIAL, 'test-vm', 'zone-a', 'TERMINATED',
+            )
+        categories = {e.category for e in result.boot_errors}
+        assert categories == {'win_boot', 'kernel', 'generic'}
+
+    def test_linux_categories_unchanged_on_linux_buffer(self):
+        """Regression: the shipped (os='any') Linux categories fire on a
+        Linux buffer with os_type='linux' exactly as with os_type='unknown'.
+        Guards against scoping accidentally suppressing existing detections."""
+        serial = (
+            "         Starting systemd-fsck@dev-sdb.service - "
+            "File System Check on /dev/sdb...\n"
+            "systemd-fsck[412]: fsck.ext4: Bad magic number in super-block "
+            "while trying to open /dev/sdb\n"
+            "systemd-fsck[412]: fsck failed with exit status 8.\n"
+        )
+        as_linux = analyze_serial_output(
+            serial, 'test-vm', 'zone-a', 'TERMINATED', os_type='linux')
+        as_unknown = analyze_serial_output(
+            serial, 'test-vm', 'zone-a', 'TERMINATED', os_type='unknown')
+        linux_names = sorted(e.name for e in as_linux.boot_errors)
+        unknown_names = sorted(e.name for e in as_unknown.boot_errors)
+        assert linux_names == unknown_names
+        assert 'filesystem_bad_superblock' in linux_names
