@@ -8,11 +8,17 @@ Tests:
 4. Correct rescue image selection
 """
 
+import re
+from pathlib import Path
 from unittest.mock import Mock, patch
 import pytest
 
 from gce_rescue_v2.core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS, RescueConfig
 from gce_rescue_v2.utils.os_detection import detect_os_type, get_os_display_name
+
+_BCD_FIX_SCRIPT = (
+    Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'windows_bcd_fix.ps1'
+)
 
 
 class TestOSDetection:
@@ -198,3 +204,57 @@ class TestConfigWindows:
         assert config.windows_rescue_image_family == 'windows-2022'
         assert config.windows_rescue_image_project == 'windows-cloud'
         assert config.windows_rescue_disk_size_gb == 50
+
+
+class TestWindowsBcdFixScript:
+    """The canned BCD-repair fix script (--fix-script) must honor the repair
+    marker protocol and rebuild the BCD from the offline install via bcdboot."""
+
+    def _script(self) -> str:
+        return _BCD_FIX_SCRIPT.read_text(encoding='utf-8')
+
+    def test_script_exists(self):
+        assert _BCD_FIX_SCRIPT.exists()
+
+    def test_emits_result_marker(self):
+        assert 'GCE-REPAIR-RESULT:' in self._script()
+
+    def test_single_result_emission_block(self):
+        """SUCCESS / NO_ISSUES / FAILED are mutually exclusive branches at the
+        end - exactly one result marker fires per run."""
+        text = self._script()
+        assert 'GCE-REPAIR-RESULT:SUCCESS:$Fixes' in text
+        assert 'GCE-REPAIR-RESULT:NO_ISSUES:0' in text
+        assert 'GCE-REPAIR-RESULT:FAILED:$FixReason' in text
+        # All result emissions live after the single-emission-point banner.
+        marker = text.index('Single result-emission point')
+        for m in re.finditer(r'GCE-REPAIR-RESULT:', text):
+            assert m.start() > marker
+
+    def test_never_calls_exit(self):
+        # 'exit' would abort the composed startup script before the completion
+        # marker. Ignore comment lines and quoted strings (e.g. a log message
+        # mentioning a bcdboot "exit" code is not a shell exit).
+        for line in self._script().splitlines():
+            code = line.split('#', 1)[0]
+            code = re.sub(r'"[^"]*"', '""', code)
+            code = re.sub(r"'[^']*'", "''", code)
+            assert not re.search(r'\bexit\b', code), f"must not call exit: {line!r}"
+
+    def test_uses_bcdboot_offline(self):
+        text = self._script()
+        assert 'bcdboot' in text
+        # Targets the offline install's \Windows, both firmware modes.
+        assert '/f UEFI' in text
+        assert '/f BIOS' in text
+
+    def test_locates_windows_by_config_hive(self):
+        # Finds the offline install by its registry hive, not a hardcoded D:.
+        assert 'Windows\\System32\\config\\SYSTEM' in self._script()
+
+    def test_releases_temp_esp_letter(self):
+        # Cleans up the temporary ESP drive letter so restore is clean.
+        assert 'Remove-PartitionAccessPath' in self._script()
+
+    def test_uses_lf_line_endings(self):
+        assert b'\r' not in _BCD_FIX_SCRIPT.read_bytes()
