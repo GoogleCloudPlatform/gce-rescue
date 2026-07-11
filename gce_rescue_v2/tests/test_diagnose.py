@@ -8,6 +8,7 @@ from googleapiclient.errors import HttpError
 
 from gce_rescue_v2.core.diagnosis import analyze_serial_output
 from gce_rescue_v2.operations.diagnose import DiagnoseOperation
+from gce_rescue_v2.operations.base import OperationResult
 
 
 # ---------------------------------------------------------------------------
@@ -5057,3 +5058,283 @@ class TestAnalyzeSerialOutputOsScoping:
         unknown_names = sorted(e.name for e in as_unknown.boot_errors)
         assert linux_names == unknown_names
         assert 'filesystem_bad_superblock' in linux_names
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseWindowsSerialPort2
+# ---------------------------------------------------------------------------
+
+# Windows license URL so detect_os_type() reports 'windows'.
+_WINDOWS_VM_INFO = {
+    'status': 'RUNNING',
+    'disks': [{
+        'boot': True,
+        'source': 'projects/p/zones/z/disks/boot-disk',
+        'licenses': [
+            'projects/windows-cloud/global/licenses/windows-server-2022-dc'
+        ],
+    }],
+    'machineType': 'zones/z/machineTypes/e2-standard-2',
+    'metadata': {'items': [], 'fingerprint': 'abc'},
+}
+
+
+def _make_dual_port_compute(vm_info, port1='', port2=None,
+                            port2_error=None):
+    """Fake compute whose serial output differs per port.
+
+    port2=None means port 2 is never expected; if it is requested the fake
+    returns empty contents. port2_error, when set, makes the port-2 fetch
+    raise that exception (to exercise the fallback path).
+    """
+    compute = Mock()
+    compute.instances.return_value.get.return_value.execute.return_value = (
+        vm_info
+    )
+
+    def _serial(**kwargs):
+        port = kwargs.get('port', 1)
+        result = Mock()
+        if port == 2:
+            if port2_error is not None:
+                result.execute.side_effect = port2_error
+            else:
+                result.execute.return_value = {'contents': port2 or ''}
+        else:
+            result.execute.return_value = {'contents': port1}
+        return result
+
+    compute.instances.return_value.getSerialPortOutput.side_effect = _serial
+    return compute
+
+
+def _requested_ports(compute):
+    """Return the set of `port` kwargs passed to getSerialPortOutput."""
+    calls = compute.instances.return_value.getSerialPortOutput.call_args_list
+    return {call.kwargs.get('port', 1) for call in calls}
+
+
+class TestDiagnoseWindowsSerialPort2:
+    """Windows diagnose reads serial port 2 (SAC/EMS) where boot-manager
+    errors surface; Linux/unknown stay on port 1."""
+
+    def test_windows_fetches_both_ports_and_merges(self):
+        """Windows VM fetches port 1 AND port 2 and analyzes the merged
+        buffer; a boot-manager error present only on port 2 is detected."""
+        port1 = (
+            "BdsDxe: loading Boot0001 UEFI Windows Boot Manager\n"
+            "GCEGuestAgent: GCE Agent Started (version 20230601.00)\n"
+        )
+        # The 'Windows failed to start' anchor lives only on port 2 (EMS).
+        port2 = (
+            "SAC>\n"
+            "Windows Boot Manager\n"
+            "Windows failed to start. A recent hardware or software change "
+            "might be the cause. Status: 0xc000000f\n"
+        )
+        compute = _make_dual_port_compute(
+            _WINDOWS_VM_INFO, port1=port1, port2=port2
+        )
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        result = op.execute('test-vm')
+
+        assert result.rollback_data['os_type'] == 'windows'
+        assert _requested_ports(compute) == {1, 2}
+        assert result.rollback_data['diagnosis_status'] == (
+            'boot_errors_detected'
+        )
+        names = [e['name'] for e in result.rollback_data['boot_errors']]
+        assert 'windows_boot_manager_failed_to_start' in names
+
+    def test_linux_fetches_port_1_only(self):
+        """Linux VM must not request serial port 2 (no regression)."""
+        serial = (
+            "[    0.000000] Linux version 5.15.0-100-generic (builder@server)\n"
+            "[    0.000000] Booting Linux on physical CPU 0x0\n"
+            "login: \n"
+        )
+        linux_vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/boot-disk',
+                'licenses': [
+                    'projects/debian-cloud/global/licenses/debian-12'
+                ],
+            }],
+            'machineType': 'zones/z/machineTypes/e2-micro',
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_dual_port_compute(linux_vm_info, port1=serial)
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        result = op.execute('test-vm')
+
+        assert result.rollback_data['os_type'] == 'linux'
+        assert _requested_ports(compute) == {1}
+
+    def test_windows_port2_failure_falls_back_to_port1(self):
+        """A port-2 fetch error must not crash: diagnosis proceeds on the
+        port-1 buffer alone."""
+        port1 = (
+            "BdsDxe: loading Boot0001 UEFI Windows Boot Manager\n"
+            "GCEGuestAgent: GCE Agent Started (version 20230601.00)\n"
+            "GCEGuestAgent: Finished setting up the instance.\n"
+        )
+        compute = _make_dual_port_compute(
+            _WINDOWS_VM_INFO, port1=port1,
+            port2_error=_make_http_error(500, "Serial port 2 unavailable"),
+        )
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        result = op.execute('test-vm')
+
+        # Port 2 was attempted, then the fetch fell back to port 1.
+        assert _requested_ports(compute) == {1, 2}
+        assert result.success is True
+        assert result.rollback_data['diagnosis_status'] == 'healthy'
+
+    def test_windows_port2_non_http_error_falls_back_to_port1(self):
+        """A non-HttpError transient port-2 failure (socket timeout, reset,
+        SSL/token errors) must also fall back to port 1, not abort the whole
+        diagnosis with 'unable_to_diagnose'."""
+        port1 = (
+            "BdsDxe: loading Boot0001 UEFI Windows Boot Manager\n"
+            "GCEGuestAgent: GCE Agent Started (version 20230601.00)\n"
+            "GCEGuestAgent: Finished setting up the instance.\n"
+        )
+        compute = _make_dual_port_compute(
+            _WINDOWS_VM_INFO, port1=port1,
+            port2_error=ConnectionResetError("connection reset by peer"),
+        )
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        result = op.execute('test-vm')
+
+        assert _requested_ports(compute) == {1, 2}
+        assert result.success is True
+        assert result.rollback_data['diagnosis_status'] == 'healthy'
+
+    def test_unknown_os_fetches_port_2(self):
+        """When the OS cannot be confirmed (e.g. instances.get 403s, leaving
+        os_type='unknown'), port 2 is still fetched so a Windows boot-manager
+        error there is not missed and the VM silently reported healthy."""
+        port1 = (
+            "BdsDxe: loading Boot0001 UEFI Windows Boot Manager\n"
+        )
+        port2 = (
+            "SAC>\n"
+            "Windows Boot Manager\n"
+            "Windows failed to start. A recent hardware or software change "
+            "might be the cause. Status: 0xc000000f\n"
+        )
+        # instances.get() 403s -> os_type stays 'unknown'; serial ports work.
+        compute = _make_dual_port_compute(
+            _WINDOWS_VM_INFO, port1=port1, port2=port2
+        )
+        compute.instances.return_value.get.return_value.execute.side_effect = (
+            _make_http_error(403, "Permission denied")
+        )
+        op = DiagnoseOperation(compute, 'proj', 'zone-a', _make_logger())
+
+        result = op.execute('test-vm')
+
+        assert result.rollback_data['os_type'] == 'unknown'
+        assert _requested_ports(compute) == {1, 2}
+        names = [e['name'] for e in result.rollback_data['boot_errors']]
+        assert 'windows_boot_manager_failed_to_start' in names
+
+
+# ---------------------------------------------------------------------------
+# TestDiagnoseCliWindowsUnblocked
+# ---------------------------------------------------------------------------
+
+class TestDiagnoseCliWindowsUnblocked:
+    """The diagnose CLI handler no longer rejects Windows VMs -- diagnose is
+    read-only and ships Windows boot categories, so it reaches the engine."""
+
+    def _run_cli(self, monkeypatch, vm_info):
+        """Invoke handle_diagnose with all external deps mocked; return
+        (exit_code, fake_execute_calls)."""
+        import argparse
+        from gce_rescue_v2.cli import diagnose as cli_diagnose
+        import gce_rescue_v2.core.auth as auth_mod
+        import gce_rescue_v2.validators as validators_mod
+        import gce_rescue_v2.operations as ops_mod
+        import gce_rescue_v2.operations.diagnose as diagnose_op_mod
+
+        monkeypatch.setattr(
+            cli_diagnose, 'get_gcloud_config', lambda key: 'test-proj'
+        )
+
+        mock_compute = Mock()
+        monkeypatch.setattr(
+            auth_mod, 'AuthManager',
+            lambda: Mock(get_client=Mock(
+                return_value=(mock_compute, 'test-proj')
+            )),
+        )
+
+        # VM fetch inside the handler goes through _create_tracked_client.
+        tracked = Mock()
+        tracked.instances.return_value.get.return_value.execute.return_value = (
+            vm_info
+        )
+        monkeypatch.setattr(
+            cli_diagnose, '_create_tracked_client',
+            lambda compute, label: tracked,
+        )
+
+        class FakeValidationRunner:
+            def __init__(self):
+                pass
+
+            def add(self, v):
+                pass
+
+            def run_all(self, logger=None):
+                return Mock(all_passed=Mock(return_value=True))
+
+        monkeypatch.setattr(
+            validators_mod, 'ValidationRunner', FakeValidationRunner
+        )
+
+        calls = []
+
+        class FakeDiagnose:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def execute(self, vm_name, tracking_label=None, stabilize=False):
+                calls.append(vm_name)
+                return OperationResult(
+                    operation_name='Diagnose VM', success=True,
+                    message='No boot errors detected',
+                    rollback_data={
+                        'vm_name': vm_name, 'zone': 'zone-a',
+                        'status': 'RUNNING', 'os_type': 'windows',
+                        'os_flavor': 'windows-2022', 'architecture': 'x86_64',
+                        'license_type': 'paid', 'diagnosis_status': 'healthy',
+                        'boot_errors': [], 'recommendations': [],
+                    },
+                )
+
+        monkeypatch.setattr(ops_mod, 'DiagnoseOperation', FakeDiagnose)
+        monkeypatch.setattr(
+            diagnose_op_mod, 'DiagnoseOperation', FakeDiagnose
+        )
+
+        args = argparse.Namespace(
+            instance_name='win-vm', zone='zone-a', project='test-proj',
+            quiet=True, format='json', verbosity='warning',
+        )
+        exit_code = cli_diagnose.handle_diagnose(args)
+        return exit_code, calls
+
+    def test_windows_vm_reaches_engine(self, monkeypatch):
+        """A Windows VM proceeds to DiagnoseOperation instead of being
+        blocked with 'only supported for Linux'."""
+        exit_code, calls = self._run_cli(monkeypatch, _WINDOWS_VM_INFO)
+        assert exit_code == 0
+        assert calls == ['win-vm']

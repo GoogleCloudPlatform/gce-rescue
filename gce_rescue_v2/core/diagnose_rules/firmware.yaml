@@ -5,6 +5,7 @@
 # (SeaBIOS 'Boot failed'/'No bootable device', OVMF 'BdsDxe:') and cannot
 # appear in kernel or systemd output.
 category: firmware
+os: linux
 fix_guidance: "From rescue mode, verify the original disk's partition table (sgdisk --verify /dev/sdX or fdisk -l /dev/sdX) and reinstall the bootloader from a chroot; Secure Boot violations cannot be fixed by disk edits - they need correctly signed boot components"
 # auto_repair MUST stay false until startup_scripts/fixes/firmware_fix.sh
 # lands. RepairOrchestrator.validate() checks that every category with

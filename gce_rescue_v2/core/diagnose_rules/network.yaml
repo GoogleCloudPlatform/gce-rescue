@@ -13,6 +13,7 @@
 #     and nothing is suppressed. The flag is only reachable by pre-marker
 #     errors, and those are the recovered ones.
 category: network
+os: linux
 fix_guidance: "From rescue mode, inspect the network config on the mounted disk (/mnt/sysroot/etc/netplan/, /mnt/sysroot/etc/network/interfaces, /mnt/sysroot/etc/sysconfig/network-scripts/ or NetworkManager system-connections) and revert the most recent change"
 auto_repair: false
 

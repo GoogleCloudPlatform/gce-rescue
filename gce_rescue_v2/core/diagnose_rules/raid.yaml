@@ -1,6 +1,7 @@
 # mdadm / software-RAID assembly failures (custom images; low GCE volume
 # but zero coverage otherwise).
 category: raid
+os: linux
 fix_guidance: "from the rescue VM inspect the array (cat /proc/mdstat; sudo mdadm --detail /dev/mdX), force-run a degraded array if its data is acceptable (sudo mdadm --run /dev/mdX) or reassemble (sudo mdadm --assemble --force), then fix /mnt/sysroot/etc/mdadm.conf and rebuild the initramfs"
 # auto_repair stays false until startup_scripts/fixes/raid_fix.sh exists.
 auto_repair: false

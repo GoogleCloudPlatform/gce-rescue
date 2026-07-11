@@ -190,20 +190,39 @@ class DiagnoseOperation(BaseOperation):
                 }
             )
 
-    def _fetch_serial_output(self, compute, vm_name: str) -> str:
+    def _fetch_serial_output(self, compute, vm_name: str,
+                             os_type: str = 'unknown') -> str:
         """Fetch raw serial console output from the VM.
+
+        Windows boot-manager / EMS (SAC) error screens surface on serial
+        port 2, not port 1 -- port 1 carries firmware and guest-agent logs
+        but never the "Windows failed to start" recovery screen. For Windows
+        VMs we fetch both ports and concatenate them (port 1 then port 2) so
+        the diagnosis engine can see the boot-manager error. We also fetch
+        port 2 when os_type is 'unknown' (e.g. the degraded-permission path
+        where instances().get() 403s and the OS cannot be confirmed): the
+        engine still runs the Windows patterns for 'unknown', so without
+        port 2 a genuinely broken Windows VM would be silently reported
+        healthy. Real Linux VMs emit nothing on port 2, so the merge is
+        false-positive-safe there. Confidently-Linux VMs read port 1 only,
+        preserving existing behavior.
 
         Args:
             compute: Compute API client to use.
             vm_name: Name of the VM.
+            os_type: Detected OS type; 'windows' or 'unknown' triggers the
+                port-2 merge.
 
         Returns:
-            Raw serial output string.
+            Raw serial output string (port 1, plus port 2 for Windows /
+            unknown OS).
 
         Raises:
-            HttpError: On API failure (caller handles).
+            HttpError: On port-1 API failure (caller handles). A port-2
+                fetch failure (of any kind) is caught here and falls back
+                to port 1.
         """
-        self._log_debug("Fetching serial console output")
+        self._log_debug("Fetching serial console output (port 1)")
         serial_response = compute.instances().getSerialPortOutput(
             project=self.project,
             zone=self.zone,
@@ -212,7 +231,35 @@ class DiagnoseOperation(BaseOperation):
         ).execute()
 
         serial_output = serial_response.get('contents', '')
-        self._log_debug(f"Retrieved {len(serial_output)} bytes of serial output")
+        self._log_debug(f"Retrieved {len(serial_output)} bytes from port 1")
+
+        if os_type in ('windows', 'unknown'):
+            try:
+                self._log_debug(
+                    f"os_type={os_type}: fetching serial port 2 "
+                    "(SAC/EMS console)"
+                )
+                port2_response = compute.instances().getSerialPortOutput(
+                    project=self.project,
+                    zone=self.zone,
+                    instance=vm_name,
+                    port=2
+                ).execute()
+                port2_output = port2_response.get('contents', '')
+                self._log_debug(
+                    f"Retrieved {len(port2_output)} bytes from port 2"
+                )
+                if port2_output:
+                    serial_output = f"{serial_output}\n{port2_output}"
+            except Exception as e:
+                # Port 2 may be unavailable or the fetch may fail transiently
+                # (HTTP error, socket timeout, connection reset, SSL/token
+                # errors). Fall back to port 1 only so diagnosis still runs
+                # on whatever port 1 provided.
+                self._log_debug(
+                    f"Could not fetch serial port 2, using port 1 only: {e}"
+                )
+
         return serial_output
 
     def _analyze_serial(self, serial_output: str, vm_name: str,
@@ -291,7 +338,9 @@ class DiagnoseOperation(BaseOperation):
             Diagnosis dict on success, or OperationResult on serial fetch failure.
         """
         try:
-            serial_output = self._fetch_serial_output(compute, vm_name)
+            serial_output = self._fetch_serial_output(
+                compute, vm_name, os_type
+            )
         except HttpError as e:
             error_msg = extract_error_message(e)
             self._log_error(f"Failed to fetch serial console: {error_msg}")
@@ -420,7 +469,9 @@ class DiagnoseOperation(BaseOperation):
         last_result = None
 
         while True:
-            serial_output = self._fetch_serial_output(compute, vm_name)
+            serial_output = self._fetch_serial_output(
+                compute, vm_name, os_type
+            )
             diagnosis_dict = self._analyze_serial(
                 serial_output, vm_name, vm_status,
                 os_type, os_flavor, architecture, license_type

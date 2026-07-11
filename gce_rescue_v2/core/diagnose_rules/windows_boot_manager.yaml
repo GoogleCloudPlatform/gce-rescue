@@ -1,5 +1,13 @@
 # Windows Boot Manager / BCD failure patterns (UEFI boot stage).
 #
+# LIVE-CONFIRMED (real broken Windows Server 2022 boot): the
+# "Windows failed to start" + 0xc000000f Boot Manager error family surfaces
+# on serial PORT 2 (SAC/EMS) — the port diagnose now reads for Windows VMs.
+# It does NOT appear on port 1 (firmware BdsDxe title lines + GCEGuestAgent
+# logs only); an engine run against port 1 alone reports the VM healthy.
+# The still-unproven status codes below (0xc0000225, the BCD-corrupt set)
+# keep their "# NOT corpus-verified - validate live" tags until reproduced.
+#
 # OS SCOPING: os: windows means these patterns ONLY run when diagnose has
 # detected a Windows VM (os_type == 'windows'), and are skipped on Linux
 # VMs. When OS detection is unavailable (degraded-permission path,

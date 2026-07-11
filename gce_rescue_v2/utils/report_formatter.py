@@ -456,6 +456,5 @@ def _category_label(category: str) -> str:
         'network': 'Fix network configuration',
         'windows_boot_manager': 'Repair Windows Boot Manager (BCD)',
         'windows_bugcheck': 'Investigate Windows bugcheck (BSOD)',
-        'windows_recovery': 'Break Windows recovery/repair loop',
     }
     return labels.get(category, f'Fix {category}')

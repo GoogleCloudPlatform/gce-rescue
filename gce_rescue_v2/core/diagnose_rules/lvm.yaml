@@ -5,6 +5,7 @@
 # (?!mapper)) and not in initramfs.yaml (whose dracut does-not-exist
 # regex excludes /dev/mapper/).
 category: lvm
+os: linux
 fix_guidance: "from the rescue VM scan and activate the volume group (sudo vgscan; sudo vgchange -ay), mount the logical volume at /mnt/sysroot, then rebuild the initramfs (dracut -f) if LVM config changed"
 # auto_repair stays false until startup_scripts/fixes/lvm_fix.sh exists.
 auto_repair: false

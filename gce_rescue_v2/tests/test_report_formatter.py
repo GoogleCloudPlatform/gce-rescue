@@ -696,8 +696,6 @@ class TestWave2CategoryLabels:
                 == 'Repair Windows Boot Manager (BCD)')
         assert (_category_label('windows_bugcheck')
                 == 'Investigate Windows bugcheck (BSOD)')
-        assert (_category_label('windows_recovery')
-                == 'Break Windows recovery/repair loop')
 
     def test_crypt_rendered_as_detect_only_guidance(self, formatter):
         """crypt is detect-only: no rescue/restore workflow is offered."""

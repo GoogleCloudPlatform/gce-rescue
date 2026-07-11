@@ -6,6 +6,7 @@
 # Detection logic note (master-plan G): these are interactive hangs - the
 # prompt line itself IS the failure evidence; no error line ever follows.
 category: crypt
+os: linux
 detect_only: true
 fix_guidance: "The disk is LUKS-encrypted and boot is waiting for a passphrase that can never arrive over the GCE serial console; unlock it interactively via the serial console (gcloud compute connect-to-serial-port), supply a keyfile/crypttab fix from a system that has the key material, or restore from a snapshot"
 auto_repair: false

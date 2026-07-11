@@ -133,27 +133,17 @@ def handle_diagnose(args: argparse.Namespace) -> int:
                       f" --zone={args.zone} --project={project}", file=sys.stderr)
             return 1
 
-        # Detect OS info for analytics and Linux-only check
+        # Detect OS info for analytics and OS-scoped pattern matching.
+        # Diagnose is read-only and now ships Windows boot categories, so it
+        # runs on Windows as well as Linux -- the engine scopes patterns to
+        # the detected OS (issue #124). Windows boot-manager errors surface on
+        # serial port 2, which DiagnoseOperation fetches for Windows VMs.
         from ..utils.os_detection import (
             detect_os_type, detect_architecture, detect_os_flavor
         )
         os_type = detect_os_type(vm)
         arch = detect_architecture(vm)
         flavor = detect_os_flavor(vm)
-        if os_type == 'windows':
-            print(f"{error_prefix()} Diagnose is only supported for Linux VMs.",
-                  file=sys.stderr)
-            print("", file=sys.stderr)
-            print("For Windows VMs, check the serial console output manually:",
-                  file=sys.stderr)
-            print(f"  $ gcloud compute instances get-serial-port-output"
-                  f" {args.instance_name} --zone={args.zone} --project={project}",
-                  file=sys.stderr)
-            print("", file=sys.stderr)
-            print(f"  Console: https://console.cloud.google.com/compute/"
-                  f"instancesDetail/zones/{args.zone}/instances/{args.instance_name}"
-                  f"/console?project={project}&port=1", file=sys.stderr)
-            return 1
 
     # Create and execute diagnose operation
     try:

@@ -6,17 +6,19 @@
 # skipped entirely on Linux buffers, so their tokens can never cross-fire on
 # a Linux boot.
 #
-# EVIDENCE STATUS: every pattern here is KNOWLEDGE-BASED, NOT corpus-verified.
-# The Windows Server 2022 UEFI serial captures we have show the graphical
-# Boot Manager text screen (Status: 0xc000000e), never a kernel STOP screen —
-# on GCE the classic BSOD renders on the graphical console/screenshot API and
-# is usually SILENT on COM1 unless EMS is enabled (it is not by default). A
-# wedged kernel more often manifests as the "silent broken" heuristic (BdsDxe
-# lines, then no GCEGuestAgent output). Each pattern is marked
-# "# NOT corpus-verified - validate live" so a reviewer / E2E run knows to
-# confirm the exact serial wording before trusting it. They are kept because
-# custom images with EMS enabled (bcdedit /ems on) DO emit these strings, and
-# a match is unambiguous when it appears.
+# EVIDENCE STATUS: every pattern here is KNOWLEDGE-BASED and NOT yet
+# live-triggered. These BSOD/STOP strings emit ONLY via EMS (Emergency
+# Management Services / SAC) on serial PORT 2 — the port diagnose now reads
+# for Windows VMs — NEVER on port 1 (which carries only firmware BdsDxe
+# title lines and GCEGuestAgent logs). The Windows Server 2022 UEFI captures
+# we have show the graphical Boot Manager text screen (Status: 0xc000000e)
+# surfaced on port 2, but no kernel STOP screen has been reproduced live yet.
+# A wedged kernel may also manifest as the "silent broken" heuristic (BdsDxe
+# lines, then no GCEGuestAgent output). Each pattern is therefore still
+# marked "# NOT corpus-verified - validate live" so a reviewer / E2E run
+# knows to confirm the exact serial wording before trusting it. They are
+# reachable now that port 2 is read, and a match is unambiguous when it
+# appears.
 #
 # ANCHORING: every regex is bound to a Windows-DISTINCTIVE token — an
 # ALL_CAPS bugcheck name (e.g. INACCESSIBLE_BOOT_DEVICE) or a full 8-digit

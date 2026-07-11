@@ -836,6 +836,23 @@ class RepairOrchestrator:
             ).execute()
             serial_output = serial_response.get('contents', '')
 
+            # Windows boot-manager / EMS errors surface on serial port 2, not
+            # the default port 1. Merge port 2 for Windows so post-repair
+            # verification sees the same buffer diagnose analyzed.
+            if self._os_type == 'windows':
+                try:
+                    port2_response = compute.instances().getSerialPortOutput(
+                        project=self.project, zone=self.zone,
+                        instance=self.vm_name, port=2
+                    ).execute()
+                    port2_output = port2_response.get('contents', '')
+                    if port2_output:
+                        serial_output = f"{serial_output}\n{port2_output}"
+                except Exception as e:
+                    self._log_debug(
+                        f"Could not fetch serial port 2 for boot verify: {e}"
+                    )
+
             if not serial_output or len(serial_output.strip()) < 50:
                 sys.stdout.write("\r" + " " * 60 + "\r")
                 sys.stdout.flush()
