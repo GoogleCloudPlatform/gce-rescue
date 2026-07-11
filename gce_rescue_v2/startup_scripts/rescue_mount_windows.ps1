@@ -105,6 +105,24 @@ foreach ($disk in $disks) {
     Write-Log "  Status: $($disk.OperationalStatus)"
 
     try {
+        # Preserve the disk's GPT GUID across the online operation (issue #126).
+        # The GCE Windows rescue disk is built from the same image family as the
+        # affected disk, so both share a GPT disk GUID. Bringing the affected
+        # disk online with Set-Disk -IsOffline $false makes Windows detect the
+        # signature collision and REGENERATE the affected disk's GUID to resolve
+        # it. That rewrites the signature the affected disk's own BCD references,
+        # so after restore (when it is the boot disk again) the firmware/BCD can
+        # no longer find the boot device and the VM halts at 0xc000000e. We
+        # capture the GUID before onlining and restore it afterward, so the disk
+        # goes back to restore with the exact signature its BCD expects.
+        $originalGuid = $null
+        try {
+            $originalGuid = (Get-Disk -Number $disk.Number -ErrorAction Stop).Guid
+            Write-Log "  Affected disk GPT GUID (pre-online): $originalGuid"
+        } catch {
+            Write-Log "  WARNING: could not read disk GUID before online: $_"
+        }
+
         # Bring disk online if offline
         if ($disk.OperationalStatus -eq 'Offline') {
             Write-Log "  Bringing disk online..."
@@ -115,6 +133,25 @@ foreach ($disk in $disks) {
         if ($disk.IsReadOnly) {
             Write-Log "  Removing read-only flag..."
             Set-Disk -Number $disk.Number -IsReadOnly $false
+        }
+
+        # Restore the GUID if Windows changed it to resolve the collision. By
+        # the time this disk is restored as the boot disk the rescue disk is
+        # detached, so no live collision remains and the original signature is
+        # safe to reinstate. Idempotent when the GUID was left unchanged.
+        if ($originalGuid) {
+            try {
+                $currentGuid = (Get-Disk -Number $disk.Number -ErrorAction Stop).Guid
+                if ($currentGuid -ne $originalGuid) {
+                    Write-Log "  Disk GUID was regenerated ($currentGuid) - restoring original $originalGuid to protect the BCD (issue #126)"
+                    Set-Disk -Number $disk.Number -Guid $originalGuid -ErrorAction Stop
+                    Write-Log "  Restored affected disk GPT GUID to $originalGuid"
+                } else {
+                    Write-Log "  Disk GUID unchanged after online - no collision to repair"
+                }
+            } catch {
+                Write-Log "  WARNING: could not restore disk GUID (VM may need BCD repair after restore): $_"
+            }
         }
 
         # Get partitions

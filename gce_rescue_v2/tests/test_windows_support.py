@@ -8,11 +8,16 @@ Tests:
 4. Correct rescue image selection
 """
 
+from pathlib import Path
 from unittest.mock import Mock, patch
 import pytest
 
 from gce_rescue_v2.core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS, RescueConfig
 from gce_rescue_v2.utils.os_detection import detect_os_type, get_os_display_name
+
+_WINDOWS_MOUNT_SCRIPT = (
+    Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount_windows.ps1'
+)
 
 
 class TestOSDetection:
@@ -198,3 +203,42 @@ class TestConfigWindows:
         assert config.windows_rescue_image_family == 'windows-2022'
         assert config.windows_rescue_image_project == 'windows-cloud'
         assert config.windows_rescue_disk_size_gb == 50
+
+
+class TestWindowsDiskSignaturePreservation:
+    """The mount script must protect the affected disk's GPT GUID (issue #126).
+
+    The default Windows rescue image (windows-2022) shares a GPT disk GUID
+    with same-family affected disks. Onlining the affected disk regenerates
+    its GUID to resolve the collision, invalidating its BCD and leaving the
+    VM unbootable at 0xc000000e after restore. The script captures the GUID
+    before onlining and restores it afterward.
+    """
+
+    def _script(self) -> str:
+        return _WINDOWS_MOUNT_SCRIPT.read_text(encoding='utf-8')
+
+    def test_guid_captured_before_online(self):
+        text = self._script()
+        # The pre-online capture must precede the Set-Disk online call.
+        capture = text.index('$originalGuid = (Get-Disk')
+        online = text.index('Set-Disk -Number $disk.Number -IsOffline $false')
+        assert capture < online, "GUID must be captured before the disk is onlined"
+
+    def test_guid_restored_after_online(self):
+        text = self._script()
+        # A conditional restore of the original GUID must exist after online.
+        assert 'Set-Disk -Number $disk.Number -Guid $originalGuid' in text
+        online = text.index('Set-Disk -Number $disk.Number -IsOffline $false')
+        restore = text.index('Set-Disk -Number $disk.Number -Guid $originalGuid')
+        assert online < restore, "GUID restore must come after the online call"
+
+    def test_restore_is_guarded_and_conditional(self):
+        text = self._script()
+        # Restore only when the GUID actually changed, and never crash the
+        # script if the disk API fails (best-effort with a warning).
+        assert 'if ($currentGuid -ne $originalGuid)' in text
+        assert 'could not restore disk GUID' in text
+
+    def test_references_issue_126(self):
+        assert '#126' in self._script()
