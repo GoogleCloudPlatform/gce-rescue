@@ -1,0 +1,75 @@
+category: ssh
+fix_guidance: "sudo nano /mnt/sysroot/etc/ssh/sshd_config"
+auto_repair: false
+# ssh failures are boot-completing by nature (sshd or the guest agent fails
+# while the rest of the boot reaches multi-user.target), so a "Startup
+# finished" marker does not mean they are resolved.
+survives_boot_success: true
+
+# Scope: only SSH failures that are visible in the VM serial console are
+# patterned here. Client-side errors such as "Permission denied (publickey)"
+# are printed by the SSH client on the user's machine and never reach the
+# serial console, so they are intentionally not covered.
+
+patterns:
+  - name: ssh_sshd_config_error
+    severity: critical
+    description: "SSH daemon failed to start due to invalid sshd_config"
+    regex:
+      # OpenSSH prints "sshd_config: line N" or "sshd_config line N"
+      # depending on version, so the colon is optional.
+      - 'sshd_config:? line \d+: Bad configuration option'
+      - 'sshd_config:? terminating, \d+ bad configuration options'
+      - 'Failed to start .*OpenBSD Secure Shell server'
+      - 'Failed to start .*OpenSSH server daemon'
+      # SLES unit description; older systemd omits the unit name.
+      - 'Failed to start .*OpenSSH Daemon'
+      - 'Failed to start sshd?\.service'
+    fixes:
+      - "Fix or remove the invalid directive in /mnt/sysroot/etc/ssh/sshd_config"
+      - "Validate the config from rescue mode: sudo sshd -t -f /mnt/sysroot/etc/ssh/sshd_config"
+
+  - name: ssh_guest_agent_failed
+    severity: error
+    description: "Google Compute Engine guest agent failed (SSH key provisioning may not work)"
+    regex:
+      # "Failed with result" alone is dropped: it also fires on shutdown
+      # transients; the "Failed to start" line covers real boot failures.
+      - 'Failed to start .*Google Compute Engine Guest Agent'
+      # Lookbehind excludes benign "non-fatal" agent log lines.
+      - 'google[-_]guest[-_]agent.*(?:panic|(?<!non-)fatal)'
+    fixes:
+      - "Reinstall the guest agent from rescue mode: sudo chroot /mnt/sysroot apt-get install --reinstall google-guest-agent (Debian/Ubuntu) or sudo chroot /mnt/sysroot dnf reinstall google-guest-agent (RHEL/Rocky)"
+      - "Check agent logs under /mnt/sysroot/var/log for the failure reason"
+
+  - name: ssh_auth_permissions
+    severity: error
+    description: "SSH authentication refused due to bad ownership or permissions on .ssh files"
+    regex:
+      - 'Authentication refused: bad ownership or modes'
+    fixes:
+      - "Fix permissions from rescue mode: sudo chmod 700 /mnt/sysroot/home/USER/.ssh and sudo chmod 600 /mnt/sysroot/home/USER/.ssh/authorized_keys"
+      - "Fix ownership: sudo chown -R USER:USER /mnt/sysroot/home/USER/.ssh (run inside chroot or use numeric UID)"
+
+  # PLACEMENT: serial-getty lives here, not in systemd_early, because
+  # (a) this category is "operator access paths" - SSH and the serial
+  # console are the two ways into a VM, and a dead getty is the same
+  # class of boot-completing access failure as a dead sshd (which is
+  # exactly why survives_boot_success fits it), and (b) systemd_early's
+  # scoping contract forbids 'Failed to start' anchors entirely (it is
+  # PID1-fatal conditions only, enforced by a loader test).
+  - name: ssh_serial_getty_failed
+    severity: error
+    description: "Serial console login (serial-getty on ttyS0) failed to start"
+    regex:
+      # Bound to the serial-getty unit name; healthy boots only log
+      # 'Started serial-getty@ttyS0.service ...', which contains neither
+      # 'failed' nor the restart-loop wording.
+      - 'serial-getty@ttyS\d+\.service.*(?:failed|start request repeated too quickly)'
+      # Console status line form: '[FAILED] Failed to start Serial Getty
+      # on ttyS0.' - bound to the unit description.
+      - 'Failed to start .*Serial Getty on ttyS\d+'
+    fixes:
+      - "The interactive serial console has no login prompt - use SSH or rescue mode instead to reach the VM"
+      - "Check why getty failed from rescue mode: look for a missing agetty binary, a broken /etc/nsswitch.conf/PAM stack, or an overridden serial-getty@.service drop-in under /mnt/sysroot/etc/systemd/system/"
+      - "Verify the console kernel arg is present so the getty has a device: console=ttyS0,115200 on the kernel command line"

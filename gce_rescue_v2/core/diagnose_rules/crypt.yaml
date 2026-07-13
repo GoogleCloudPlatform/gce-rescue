@@ -1,0 +1,57 @@
+# LUKS / dm-crypt encrypted-disk boot hangs.
+#
+# detect_only: a hung passphrase prompt cannot be fixed from the rescue
+# disk without the passphrase/keyfile - there is nothing to edit on disk
+# that would unlock it, so this is detect-and-advise territory.
+# Detection logic note (master-plan G): these are interactive hangs - the
+# prompt line itself IS the failure evidence; no error line ever follows.
+category: crypt
+detect_only: true
+fix_guidance: "The disk is LUKS-encrypted and boot is waiting for a passphrase that can never arrive over the GCE serial console; unlock it interactively via the serial console (gcloud compute connect-to-serial-port), supply a keyfile/crypttab fix from a system that has the key material, or restore from a snapshot"
+auto_repair: false
+
+patterns:
+  - name: crypt_passphrase_prompt
+    severity: critical
+    description: "Boot is waiting for a LUKS passphrase on the console"
+    regex:
+      - 'Please enter passphrase for disk'
+      - 'Please unlock disk'
+    fixes:
+      - "Connect to the interactive serial console and type the passphrase: gcloud compute connect-to-serial-port VM_NAME --zone=ZONE"
+      - "For unattended boot, add a keyfile to /etc/crypttab from a system that can unlock the disk (rescue mode cannot - the data is encrypted)"
+      - "If the passphrase is lost, the data is unrecoverable - restore from a snapshot taken before encryption or rebuild the VM"
+
+  - name: crypt_unlock_wait
+    severity: critical
+    description: "systemd is stuck on a cryptsetup start job (encrypted device wait)"
+    regex:
+      # 'A start job is running for' alone is a benign transient on every
+      # boot - bound here to crypt/LUKS unit wording only. The negative
+      # lookahead requires that NO completion evidence for the cryptsetup
+      # job ('Started/Finished ... Cryptography Setup', or the device-unit
+      # form's 'Found device ... crypt/luks/mapper') follows anywhere later
+      # in the buffer: on a healthy boot the spinner always resolves into
+      # one of those lines (so every spinner occurrence is rejected), while
+      # a real hang repeats the spinner with no completion line ever - the
+      # last occurrence still matches. Unbounded (not a char window)
+      # because the engine keeps the LAST matching occurrence: a window
+      # would let an early spinner line far from the completion line keep
+      # firing on healthy-but-stopped VMs (TERMINATED skips boot-success
+      # suppression entirely).
+      - 'A start job is running for [^\n]*(?:crypt|luks)(?![\s\S]*?(?:(?:Started|Finished) [^\n]*Cryptography Setup|Found device [^\n]*(?:crypt|luks|mapper)))'
+    fixes:
+      - "The start job is waiting for an encrypted device to be unlocked - connect to the interactive serial console to supply the passphrase: gcloud compute connect-to-serial-port VM_NAME --zone=ZONE"
+      - "If the underlying device is gone (deleted disk), remove its /etc/crypttab and /etc/fstab entries via rescue mode (the entries are readable even though the data is not)"
+
+  - name: crypt_setup_failed
+    severity: error
+    description: "systemd-cryptsetup failed to set up an encrypted device"
+    regex:
+      # Bound to failure wording: bare 'systemd-cryptsetup' appears on
+      # every healthy boot of a VM with encrypted disks.
+      - 'Failed to start [^\n]*(?:Cryptography Setup|systemd-cryptsetup)'
+      - 'systemd-cryptsetup\[\d+\]: [^\n]*[Ff]ailed'
+    fixes:
+      - "Check /etc/crypttab on the mounted disk for a device that no longer exists or a wrong key path (readable from rescue mode)"
+      - "Verify the backing device is attached: gcloud compute instances describe VM_NAME --zone=ZONE"

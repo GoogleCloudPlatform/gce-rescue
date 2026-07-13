@@ -1,0 +1,37 @@
+# mdadm / software-RAID assembly failures (custom images; low GCE volume
+# but zero coverage otherwise).
+category: raid
+fix_guidance: "from the rescue VM inspect the array (cat /proc/mdstat; sudo mdadm --detail /dev/mdX), force-run a degraded array if its data is acceptable (sudo mdadm --run /dev/mdX) or reassemble (sudo mdadm --assemble --force), then fix /mnt/sysroot/etc/mdadm.conf and rebuild the initramfs"
+# auto_repair stays false until startup_scripts/fixes/raid_fix.sh exists.
+auto_repair: false
+
+patterns:
+  - name: raid_dirty_degraded
+    severity: critical
+    description: "RAID array is dirty and degraded - kernel refused to start it"
+    regex:
+      - 'Cannot start dirty degraded array'
+      # Covers both 'not enough operational devices' (raid5/6) and
+      # 'not enough operational mirrors' (raid1) kernel wording.
+      - 'md/raid[^\n]{0,40}not enough operational'
+    fixes:
+      - "From rescue mode, check array state: cat /proc/mdstat and sudo mdadm --detail /dev/mdX"
+      - "If the remaining members are acceptable, force-start: sudo mdadm --run /dev/mdX (or sudo mdadm --assemble --force /dev/mdX member-devices...)"
+      - "Replace the failed member and re-add it: sudo mdadm --manage /dev/mdX --add /dev/sdY"
+
+  - name: raid_start_failed
+    severity: critical
+    description: "mdadm was unable to start a RAID array during boot"
+    regex:
+      - 'mdadm: Unable to start array'
+      - 'mdadm: failed to (?:start|run) array'
+      # Actual mdadm source wordings (verified against Assemble.c /
+      # Incremental.c): 'failed to RUN_ARRAY /dev/md0: ...' and the two
+      # degraded-assembly refusals '... - not enough to start the array.'
+      # (mdadm --assemble) / '... attached to /dev/md/0, not enough to
+      # start (1).' (udev incremental path used by modern boots).
+      - 'mdadm: failed to RUN_ARRAY'
+      - 'mdadm:[^\n]*not enough to start'
+    fixes:
+      - "From rescue mode, examine the members: sudo mdadm --examine /dev/sd[a-z]* and reassemble: sudo mdadm --assemble --scan --force"
+      - "Update /mnt/sysroot/etc/mdadm.conf to match the real array UUIDs (sudo mdadm --detail --scan) and rebuild the initramfs"

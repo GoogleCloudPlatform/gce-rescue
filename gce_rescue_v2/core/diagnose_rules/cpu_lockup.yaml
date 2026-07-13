@@ -1,0 +1,69 @@
+# CPU lockup and stall patterns (soft/hard lockups, bus locks, RCU stalls).
+#
+# Sources:
+#   - https://cloud.google.com/compute/docs/troubleshooting/troubleshooting-cpu-soft-lockup
+#   - https://cloud.google.com/compute/docs/troubleshooting/troubleshoot-cpu-bus-locks
+#
+# Detect-only category: lockups are workload/host conditions, not on-disk boot
+# configuration, so there is nothing for the repair command to edit on the
+# rescued disk. auto_repair stays false.
+#
+# Scope note: unexpected reboots caused by host maintenance events
+# (hostError / guestTerminate) are recorded in Cloud operation logs, NOT in
+# the serial console output, so they cannot be detected by this serial-based
+# engine. Covering them needs an API extension (future work).
+category: cpu_lockup
+fix_guidance: "Identify the offending process/workload from the serial log, then reset the VM; if lockups repeat, stop and start the VM to move it to a different host"
+auto_repair: false
+# detect_only: rescue mode does not help (nothing to edit on the rescued
+# disk), so the report must not steer users into a rescue/restore cycle.
+detect_only: true
+
+patterns:
+  - name: cpu_lockup_soft_lockup
+    severity: error
+    description: "CPU soft lockup detected by the kernel watchdog (CPU stuck in kernel mode)"
+    regex:
+      - 'BUG: soft lockup - CPU#\d+ stuck for \d+s'
+    fixes:
+      - "Identify the process named in the lockup message and reduce its CPU load"
+      - "If the VM is unresponsive, reset it: gcloud compute instances reset VM_NAME --zone=ZONE"
+
+  - name: cpu_lockup_hard_lockup
+    severity: critical
+    description: "Hard CPU lockup detected by the NMI watchdog"
+    regex:
+      # Prefix-agnostic: pre-6.5 kernels log "NMI watchdog: Watchdog detected
+      # hard LOCKUP"; 6.5+ (Ubuntu 24.04 = 6.8) moved the hardlockup path to
+      # kernel/watchdog.c which logs "watchdog: Watchdog detected hard LOCKUP".
+      # GCE guests have no PMU, so the buddy detector (6.5+ prefix) is the
+      # realistic reporter on modern images.
+      - 'Watchdog detected hard LOCKUP'
+    fixes:
+      - "Reset the VM: gcloud compute instances reset VM_NAME --zone=ZONE"
+      - "If hard lockups repeat, stop and start the VM to move it to a different host"
+
+  - name: cpu_lockup_bus_lock
+    severity: warning
+    description: "Bus lock or split lock detected (performance-degrading memory access)"
+    regex:
+      - 'took a bus_lock trap'
+      - 'took a split_lock trap'
+      - 'bus lock detected'
+      - 'split lock detected'
+    fixes:
+      - "Identify the application named in the message and fix its misaligned atomic memory access"
+      - "Bus/split locks slow down all vCPUs; update or isolate the offending workload"
+
+  - name: cpu_lockup_rcu_stall
+    severity: error
+    description: "RCU stall detected (CPU unresponsive to the kernel RCU subsystem)"
+    regex:
+      # Covers all RCU flavors (rcu_sched, rcu_preempt — the Ubuntu 22.04/24.04
+      # default, rcu_bh), self-detected and expedited variants, with or without
+      # the "rcu: " prefix added in kernel 4.19. Does not match healthy boot
+      # banners like "rcu: Hierarchical RCU implementation."
+      - 'INFO: rcu_\w+ (?:self-)?detected (?:expedited )?stalls? on CPU'
+    fixes:
+      - "Check for runaway or real-time processes monopolizing the CPU"
+      - "If the VM is unresponsive, reset it: gcloud compute instances reset VM_NAME --zone=ZONE"
