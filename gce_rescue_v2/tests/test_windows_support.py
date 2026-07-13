@@ -205,14 +205,18 @@ class TestConfigWindows:
         assert config.windows_rescue_disk_size_gb == 50
 
 
-class TestWindowsDiskSignaturePreservation:
-    """The mount script must protect the affected disk's GPT GUID (issue #126).
+class TestWindowsBcdRealignment:
+    """The mount script must repair the #126 GUID-collision damage via BCD
+    realignment, not GUID restoration.
 
     The default Windows rescue image (windows-2022) shares a GPT disk GUID
-    with same-family affected disks. Onlining the affected disk regenerates
-    its GUID to resolve the collision, invalidating its BCD and leaving the
-    VM unbootable at 0xc000000e after restore. The script captures the GUID
-    before onlining and restores it afterward.
+    with same-family affected disks; onlining the affected disk makes Windows
+    regenerate its GUID, invalidating the disk's BCD (unbootable at
+    0xc000000e/0xc0000225 after restore). Restoring the old GUID does NOT
+    work (live-tested: the rescue disk with the same GUID is still online, so
+    the collision immediately recurs). Instead the script detects the GUID
+    change and rebuilds the disk's BCD against its new, stable identity with
+    bcdboot - and only when a change was actually detected.
     """
 
     def _script(self) -> str:
@@ -225,20 +229,38 @@ class TestWindowsDiskSignaturePreservation:
         online = text.index('Set-Disk -Number $disk.Number -IsOffline $false')
         assert capture < online, "GUID must be captured before the disk is onlined"
 
-    def test_guid_restored_after_online(self):
-        text = self._script()
-        # A conditional restore of the original GUID must exist after online.
-        assert 'Set-Disk -Number $disk.Number -Guid $originalGuid' in text
-        online = text.index('Set-Disk -Number $disk.Number -IsOffline $false')
-        restore = text.index('Set-Disk -Number $disk.Number -Guid $originalGuid')
-        assert online < restore, "GUID restore must come after the online call"
+    def test_guid_never_restored(self):
+        # The failed first approach: writing the old GUID back recreates the
+        # live collision (rescue disk still online) and Windows re-resolves
+        # it later. The script must not attempt it.
+        assert '-Guid $originalGuid' not in self._script()
 
-    def test_restore_is_guarded_and_conditional(self):
+    def test_change_detection_feeds_realignment(self):
         text = self._script()
-        # Restore only when the GUID actually changed, and never crash the
-        # script if the disk API fails (best-effort with a warning).
         assert 'if ($currentGuid -ne $originalGuid)' in text
-        assert 'could not restore disk GUID' in text
+        assert '$guidChangedDisks += $disk.Number' in text
+
+    def test_bcdboot_realignment_after_mounting(self):
+        text = self._script()
+        # bcdboot runs in the realignment section, after the partition
+        # mounting loop (it needs the offline \Windows drive letter).
+        assert 'bcdboot' in text
+        assert '/f UEFI' in text
+        assert '/f BIOS' in text
+        mount_loop = text.index('Assigning drive letter')
+        realign = text.index('BCD Realignment')
+        assert mount_loop < realign
+
+    def test_realignment_only_for_changed_disks(self):
+        # A collision-free rescue must never touch the BCD.
+        assert 'foreach ($diskNumber in $guidChangedDisks)' in self._script()
+
+    def test_locates_windows_by_config_hive(self):
+        # Finds the offline install by its registry hive, not a hardcoded D:.
+        assert 'Windows\\System32\\config\\SYSTEM' in self._script()
+
+    def test_releases_temp_esp_letter(self):
+        assert 'Remove-PartitionAccessPath' in self._script()
 
     def test_references_issue_126(self):
         assert '#126' in self._script()
