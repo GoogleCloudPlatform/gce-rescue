@@ -25,6 +25,15 @@
 # supported offline equivalent of bootrec /rebuildbcd, which only runs against
 # the live system. bcdboot never touches user data; the pre-rescue snapshot is
 # the rollback.
+#
+# Scope limits (deliberate):
+# - bcdboot writes a fresh DEFAULT store: custom BCD entries and settings
+#   (extra boot entries, debug/testsigning flags, custom timeouts) are not
+#   preserved. Intended for broken or missing BCDs, where there is nothing
+#   to preserve.
+# - BitLocker: a locked volume cannot be read, and rebuilding boot files on
+#   an encrypted disk can trigger BitLocker recovery. The script detects a
+#   locked-looking volume and REFUSES with guidance instead of guessing.
 
 $FixReason = ""
 $Fixes = 0
@@ -42,7 +51,32 @@ foreach ($vol in Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveLetter 
 }
 
 if (-not $winVolume) {
-    $FixReason = "no offline Windows installation found on the attached disk (no <drive>:\Windows\System32\config\SYSTEM)"
+    # --- Distinguish "no Windows there" from "Windows there but unreadable".
+    # A BitLocker-locked OS volume mounts with a drive letter but an unreadable
+    # filesystem (FileSystemType 'Unknown'). Flag large fixed volumes in that
+    # state; confirm with manage-bde when the BitLocker tools exist (they are
+    # an optional feature, so never assume).
+    $lockedSuspects = @()
+    foreach ($vol in Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveLetter -ne 'C' }) {
+        if ($vol.FileSystemType -eq 'Unknown' -and $vol.Size -gt 10GB) {
+            $suspect = "$($vol.DriveLetter):"
+            if (Get-Command manage-bde.exe -ErrorAction SilentlyContinue) {
+                $bde = & manage-bde.exe -status "$suspect" 2>&1 | Out-String
+                if ($bde -match 'Lock Status:\s+Locked') {
+                    $suspect = "$suspect (BitLocker: Locked)"
+                }
+            }
+            $lockedSuspects += $suspect
+        }
+    }
+
+    if ($lockedSuspects.Count -gt 0) {
+        $FixReason = ("volume(s) $($lockedSuspects -join ', ') appear BitLocker-locked/unreadable - " +
+            "BCD rebuild is not attempted on encrypted volumes. Unlock first in the rescue VM " +
+            "(manage-bde -unlock <drive>: -RecoveryPassword <key>; requires the BitLocker feature), then re-run")
+    } else {
+        $FixReason = "no offline Windows installation found on the attached disk (no <drive>:\Windows\System32\config\SYSTEM)"
+    }
 } else {
     $winLetter = $winVolume.DriveLetter
     Write-Log "GCE-REPAIR-LINE:[INFO] bcd: found offline Windows at ${winLetter}:\Windows"

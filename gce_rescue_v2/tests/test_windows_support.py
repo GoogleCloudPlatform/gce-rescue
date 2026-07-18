@@ -256,5 +256,31 @@ class TestWindowsBcdFixScript:
         # Cleans up the temporary ESP drive letter so restore is clean.
         assert 'Remove-PartitionAccessPath' in self._script()
 
+    def test_refuses_bitlocker_locked_volumes(self):
+        # A locked volume is unreadable and rebuilding boot files on an
+        # encrypted disk can trigger BitLocker recovery - the script must
+        # refuse with guidance, not guess.
+        text = self._script()
+        assert 'BitLocker-locked' in text
+        assert 'manage-bde -unlock' in text
+
+    def test_bitlocker_detection_never_assumes_tools(self):
+        # manage-bde is an optional feature; the definitive check must be
+        # guarded so its absence cannot break the script.
+        assert 'Get-Command manage-bde.exe' in self._script()
+
+    def test_locked_volume_heuristic_is_filesystem_based(self):
+        # The heuristic works without BitLocker tooling: a locked OS volume
+        # surfaces with an unreadable filesystem.
+        text = self._script()
+        assert "FileSystemType -eq 'Unknown'" in text
+
+    def test_documents_custom_entry_scope(self):
+        # The header must state that bcdboot writes a fresh default store and
+        # custom BCD entries are not preserved.
+        text = self._script()
+        assert 'fresh DEFAULT store' in text
+        assert 'custom BCD entries' in text
+
     def test_uses_lf_line_endings(self):
         assert b'\r' not in _BCD_FIX_SCRIPT.read_bytes()
