@@ -216,6 +216,26 @@ DISK_CREATE_FAILED = ErrorSuggestion(
     ]
 )
 
+TRUSTED_IMAGE_BLOCKED = ErrorSuggestion(
+    message="Rescue image blocked by org policy (compute.trustedImageProjects)",
+    causes=[
+        "This project restricts which image projects may be used"
+        " (constraints/compute.trustedImageProjects)",
+        "The default rescue image's project (e.g. debian-cloud / windows-cloud)"
+        " is not in the allowed list",
+    ],
+    suggestions=[
+        "Specify an approved image with --rescue-image="
+        "projects/IMAGE_PROJECT/global/images/IMAGE",
+        "An image family also works: .../global/images/family/FAMILY",
+        "Ask your organization admin which image projects are permitted",
+    ],
+    commands=[
+        "gce-rescue rescue {vm_name} --zone={zone} --project={project}"
+        " --rescue-image=projects/IMAGE_PROJECT/global/images/IMAGE",
+    ]
+)
+
 DISK_DELETE_FAILED = ErrorSuggestion(
     message="Failed to delete disk",
     causes=[
@@ -383,6 +403,11 @@ def get_error_suggestion(error_msg: str, operation: str = None) -> Optional[Erro
         ErrorSuggestion if a match is found, None otherwise
     """
     error_lower = error_msg.lower()
+
+    # Org-policy image restriction (check before generic permission/403 errors,
+    # which a trustedImageProjects violation can otherwise be mistaken for).
+    if 'trustedimageprojects' in error_lower or 'trusted image' in error_lower:
+        return TRUSTED_IMAGE_BLOCKED
 
     # Insufficient OAuth scopes (check before generic permission errors)
     if 'insufficient authentication scopes' in error_lower or 'insufficientpermissions' in error_lower:

@@ -886,6 +886,45 @@ class TestHandleRepair:
         exit_code = cli.handle_repair(args)
         assert exit_code == 1
 
+    # --- Local SSD pre-flight (issue #134) ---
+
+    def test_handle_repair_local_ssd_quiet_requires_force(self, monkeypatch, capsys):
+        """repair --quiet on a Local SSD VM fails fast asking for --force."""
+        self._setup_repair_base(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: ["local-ssd-0"])
+        Fake = self._make_fake_repair_orch()
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        args = _parse_args("repair")  # --quiet, no --force
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert "Local SSD" in captured.err
+        assert "--force" in captured.err
+
+    def test_handle_repair_local_ssd_force_proceeds(self, monkeypatch):
+        """repair --quiet --force on a Local SSD VM proceeds past the stop guard."""
+        self._setup_repair_base(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: ["local-ssd-0"])
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "fstab", "severity": "error",
+                          "description": "Bad UUID in /etc/fstab",
+                          "detected_pattern": "UUID=bad-uuid"}],
+            fixable=["fstab"],
+            fstab_targets=["UUID=bad-uuid"],
+        )
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        args = _parse_args("repair", extra=["--force"])
+        exit_code = cli.handle_repair(args)
+        assert exit_code == 0
+
     # --- --rescue-image pre-flight (issue #102) ---
 
     def test_handle_repair_rescue_image_invalid_blocks_pre_flight(
@@ -1052,6 +1091,96 @@ class TestFixScriptFlag:
         with pytest.raises(ValueError, match="file not found"):
             cli.read_fix_script("/nonexistent/path/to/fix.sh")
 
+
+class TestVerificationTimeoutFlag:
+    """Tests for --verification-timeout flag and OS-aware timeout resolution."""
+
+    def setup_method(self):
+        self.parser = cli.create_parser()
+
+    def test_parsed_on_rescue(self):
+        """rescue accepts --verification-timeout and stores it on args."""
+        args = self.parser.parse_args([
+            "rescue", "vm-1", "--zone", "us-central1-a",
+            "--verification-timeout", "900",
+        ])
+        assert args.verification_timeout == 900
+
+    def test_parsed_on_repair(self):
+        """repair accepts --verification-timeout and stores it on args."""
+        args = self.parser.parse_args([
+            "repair", "vm-1", "--zone", "us-central1-a",
+            "--verification-timeout", "900",
+        ])
+        assert args.verification_timeout == 900
+
+    def test_defaults_to_none(self):
+        """Without the flag, verification_timeout is None (use OS-aware default)."""
+        args = self.parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a"])
+        assert args.verification_timeout is None
+
+    def test_rejects_zero(self):
+        """--verification-timeout rejects non-positive values."""
+        with pytest.raises(SystemExit):
+            self.parser.parse_args([
+                "rescue", "vm-1", "--zone", "us-central1-a",
+                "--verification-timeout", "0",
+            ])
+
+    def test_rejects_non_integer(self):
+        """--verification-timeout rejects non-integer values."""
+        with pytest.raises(SystemExit):
+            self.parser.parse_args([
+                "rescue", "vm-1", "--zone", "us-central1-a",
+                "--verification-timeout", "abc",
+            ])
+
+    def test_populates_config_override(self):
+        """args_to_rescue_config copies the flag into verification_timeout_override."""
+        args = self.parser.parse_args([
+            "rescue", "vm-1", "--zone", "us-central1-a",
+            "--verification-timeout", "900",
+        ])
+        config = cli.args_to_rescue_config(args)
+        assert config.verification_timeout_override == 900
+
+    def test_no_flag_leaves_override_none(self):
+        """Without the flag, verification_timeout_override stays None."""
+        args = self.parser.parse_args(["rescue", "vm-1", "--zone", "us-central1-a"])
+        config = cli.args_to_rescue_config(args)
+        assert config.verification_timeout_override is None
+
+
+class TestEffectiveVerificationTimeout:
+    """Tests for RescueConfig.effective_verification_timeout (OS-aware + override)."""
+
+    def test_linux_default(self):
+        from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_LINUX
+        config = RescueConfig()
+        assert config.effective_verification_timeout(OS_TYPE_LINUX) == 300
+
+    def test_windows_default_is_higher(self):
+        from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_WINDOWS
+        config = RescueConfig()
+        assert config.effective_verification_timeout(OS_TYPE_WINDOWS) == 600
+
+    def test_unknown_os_falls_back_to_general_default(self):
+        from gce_rescue_v2.core.config import RescueConfig
+        config = RescueConfig()
+        assert config.effective_verification_timeout(None) == 300
+
+    def test_override_wins_over_windows_default(self):
+        from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_WINDOWS
+        config = RescueConfig()
+        config.verification_timeout_override = 900
+        assert config.effective_verification_timeout(OS_TYPE_WINDOWS) == 900
+
+    def test_override_wins_over_linux_default(self):
+        from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_LINUX
+        config = RescueConfig()
+        config.verification_timeout_override = 45
+        assert config.effective_verification_timeout(OS_TYPE_LINUX) == 45
+
     def test_read_fix_script_empty_file_raises(self, tmp_path):
         """read_fix_script raises ValueError for an empty file."""
         empty = tmp_path / "empty.sh"
@@ -1165,3 +1294,56 @@ class TestFixScriptRepairPath:
         assert exit_code == 0
         orch.execute_custom.assert_called_once()
         assert orch._suppress_header is True
+
+
+class TestLocalSsdQuietGate:
+    """Tests for the shared Local SSD quiet-mode gate (issue #134 / Todd review)."""
+
+    def _vm(self, with_ssd=True):
+        disks = [{"boot": True, "deviceName": "sda"}]
+        if with_ssd:
+            disks.append({"type": "SCRATCH", "deviceName": "local-ssd-0"})
+        return {"disks": disks, "status": "RUNNING"}
+
+    def test_no_local_ssd_passes(self):
+        from gce_rescue_v2.cli import preflight
+        ssds, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(with_ssd=False), "vm-1", "us-central1-a", "rescue",
+            quiet=True, force=False,
+        )
+        assert ssds == []
+        assert err is None
+
+    def test_quiet_local_ssd_no_force_blocks(self):
+        from gce_rescue_v2.cli import preflight
+        ssds, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(), "vm-1", "us-central1-a", "repair", quiet=True, force=False,
+        )
+        assert ssds == ["local-ssd-0"]
+        assert err is not None
+        assert "--force" in err
+        assert "repair" in err  # command-specific hint
+
+    def test_quiet_local_ssd_with_force_passes(self):
+        from gce_rescue_v2.cli import preflight
+        ssds, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(), "vm-1", "us-central1-a", "rescue", quiet=True, force=True,
+        )
+        assert ssds == ["local-ssd-0"]
+        assert err is None  # force opts in
+
+    def test_interactive_local_ssd_no_error(self):
+        """Interactive (not quiet) returns the list but no error (caller confirms)."""
+        from gce_rescue_v2.cli import preflight
+        ssds, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(), "vm-1", "us-central1-a", "rescue", quiet=False, force=False,
+        )
+        assert ssds == ["local-ssd-0"]
+        assert err is None
+
+    def test_command_in_hint(self):
+        from gce_rescue_v2.cli import preflight
+        _, err = preflight.check_local_ssd_quiet_gate(
+            self._vm(), "vm-1", "us-central1-a", "rescue", quiet=True, force=False,
+        )
+        assert "gce-rescue rescue vm-1" in err
