@@ -171,7 +171,7 @@ More info: [Application Default Credentials](https://cloud.google.com/docs/authe
 |---------|-------------|
 | **Linux + Windows** | Auto-detects OS, uses appropriate rescue environment |
 | **Boot Diagnostics** | Serial console analysis for fstab, GRUB, kernel, filesystem errors |
-| **Auto-Repair** | Automated fix for fstab errors (more categories planned) |
+| **Auto-Repair** | Automated fixes for fstab, filesystem, initramfs, and GRUB errors (more categories planned) |
 | **Custom Fix Scripts** | Bring your own fix (`--fix-script`) for known issues at scale — no diagnosis needed |
 | **Automatic Rollback** | Operations roll back on failure |
 | **Session Recovery** | Resume or rollback interrupted operations |

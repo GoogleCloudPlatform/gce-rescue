@@ -1,8 +1,13 @@
 category: filesystem
 fix_guidance: "sudo umount /mnt/sysroot && sudo fsck -y /dev/sdb1"
-# auto_repair stays false until startup_scripts/fixes/filesystem_fix.sh exists
-# and repair orchestration is wired for it. Detect-only with manual guidance.
-auto_repair: false
+# Auto-repaired by startup_scripts/fixes/filesystem_fix.sh: fsck runs in a
+# pre-mount block (before the rescue mount attempt, while the disk is still
+# unmounted) - e2fsck -f -y for ext*, xfs_repair with mount/unmount log
+# replay for XFS (never xfs_repair -L automatically), btrfs checked
+# read-only only (never auto-repaired). The flag and the fix script must
+# always land together: repair preflight fails for all categories if any
+# auto_repair:true category lacks its script.
+auto_repair: true
 # A corrupt secondary disk marked nofail lets the VM boot fine while the
 # disk stays broken — a successful boot never resolves these findings.
 survives_boot_success: true

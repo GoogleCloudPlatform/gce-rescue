@@ -20,12 +20,14 @@
 # kernel_panic_generic catch-all lookahead in kernel.yaml is unaffected.
 category: grub
 fix_guidance: "chroot into /mnt/sysroot, reinstall GRUB to the boot disk (grub-install /dev/sdX on Debian-family, grub2-install /dev/sdX on RHEL-family) and regenerate the config (update-grub or grub2-mkconfig -o /boot/grub2/grub.cfg)"
-# auto_repair MUST stay false until startup_scripts/fixes/grub_fix.sh
-# lands. RepairOrchestrator.validate() checks that every category with
-# auto_repair: true has a fix script, so flipping this early makes
-# `repair` fail preflight for ALL categories. Flip to true in the same
-# commit that adds the script.
-auto_repair: false
+# auto_repair is backed by startup_scripts/fixes/grub_fix.sh (landed in the
+# same change, as required: RepairOrchestrator.validate() fails preflight
+# for ALL categories if any auto_repair: true category lacks its script).
+# The script chroots into /mnt/sysroot and runs the TARGET's own tooling:
+# grub-install + update-grub (Debian-family, BIOS/UEFI) or grub2-install +
+# grub2-mkconfig (RHEL/SUSE-family BIOS; config-only on their UEFI, where
+# the EFI binaries are package-managed signed images).
+auto_repair: true
 # NOT detect_only: GRUB damage is genuinely fixable from rescue mode
 # (grub-install + update-grub/grub2-mkconfig on the mounted original disk).
 # No survives_boot_success: a stale GRUB error from an older boot IS

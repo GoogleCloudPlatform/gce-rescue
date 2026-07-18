@@ -1,11 +1,12 @@
 category: initramfs
 fix_guidance: "chroot into /mnt/sysroot and rebuild the initramfs: dracut -f (RHEL-family) or update-initramfs -u -k VERSION (Debian-family), then regenerate the GRUB config"
-# auto_repair MUST stay false until startup_scripts/fixes/initramfs_fix.sh
-# lands. RepairOrchestrator.validate() checks that every category in
-# SUPPORTED_FIX_CATEGORIES has a fix script, so flipping this to true
-# without the script makes `repair` fail preflight for ALL categories
-# (including fstab). Flip to true in the same commit that adds the script.
-auto_repair: false
+# auto_repair is true: startup_scripts/fixes/initramfs_fix.sh rebuilds the
+# initramfs for the newest installed kernel via chroot into /mnt/sysroot
+# (update-initramfs on Debian-family, dracut -f on RHEL/SUSE-family) and
+# regenerates the GRUB config afterwards. The flag and the script landed in
+# the same change - RepairOrchestrator.validate() fails preflight for ALL
+# categories if any auto_repair:true category lacks its fix script.
+auto_repair: true
 
 # Distro dialects covered here:
 #   dracut (RHEL/Rocky/Alma/CentOS/SLES): dracut-initqueue warnings,

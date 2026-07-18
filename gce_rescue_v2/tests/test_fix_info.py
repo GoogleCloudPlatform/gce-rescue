@@ -223,9 +223,9 @@ class TestShippedFixInfo:
         """kernel is detect-only (auto_repair: false) — no fix script exists."""
         assert 'kernel' not in SUPPORTED_FIX_CATEGORIES
 
-    def test_initramfs_is_not_auto_repairable(self):
-        """initramfs ships with auto_repair: false until initramfs_fix.sh lands."""
-        assert 'initramfs' not in SUPPORTED_FIX_CATEGORIES
+    def test_initramfs_is_auto_repairable(self):
+        """initramfs has auto_repair: true and ships initramfs_fix.sh."""
+        assert 'initramfs' in SUPPORTED_FIX_CATEGORIES
 
     def test_kernel_patterns_have_fixes(self):
         """Every kernel pattern should have at least one fix suggestion."""
@@ -292,9 +292,9 @@ class TestShippedFixInfo:
     def test_filesystem_fix_guidance_loaded(self):
         assert 'filesystem' in CATEGORY_FIX_GUIDANCE
 
-    def test_filesystem_is_not_auto_repairable(self):
-        """filesystem stays auto_repair: false until filesystem_fix.sh lands."""
-        assert 'filesystem' not in SUPPORTED_FIX_CATEGORIES
+    def test_filesystem_is_auto_repairable(self):
+        """filesystem has auto_repair: true and ships filesystem_fix.sh."""
+        assert 'filesystem' in SUPPORTED_FIX_CATEGORIES
 
     def test_filesystem_patterns_have_fixes(self):
         """Every filesystem pattern should have at least one fix suggestion."""
@@ -332,9 +332,9 @@ class TestShippedFixInfo:
     def test_grub_fix_guidance_loaded(self):
         assert 'grub' in CATEGORY_FIX_GUIDANCE
 
-    def test_grub_is_not_auto_repairable(self):
-        """grub stays auto_repair: false until startup_scripts/fixes/grub_fix.sh lands."""
-        assert 'grub' not in SUPPORTED_FIX_CATEGORIES
+    def test_grub_is_auto_repairable(self):
+        """grub has auto_repair: true and ships startup_scripts/fixes/grub_fix.sh."""
+        assert 'grub' in SUPPORTED_FIX_CATEGORIES
 
     def test_grub_patterns_have_fixes(self):
         """Every grub pattern should have at least one fix suggestion."""

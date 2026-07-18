@@ -158,12 +158,13 @@ class TestRepairOrchestrator:
         diagnosis = {
             'boot_errors': [
                 {'category': 'fstab', 'severity': 'critical'},
+                {'category': 'grub', 'severity': 'error'},
                 {'category': 'fstab', 'severity': 'warning'},  # duplicate
                 {'category': 'kernel', 'severity': 'error'},  # no fix script
             ]
         }
         fixable = orch.get_fixable_categories(diagnosis)
-        assert fixable == ['fstab']
+        assert fixable == ['fstab', 'grub']
 
     def test_get_unfixable_categories(self):
         """Should return categories without fix scripts."""
@@ -174,11 +175,13 @@ class TestRepairOrchestrator:
         diagnosis = {
             'boot_errors': [
                 {'category': 'fstab', 'severity': 'critical'},
+                {'category': 'grub', 'severity': 'error'},
                 {'category': 'kernel', 'severity': 'error'},
             ]
         }
         unfixable = orch.get_unfixable_categories(diagnosis)
         assert 'kernel' in unfixable
+        assert 'grub' not in unfixable  # grub_fix.sh shipped
         assert 'fstab' not in unfixable
 
     def test_execute_no_fixable_returns_no_fix(self):
@@ -756,6 +759,18 @@ class TestRepairHardening:
 
     # --- snapshot guard for destructive fixes ---
 
+    def test_filesystem_repair_refuses_no_snapshot(self):
+        """fsck rewrites the disk in place; --no-snapshot must abort."""
+        config = RescueConfig(create_snapshot=False)
+        orch = self._make_orchestrator(config=config)
+        diagnosis = {'boot_errors': [{
+            'category': 'filesystem', 'severity': 'critical',
+            'detected_pattern': 'EXT4-fs error (device sda1)',
+        }]}
+        result = orch.execute(diagnosis)
+        assert result['status'] == 'error'
+        assert 'snapshot' in result['error']
+
     def test_fstab_repair_allows_no_snapshot(self):
         """Non-destructive categories keep --no-snapshot working."""
         config = RescueConfig(create_snapshot=False)
@@ -832,6 +847,27 @@ class TestRepairHardening:
         diagnosis = self._fs_diagnosis('EXT4-fs error (device sdb1): bad block')
         assert orch.get_fixable_categories(diagnosis) == []
         assert 'filesystem' in orch.get_unfixable_categories(diagnosis)
+
+    def test_filesystem_on_boot_disk_stays_fixable(self):
+        orch = self._make_orchestrator()
+        diagnosis = self._fs_diagnosis('EXT4-fs error (device sda1): bad block')
+        assert orch.get_fixable_categories(diagnosis) == ['filesystem']
+        assert 'filesystem' not in orch.get_unfixable_categories(diagnosis)
+
+    def test_filesystem_without_device_name_stays_fixable(self):
+        """Ambiguous findings keep the category fixable (fail open)."""
+        orch = self._make_orchestrator()
+        diagnosis = self._fs_diagnosis('Corruption of in-memory data detected')
+        assert orch.get_fixable_categories(diagnosis) == ['filesystem']
+
+    def test_filesystem_mixed_devices_stays_fixable(self):
+        """One boot-disk finding is enough to keep the category."""
+        orch = self._make_orchestrator()
+        diagnosis = self._fs_diagnosis(
+            'EXT4-fs error (device sdb1): bad block',
+            'XFS (sda1): Metadata corruption detected',
+        )
+        assert orch.get_fixable_categories(diagnosis) == ['filesystem']
 
     # --- custom fix script pre-mount markers validated pre-flight ---
 
@@ -1361,13 +1397,25 @@ class TestSupportedCategories:
     def test_fstab_is_supported(self):
         assert 'fstab' in SUPPORTED_FIX_CATEGORIES
 
+    def test_grub_is_supported(self):
+        """grub ships fixes/grub_fix.sh (auto_repair: true)."""
+        assert 'grub' in SUPPORTED_FIX_CATEGORIES
+
     def test_kernel_is_not_supported(self):
         """kernel is detect-only — no auto-repair fix script exists."""
         assert 'kernel' not in SUPPORTED_FIX_CATEGORIES
 
+    def test_initramfs_is_supported(self):
+        """initramfs ships fixes/initramfs_fix.sh (auto_repair: true)."""
+        assert 'initramfs' in SUPPORTED_FIX_CATEGORIES
+
+    def test_filesystem_is_supported(self):
+        """filesystem ships fixes/filesystem_fix.sh (auto_repair: true)."""
+        assert 'filesystem' in SUPPORTED_FIX_CATEGORIES
+
     def test_supported_set_is_exactly_the_shipped_scripts(self):
         """The full auto-repairable set — update when a new fix script lands."""
-        assert SUPPORTED_FIX_CATEGORIES == {'fstab'}
+        assert SUPPORTED_FIX_CATEGORIES == {'fstab', 'filesystem', 'initramfs', 'grub'}
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""
