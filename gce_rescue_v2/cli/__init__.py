@@ -293,7 +293,7 @@ NOTES
     # REPAIR COMMAND
     repair_parser = subparsers.add_parser(
         'repair',
-        help='Diagnose and auto-fix boot issues (Linux only)',
+        help='Diagnose and auto-fix boot issues',
         description='Automatically diagnose and repair boot issues. Combines'
                     ' diagnose, rescue (with embedded fix), and restore into a'
                     ' single command.',
@@ -310,10 +310,13 @@ EXAMPLES
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
 SUPPORTED FIXES
-    - fstab: Comments out invalid UUID, device, or label entries
+    - fstab: Comments out invalid UUID, device, or label entries (Linux)
+    - Custom fix scripts via --fix-script (Linux and Windows), e.g. the
+      bundled Windows BCD repair script (startup_scripts/fixes/windows_bcd_fix.ps1)
 
 NOTES
-    This command is Linux-only. For Windows VMs, use 'rescue' for manual fix.
+    Diagnosis-driven repair is Linux-only. Windows VMs are supported with
+    --fix-script, which skips diagnosis and runs the supplied script.
     The VM will be stopped during repair and restarted when complete.
         """
     )
