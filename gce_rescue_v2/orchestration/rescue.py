@@ -128,6 +128,7 @@ class RescueOrchestrator:
 
         # Verification status (set after startup verification)
         self.verification_succeeded = None
+        self.verification_result = None  # Full OperationResult (timeout details, etc.)
 
         # Snapshot name (set if snapshot created successfully)
         self.snapshot_name = None
@@ -951,6 +952,7 @@ class RescueOrchestrator:
                     tracking_label=self._ua('vm-verify-startup')
                 )
                 self.verification_succeeded = result.success
+                self.verification_result = result
                 # Don't fail on verification timeout - continue
                 # Update checkpoint (final step)
                 self.checkpoint_manager.update_checkpoint(

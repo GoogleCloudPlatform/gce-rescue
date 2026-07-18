@@ -122,6 +122,48 @@ class TestVerifyStartupOperation:
         assert result.success is False
         assert "Timeout" in result.message
 
+    def test_timeout_returns_structured_details(self):
+        """On timeout, result carries structured timeout details (issue #132)."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'booting...\nwaiting for disk\n'
+        }
+        with patch('time.sleep'):
+            with patch('time.time', side_effect=[0, 5, 121]):
+                result = self.operation.execute(vm_name='test-vm', timeout=120)
+        assert result.success is False
+        assert result.details is not None
+        assert result.details['timed_out'] is True
+        assert result.details['timeout_seconds'] == 120
+
+    def test_timeout_captures_serial_tail(self):
+        """The last serial output seen is captured in the timeout details."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'booting...\nwaiting for affected disk\n'
+        }
+        with patch('time.sleep'):
+            with patch('time.time', side_effect=[0, 5, 121]):
+                result = self.operation.execute(vm_name='test-vm', timeout=120)
+        assert 'waiting for affected disk' in result.details['serial_tail']
+
+    def test_timeout_empty_serial_has_empty_tail(self):
+        """Empty serial output yields an empty (not missing) tail."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': ''
+        }
+        with patch('time.sleep'):
+            with patch('time.time', side_effect=[0, 5, 121]):
+                result = self.operation.execute(vm_name='test-vm', timeout=120)
+        assert result.details['serial_tail'] == ''
+
+    def test_success_has_no_timeout_details(self):
+        """On success, details stays None (only set on timeout)."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'GCE-RESCUE-COMPLETE'
+        }
+        result = self.operation.execute(vm_name='test-vm', timeout=10)
+        assert result.success is True
+        assert result.details is None
+
     def test_tracking_label_used(self):
         """Test that tracking label creates custom User-Agent."""
         # Arrange
