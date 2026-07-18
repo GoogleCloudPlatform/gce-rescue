@@ -1811,6 +1811,39 @@ class TestRepairMountFailure:
         assert result['fixed_count'] == 0
         assert result['snapshot_name'] == 'pre-rescue-boot-123'
 
+    def test_mount_failed_timeout_message_includes_duration(self):
+        """When verification timed out, the error must say so with the
+        duration (mirrors the rescue command's #133 messaging)."""
+        compute = _make_compute()
+        logger = MagicMock()
+        orch = RepairOrchestrator(compute, 'proj', 'zone-a', 'vm-1', logger=logger)
+        orch._create_tracked_client = lambda label: compute
+
+        diagnosis = {
+            'boot_errors': [{'category': 'fstab', 'severity': 'critical'}]
+        }
+
+        mock_rescue = MagicMock()
+        mock_rescue.execute.return_value = True
+        mock_rescue.snapshot_name = None
+        mock_rescue.verification_succeeded = False
+        mock_rescue.verification_result = OperationResult(
+            operation_name='Verify startup script',
+            success=False,
+            message='timed out',
+            rollback_data={},
+            details={'timed_out': True, 'timeout_seconds': 900},
+        )
+
+        with patch.object(orch, '_init_progress'):
+            with patch.object(orch, '_update_progress'):
+                with patch.object(orch, '_finish_progress'):
+                    with patch('gce_rescue_v2.orchestration.repair.RescueOrchestrator', return_value=mock_rescue):
+                        orch.execute(diagnosis)
+
+        logged = ' '.join(str(c) for c in logger.error.call_args_list)
+        assert 'timed out after 900s' in logged
+
     def test_mount_failed_does_not_restore(self):
         """Mount failure should NOT trigger restore (VM stays in rescue mode)."""
         compute = _make_compute()

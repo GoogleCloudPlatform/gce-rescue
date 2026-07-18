@@ -522,9 +522,21 @@ class RepairOrchestrator:
             # If mount failed (no completion marker found by verify), don't restore
             if not rescue.verification_succeeded:
                 self._finish_progress(False)
-                self._log_error(
-                    "Startup script did not complete. The disk may not have mounted."
-                )
+                # Be explicit when verification actually timed out (vs. an
+                # unknown state), including how long we waited — mirrors the
+                # rescue command's messaging (#133). Category floors can raise
+                # the timeout, so the number tells the user what was tried.
+                vr = getattr(rescue, 'verification_result', None)
+                if vr and vr.details and vr.details.get('timed_out'):
+                    secs = vr.details.get('timeout_seconds')
+                    self._log_error(
+                        f"Startup verification timed out after {secs}s. "
+                        "The disk may not have mounted."
+                    )
+                else:
+                    self._log_error(
+                        "Startup script did not complete. The disk may not have mounted."
+                    )
                 # Fix scripts emit LINE/RESULT markers before the completion
                 # marker, so anything already parsed explains WHY the mount
                 # failed (e.g. an unrepairable filesystem).
