@@ -1,5 +1,6 @@
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -721,3 +722,54 @@ class TestFixScriptComposition:
         script = orch._generate_startup_script()
         assert 'DISK_NAME_PLACEHOLDER' not in script
         assert 'PASSWORD_PLACEHOLDER' not in script
+
+
+class TestFixScriptPremountValidation:
+    """validate() rejects malformed --fix-script pre-mount markers before
+    any VM mutation (the repair-side twin lives in test_repair.py)."""
+
+    def _make_orchestrator(self, fix_script, compute):
+        config = RescueConfig()
+        config.fix_script = fix_script
+        return RescueOrchestrator(
+            compute=compute, project='p', zone='z', vm_name='vm-1',
+            config=config, suppress_progress=True,
+        )
+
+    def test_validate_rejects_malformed_premount_markers(self):
+        """A BEGIN without END must fail validate(), not rescue step 6."""
+        compute = MagicMock()
+        orch = self._make_orchestrator(
+            '#!/bin/bash\n'
+            '# === GCE-REPAIR-PREMOUNT-BEGIN ===\n'
+            'echo unterminated\n',
+            compute,
+        )
+        assert orch.validate() is False
+        # The check fires before any validator runs: no API call of any kind,
+        # so the VM is untouched.
+        assert compute.mock_calls == []
+
+    def test_validate_accepts_well_formed_premount_markers(self, monkeypatch):
+        """A balanced BEGIN/END block passes the check and validation
+        proceeds to the regular validator run."""
+        compute = MagicMock()
+        orch = self._make_orchestrator(
+            '#!/bin/bash\n'
+            '# === GCE-REPAIR-PREMOUNT-BEGIN ===\n'
+            'fsck -y "$dev"\n'
+            '# === GCE-REPAIR-PREMOUNT-END ===\n'
+            'echo post-mount fix\n',
+            compute,
+        )
+        results = MagicMock()
+        results.all_passed.return_value = True
+        results.get_result.return_value = None
+        runner = MagicMock()
+        runner.run_all.return_value = results
+        monkeypatch.setattr(
+            'gce_rescue_v2.orchestration.rescue.ValidationRunner',
+            lambda: runner,
+        )
+        assert orch.validate() is True
+        runner.run_all.assert_called_once()

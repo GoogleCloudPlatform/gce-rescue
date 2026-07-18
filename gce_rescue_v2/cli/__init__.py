@@ -310,7 +310,10 @@ EXAMPLES
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
 SUPPORTED FIXES
+    - filesystem: Repairs corrupted filesystems (fsck) before mounting
     - fstab: Comments out invalid UUID, device, or label entries
+    - initramfs: Rebuilds the initramfs for the newest installed kernel
+    - grub: Reinstalls GRUB and regenerates its configuration
 
 NOTES
     This command is Linux-only. For Windows VMs, use 'rescue' for manual fix.

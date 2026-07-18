@@ -7,7 +7,7 @@ import uuid
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TextIO
 from ..core.config import build_user_agent
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
 from ..utils.logger import setup_logging
@@ -17,6 +17,15 @@ from .preflight import (
     get_gcloud_config, _create_tracked_client, check_local_ssd_quiet_gate,
 )
 from .checkpoint_ui import _handle_checkpoint_rollback
+
+# Human-readable labels for fix categories, shared by the repair plan
+# display and the per-category result lines.
+FIX_LABELS = {
+    'fstab': 'Fix fstab',
+    'filesystem': 'Fix filesystem',
+    'initramfs': 'Rebuild initramfs',
+    'grub': 'Fix GRUB',
+}
 
 
 def _show_boot_verification(boot_verified: Optional[bool],
@@ -34,6 +43,25 @@ def _show_boot_verification(boot_verified: Optional[bool],
         print("Consider using rescue mode for manual investigation:")
         print(f"  $ gce-rescue rescue {vm_name} --zone={zone}")
     # If None, skip silently (couldn't verify)
+
+
+def _show_no_change_outcomes(result: Dict[str, Any],
+                             file: Optional[TextIO] = None) -> None:
+    """Print a [NO_CHANGE] line for each category whose fix found nothing.
+
+    Without these, a category whose fix script ran and reported NO_ISSUES
+    would simply vanish from the results. Categories with success/failed
+    outcomes keep their existing presentation (fix lines / error text), so
+    only 'no_issues' outcomes are rendered here. The key is absent when the
+    orchestrator could not attribute markers to categories.
+    """
+    for outcome in result.get('category_outcomes', []):
+        if outcome.get('kind') != 'no_issues':
+            continue
+        category = outcome.get('category', '')
+        label = FIX_LABELS.get(category, f'Fix {category}')
+        print(f"  [NO_CHANGE] {label}: no issues found - nothing to fix",
+              file=file or sys.stdout)
 
 
 def _show_repair_results(result: Dict[str, Any], vm_name: str,
@@ -57,6 +85,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         for line in fix_lines:
             colored_line = line.replace('[FIXED]', green('[FIXED]'), 1)
             print(f"  {colored_line}")
+        _show_no_change_outcomes(result)
         issue_word = "issue" if fixed_count == 1 else "issues"
         print(f"  {fixed_count} {issue_word} fixed.")
         if any('fstab' in line.lower() for line in fix_lines):
@@ -74,7 +103,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
     elif status == 'no_issues':
         print("")
         print("Repair results:")
-        print("  No issues needed fixing (fstab entries were already valid).")
+        print("  No issues needed fixing (boot configuration was already valid).")
         if snapshot_name:
             print(f"  Backup snapshot: {snapshot_name}")
         print("")
@@ -99,6 +128,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
             if any('fstab' in line.lower() for line in fix_lines):
                 print(f"  Original fstab backed up to: /etc/fstab.gce-repair-backup",
                       file=sys.stderr)
+        _show_no_change_outcomes(result, file=sys.stderr)
         print("", file=sys.stderr)
         print(f"Instance [{vm_name}] has been restored and is running.", file=sys.stderr)
         if snapshot_name:
@@ -122,6 +152,39 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if project:
             ssh_cmd += f" --project={project}"
         print(ssh_cmd, file=sys.stderr)
+        restore_cmd = f"  $ gce-rescue restore {vm_name}"
+        if zone:
+            restore_cmd += f" --zone={zone}"
+        if project:
+            restore_cmd += f" --project={project}"
+        print(restore_cmd, file=sys.stderr)
+        return 1
+
+    elif status == 'fix_in_progress':
+        # resume() refused to restore: the previous session's fix scripts
+        # could not be confirmed complete, and restoring stops the VM -
+        # which would interrupt a still-running fsck/rebuild mid-write.
+        print("", file=sys.stderr)
+        print(f"{error_prefix()} {error}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("The VM was left in rescue mode; nothing was restored.",
+              file=sys.stderr)
+        print("Check the serial console for fix progress:", file=sys.stderr)
+        serial_cmd = f"  $ gcloud compute instances get-serial-port-output {vm_name}"
+        if zone:
+            serial_cmd += f" --zone={zone}"
+        if project:
+            serial_cmd += f" --project={project}"
+        print(serial_cmd, file=sys.stderr)
+        print("Re-run repair once the fix has finished:", file=sys.stderr)
+        repair_cmd = f"  $ gce-rescue repair {vm_name}"
+        if zone:
+            repair_cmd += f" --zone={zone}"
+        if project:
+            repair_cmd += f" --project={project}"
+        print(repair_cmd, file=sys.stderr)
+        print("To restore anyway (may interrupt a running fix):",
+              file=sys.stderr)
         restore_cmd = f"  $ gce-rescue restore {vm_name}"
         if zone:
             restore_cmd += f" --zone={zone}"
@@ -158,7 +221,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
 
     elif status == 'unknown':
         # All phases completed but repair markers not found in serial output.
-        # The fix likely applied but we couldn't parse confirmation.
+        # The fix may have applied but there is no confirmation.
         print("")
         print(f"{warning_prefix()} Repair completed but could not confirm fix results"
               f" from serial console.")
@@ -170,6 +233,17 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if snapshot_name:
             print(f"Backup snapshot: {snapshot_name}")
         _show_boot_verification(boot_verified, boot_errors_after, vm_name, zone)
+        # Unconfirmed fix + post-restore boot STILL failing = the repair did
+        # not work; automation must see a non-zero exit (a VM was observed
+        # restored still kernel-panicking with exit 0 here). boot_verified
+        # None (inconclusive, e.g. serial disabled) keeps exit 0 with the
+        # warning above.
+        if boot_verified is False:
+            print(
+                f"\n{error_prefix()} Boot verification still detects errors - "
+                f"the repair likely did not apply.", file=sys.stderr
+            )
+            return 1
         return 0
 
     else:
@@ -617,6 +691,12 @@ def handle_repair(args: argparse.Namespace) -> int:
         block.append(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
         step += 1
         # Build fix descriptions with extracted identifiers
+        fix_descriptions = {
+            'filesystem': 'Repair filesystem errors (fsck before mount)',
+            'fstab': 'Fix /etc/fstab (comment out invalid entries)',
+            'initramfs': 'Rebuild the initramfs for the installed kernel',
+            'grub': 'Reinstall GRUB and regenerate its configuration',
+        }
         if fstab_targets:
             from ..utils.report_formatter import _extract_identifier
             identifiers = []
@@ -628,17 +708,9 @@ def handle_repair(args: argparse.Namespace) -> int:
                     identifiers.append(ident)
             if identifiers:
                 target_str = ', '.join(bold(i) for i in identifiers)
-                fix_descriptions = {
-                    'fstab': f'Fix /etc/fstab (comment out {target_str})',
-                }
-            else:
-                fix_descriptions = {
-                    'fstab': 'Fix /etc/fstab (comment out invalid entries)',
-                }
-        else:
-            fix_descriptions = {
-                'fstab': 'Fix /etc/fstab (comment out invalid entries)',
-            }
+                fix_descriptions['fstab'] = (
+                    f'Fix /etc/fstab (comment out {target_str})'
+                )
         for cat in fixable:
             desc = fix_descriptions.get(cat, f'Fix {cat}')
             block.append(f"    {step}. {desc}")
@@ -682,9 +754,8 @@ def handle_repair(args: argparse.Namespace) -> int:
     if snapshot_enabled:
         plan_parts.append("Snapshot")
     plan_parts.append("Rescue")
-    fix_labels = {'fstab': 'Fix fstab'}
     for cat in fixable:
-        plan_parts.append(fix_labels.get(cat, f'Fix {cat}'))
+        plan_parts.append(FIX_LABELS.get(cat, f'Fix {cat}'))
     plan_parts.append("Restore")
     print(f"  Plan:   {' -> '.join(plan_parts)}")
     print("")

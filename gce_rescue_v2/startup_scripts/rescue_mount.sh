@@ -17,10 +17,14 @@ log() {
 
 # Signal rescue completion. Emits the serial marker (best-effort; serial can
 # drop the final output burst) AND sets a guest attribute the orchestrator
-# polls as the reliable, deterministic completion signal.
+# polls as the reliable, deterministic completion signal. The attribute value
+# is a per-session token (substituted by the orchestrator): guest attributes
+# persist across stop/start/restore and are never deletable from outside the
+# VM, so a bare COMPLETE from a PREVIOUS rescue of the same VM would make the
+# next session's verification succeed instantly - before its fixes ran.
 signal_complete() {
     echo "GCE-RESCUE-COMPLETE" >&2
-    curl -s -m 10 -X PUT --data "COMPLETE" -H "Metadata-Flavor: Google" \
+    curl -s -m 10 -X PUT --data "SESSION_ID_PLACEHOLDER" -H "Metadata-Flavor: Google" \
         "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/gce-rescue/status" \
         >/dev/null 2>&1 || true
 }

@@ -4,8 +4,12 @@ GCE Rescue - Repair Orchestrator
 Automates the full repair flow: diagnose -> rescue (with embedded fix) -> restore.
 Fix scripts are embedded directly in the startup script - no SSH, no external tools.
 
-Supported fix categories:
+Supported fix categories (filesystem/initramfs/grub scripts land with this
+change):
     - fstab: Comments out invalid UUID/device/label entries
+    - filesystem: Repairs the filesystem (fsck) before the mount attempt
+    - initramfs: Rebuilds the initramfs inside the target chroot
+    - grub: Reinstalls/regenerates the GRUB configuration
 
 Usage:
     orchestrator = RepairOrchestrator(compute, project, zone, vm_name, config, logger)
@@ -43,6 +47,54 @@ from .restore import RestoreOrchestrator
 # Marker prefixes emitted by fix scripts to serial console
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
 REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
+
+# Fix scripts must run in dependency order, regardless of the order categories
+# appear in the diagnosis:
+#   1. filesystem — fsck first, so later fixes edit files on a clean
+#      (mountable) filesystem; its pre-mount block must also run before the
+#      base script's mount attempt.
+#   2. fstab — mount-config edits on the now-clean filesystem.
+#   3. initramfs — rebuild the initrd after config changes.
+#   4. grub — last, because GRUB config regeneration must see the rebuilt
+#      initrd to reference the correct images.
+# Categories not listed here keep their diagnosis order, after the known ones.
+FIX_EXECUTION_ORDER = ['filesystem', 'fstab', 'initramfs', 'grub']
+
+# Minimum verification timeouts (seconds) per fix category. The OS default
+# (300s Linux) only covers the disk mount; a forced fsck, a tool install, or
+# an initramfs rebuild inside the startup script routinely runs longer, and a
+# verification timeout mid-fix misreports the repair as mount_failed while
+# the fix is still writing to the disk. An explicit --verification-timeout
+# always wins over these floors.
+REPAIR_VERIFICATION_FLOOR = {
+    'filesystem': 1800,  # e2fsck -f / xfs_repair scale with disk size
+    'initramfs': 900,    # rebuild + possible tool install
+    'grub': 900,         # grub-install + config regeneration in chroot
+}
+
+# Line the base mount script logs at startup-script start. Serial output can
+# span several boots of the same VM within one rescue session; only markers
+# after the LAST occurrence of this banner belong to the current repair run
+# (earlier ones would double-count a previous attempt's fixes).
+BOOT_BANNER = '=== GCE Rescue Auto-Mount Started ==='
+
+# Per-session completion token the rescue orchestrator substitutes into the
+# startup script (SESSION_ID_PLACEHOLDER). After an interrupted repair the
+# token is still embedded in the VM's startup-script metadata, so resume()
+# can recover it and check the guest attribute the fix session would have
+# set on completion.
+_SESSION_TOKEN_RE = re.compile(r'COMPLETE-[0-9a-f]{12}')
+
+# Device-name heuristics for filesystem findings: on the ORIGINAL (booting)
+# VM the boot disk is the first device (sda / nvme0n1); LVM roots surface as
+# dm-* / mapper names. Anything clearly second-disk (sdb+, nvme1+, vdb+) is
+# not repairable by rescuing the boot disk.
+_BOOT_DEVICE_RE = re.compile(
+    r'\b(sda\d*|nvme0n1(?:p\d+)?|dm-\d+|mapper/[\w-]+)\b', re.IGNORECASE
+)
+_NONBOOT_DEVICE_RE = re.compile(
+    r'\b(sd[b-z]\d*|nvme[1-9]\d*n\d+(?:p\d+)?|vd[b-z]\d*)\b', re.IGNORECASE
+)
 
 # Maps raw rescue/restore step labels to user-friendly display names
 RESCUE_SUBSTEP_LABELS = {
@@ -179,6 +231,17 @@ class RepairOrchestrator:
             )
             return False
 
+        # Validate a custom fix script's pre-mount markers BEFORE any VM
+        # mutation (composition otherwise fails at rescue step 6, after the
+        # VM was stopped and disks swapped).
+        if self.config.fix_script:
+            from .compose import extract_premount_blocks
+            try:
+                extract_premount_blocks(strip_shebang(self.config.fix_script))
+            except ValueError as e:
+                self._log_error(f"Invalid --fix-script: {e}")
+                return False
+
         # Verify fix scripts exist for all supported categories
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
         for cat in SUPPORTED_FIX_CATEGORIES:
@@ -209,8 +272,38 @@ class RepairOrchestrator:
 
         return result.rollback_data
 
+    def _filesystem_errors_on_boot_disk(self, diagnosis: Dict[str, Any]) -> bool:
+        """Whether the filesystem findings could concern the boot disk.
+
+        filesystem patterns survive boot success, so a healthy-booting VM
+        with a corrupt SECONDARY disk still diagnoses 'filesystem' - but a
+        rescue cycle only ever fscks the boot disk, so repairing it would
+        stop the VM for nothing and report NO_ISSUES. Returns False only
+        when EVERY filesystem finding names a clearly non-boot device
+        (sdb+/nvme1+/vdb+); ambiguous findings keep the category fixable.
+        """
+        saw_any = False
+        for err in diagnosis.get('boot_errors', []):
+            if err.get('category') != 'filesystem':
+                continue
+            saw_any = True
+            text = ' '.join(
+                str(err.get(key, ''))
+                for key in ('detected_pattern', 'description', 'evidence')
+            )
+            if _BOOT_DEVICE_RE.search(text) or not _NONBOOT_DEVICE_RE.search(text):
+                return True
+        return not saw_any
+
     def get_fixable_categories(self, diagnosis: Dict[str, Any]) -> List[str]:
-        """Return list of categories from diagnosis that have fix scripts."""
+        """Return list of categories from diagnosis that have fix scripts.
+
+        The list is sorted into FIX_EXECUTION_ORDER (filesystem, fstab,
+        initramfs, grub) so fix scripts always compose in dependency order;
+        unknown categories keep their diagnosis order after the known ones.
+        filesystem is excluded when its findings only name non-boot devices
+        (see _filesystem_errors_on_boot_disk).
+        """
         categories = []
         seen = set()
         for err in diagnosis.get('boot_errors', []):
@@ -218,10 +311,28 @@ class RepairOrchestrator:
             if cat in SUPPORTED_FIX_CATEGORIES and cat not in seen:
                 seen.add(cat)
                 categories.append(cat)
+        if ('filesystem' in categories
+                and not self._filesystem_errors_on_boot_disk(diagnosis)):
+            categories.remove('filesystem')
+            self._log_debug(
+                "filesystem findings reference only non-boot devices; "
+                "excluded from rescue-based repair"
+            )
+        # Stable sort: known categories in execution order, unknowns after
+        # them in their original (diagnosis) order.
+        categories.sort(
+            key=lambda c: FIX_EXECUTION_ORDER.index(c)
+            if c in FIX_EXECUTION_ORDER else len(FIX_EXECUTION_ORDER)
+        )
         return categories
 
     def get_unfixable_categories(self, diagnosis: Dict[str, Any]) -> List[str]:
-        """Return list of categories from diagnosis that lack fix scripts."""
+        """Return list of categories from diagnosis that lack fix scripts.
+
+        Includes filesystem when its findings only name non-boot devices:
+        the category has a fix script, but rescuing the boot disk cannot
+        repair a secondary disk, so the user gets manual guidance instead.
+        """
         categories = []
         seen = set()
         for err in diagnosis.get('boot_errors', []):
@@ -229,6 +340,11 @@ class RepairOrchestrator:
             if cat not in SUPPORTED_FIX_CATEGORIES and cat not in seen:
                 seen.add(cat)
                 categories.append(cat)
+        if ('filesystem' not in categories
+                and any(e.get('category') == 'filesystem'
+                        for e in diagnosis.get('boot_errors', []))
+                and not self._filesystem_errors_on_boot_disk(diagnosis)):
+            categories.append('filesystem')
         return categories
 
     def execute(self, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
@@ -246,11 +362,25 @@ class RepairOrchestrator:
             return {'status': 'no_fix', 'fixed_count': 0, 'fix_lines': [],
                     'error': None, 'snapshot_name': None, 'duration_seconds': 0}
 
+        # Destructive-fix guard: filesystem repair runs fsck/xfs_repair on
+        # the user's original disk - the pre-rescue snapshot is the ONLY
+        # rollback for whatever fsck rewrites, so it is non-negotiable here.
+        if 'filesystem' in fixable and not self.config.create_snapshot:
+            self._log_error(
+                "Filesystem repair runs a destructive fsck on the original "
+                "disk and requires the pre-rescue snapshot as its rollback. "
+                "Re-run without --no-snapshot."
+            )
+            return {'status': 'error', 'fixed_count': 0, 'fix_lines': [],
+                    'error': 'filesystem repair requires a snapshot '
+                             '(--no-snapshot was given)',
+                    'snapshot_name': None, 'duration_seconds': 0}
+
         # Generate repair startup script
         repair_script = self._generate_repair_script(diagnosis)
         self._log_debug(f"Generated repair script ({len(repair_script)} bytes)")
 
-        return self._run_repair_flow(repair_script)
+        return self._run_repair_flow(repair_script, fixable_categories=fixable)
 
     def execute_custom(self) -> Dict[str, Any]:
         """Execute repair with the custom fix script from config (--fix-script).
@@ -270,11 +400,15 @@ class RepairOrchestrator:
         return self._run_repair_flow(fix_script=self.config.fix_script)
 
     def _run_repair_flow(self, repair_script: Optional[str] = None,
-                         fix_script: Optional[str] = None) -> Dict[str, Any]:
+                         fix_script: Optional[str] = None,
+                         fixable_categories: Optional[List[str]] = None
+                         ) -> Dict[str, Any]:
         """Run the repair flow with the given fix payload.
 
         Shared by diagnosis-driven repair (execute), which passes a fully
-        composed startup script as repair_script, and custom fix scripts
+        composed startup script as repair_script plus its fixable_categories
+        (used to scale the verification timeout and to make the snapshot
+        mandatory for destructive categories), and custom fix scripts
         (execute_custom), which pass fix_script for per-OS composition inside
         the rescue orchestrator. Flow: rescue with the fix embedded -> parse
         repair results from serial console -> restore -> post-restore boot
@@ -301,6 +435,27 @@ class RepairOrchestrator:
             rescue_config.verification_timeout_override = (
                 self.config.verification_timeout_override
             )
+
+            categories = fixable_categories or []
+            # fsck rewrites the original disk in place; if the snapshot step
+            # fails there is no rollback, so its failure must abort the
+            # rescue instead of being logged and skipped.
+            if 'filesystem' in categories:
+                rescue_config.require_snapshot = True
+            # Raise the verification budget for long-running fix categories
+            # (fsck, initramfs rebuild) unless the user set an explicit
+            # timeout - see REPAIR_VERIFICATION_FLOOR.
+            if rescue_config.verification_timeout_override is None and categories:
+                floor = max(
+                    (REPAIR_VERIFICATION_FLOOR.get(c, 0) for c in categories),
+                    default=0,
+                )
+                if floor > rescue_config.effective_verification_timeout('linux'):
+                    rescue_config.verification_timeout_override = floor
+                    self._log_debug(
+                        f"Verification timeout raised to {floor}s for "
+                        f"long-running fix categories {categories}"
+                    )
 
             rescue = RescueOrchestrator(
                 compute=self.compute, project=self.project, zone=self.zone,
@@ -340,11 +495,49 @@ class RepairOrchestrator:
                 self._current_substep = 'Verifying fix'
             self._log_debug(f"Repair results: {repair_results}")
 
+            # Zip per-marker outcomes back onto the requested categories.
+            # Scripts compose in exactly the get_fixable_categories() order
+            # and each emits ONE result marker, so serial marker order ==
+            # category order. A length mismatch means serial dropped a
+            # marker - attribution would be a guess, so the key is omitted
+            # entirely (correctness over completeness). Custom --fix-script
+            # flows have no categories and never get the key.
+            if fixable_categories:
+                marker_results = repair_results.get('marker_results', [])
+                if len(marker_results) == len(fixable_categories):
+                    repair_results['category_outcomes'] = [
+                        {'category': category, 'kind': marker['kind'],
+                         'count': marker['count'], 'reason': marker['reason']}
+                        for category, marker
+                        in zip(fixable_categories, marker_results)
+                    ]
+                else:
+                    self._log_debug(
+                        f"Marker/category count mismatch "
+                        f"({len(marker_results)} markers for "
+                        f"{len(fixable_categories)} categories); omitting "
+                        f"per-category outcomes"
+                    )
+
             # If mount failed (no completion marker found by verify), don't restore
             if not rescue.verification_succeeded:
                 self._finish_progress(False)
                 self._log_error(
                     "Startup script did not complete. The disk may not have mounted."
+                )
+                # Fix scripts emit LINE/RESULT markers before the completion
+                # marker, so anything already parsed explains WHY the mount
+                # failed (e.g. an unrepairable filesystem).
+                if repair_results.get('error'):
+                    self._log_error(
+                        f"Reported by the fix script: {repair_results['error']}"
+                    )
+                for fix_line in repair_results.get('fix_lines', []):
+                    self._log_error(f"  {fix_line}")
+                self._log_error(
+                    "A long-running fix (fsck, initramfs rebuild) may still "
+                    "be executing - check the serial console before "
+                    "restoring, or the restore can interrupt it mid-write."
                 )
                 self._log_error(
                     "VM is in rescue mode for manual investigation."
@@ -469,11 +662,91 @@ class RepairOrchestrator:
             self._log_debug(f"Could not find rescue snapshot: {e}")
             return None
 
+    def _rescue_fixes_completed(self) -> bool:
+        """Whether the interrupted session's fix scripts COMPLETED.
+
+        resume() restores immediately, and restore stops the VM - if a fix
+        is still running (fsck mid-repair, initramfs mid-rebuild) that stop
+        interrupts it mid-write on the very disk being repaired. Completion
+        is confirmed by ANY of:
+          1. Session token: the rescue startup script (still in the VM's
+             metadata after an interruption) embeds a per-session
+             COMPLETE-<12hex> token; the script sets the gce-rescue/status
+             guest attribute to that exact token as its final step. A match
+             is the deterministic signal rescue verification itself uses.
+          2. Serial fallback: the current boot's serial output contains the
+             completion marker (covers older sessions and guest attributes
+             being unavailable).
+        Returns False when neither confirms - the caller must NOT restore.
+        """
+        try:
+            compute = self._create_tracked_client(self._ua('resume-check'))
+        except Exception as e:
+            self._log_debug(f"Could not create tracked client: {e}")
+            compute = self.compute
+
+        # Signal 1: session token from metadata matches the guest attribute
+        token = None
+        try:
+            vm_info = compute.instances().get(
+                project=self.project, zone=self.zone, instance=self.vm_name
+            ).execute()
+            for item in vm_info.get('metadata', {}).get('items', []):
+                if item.get('key') in ('startup-script',
+                                       'windows-startup-script-ps1'):
+                    match = _SESSION_TOKEN_RE.search(item.get('value') or '')
+                    if match:
+                        token = match.group(0)
+                        break
+        except Exception as e:
+            self._log_debug(f"Could not read startup-script metadata: {e}")
+
+        if token:
+            try:
+                resp = compute.instances().getGuestAttributes(
+                    project=self.project, zone=self.zone,
+                    instance=self.vm_name, queryPath='gce-rescue/status'
+                ).execute()
+                values = [str(resp.get('variableValue', ''))]
+                values += [
+                    str(item.get('value', ''))
+                    for item in resp.get('queryValue', {}).get('items', [])
+                ]
+                if any(v.strip().upper() == token.upper() for v in values):
+                    self._log_debug(
+                        "Fix completion confirmed via session guest attribute"
+                    )
+                    return True
+            except Exception as e:
+                self._log_debug(
+                    f"Could not read completion guest attribute: {e}"
+                )
+
+        # Signal 2 (fallback): completion marker on the current boot's serial
+        try:
+            serial_response = compute.instances().getSerialPortOutput(
+                project=self.project, zone=self.zone, instance=self.vm_name
+            ).execute()
+            windowed = self._window_to_last_boot(
+                serial_response.get('contents', '')
+            )
+            if RESCUE_COMPLETE_MARKER in windowed:
+                self._log_debug("Fix completion confirmed via serial marker")
+                return True
+        except Exception as e:
+            self._log_debug(f"Could not check serial for completion: {e}")
+
+        return False
+
     def resume(self) -> Dict[str, Any]:
         """Resume an interrupted repair: parse results from serial console + restore.
 
         Called when the VM is already in rescue mode from a previous repair attempt.
         Skips the rescue phase entirely.
+
+        Refuses to restore ('fix_in_progress') when the previous session's
+        fix scripts cannot be confirmed complete - restoring stops the VM,
+        which would interrupt a still-running fsck/rebuild mid-write.
 
         Returns:
             Dict with keys: status, fixed_count, fix_lines, error,
@@ -483,6 +756,45 @@ class RepairOrchestrator:
 
         # Look up snapshot from the original rescue phase
         snapshot_name = self._find_rescue_snapshot()
+
+        # Safety guard: only restore once the fix session is confirmed done.
+        if not self._rescue_fixes_completed():
+            self._log_error(
+                "Cannot confirm that the previous repair's fix scripts have "
+                "finished - the fix may still be running."
+            )
+            self._log_error(
+                "Restoring now would stop the VM and could interrupt a "
+                "long-running fix (fsck, initramfs rebuild) mid-write."
+            )
+            self._log_error("")
+            self._log_error("Check the serial console for progress:")
+            self._log_error(
+                f"  $ gcloud compute instances get-serial-port-output "
+                f"{self.vm_name} --zone={self.zone} --project={self.project}"
+            )
+            self._log_error("")
+            self._log_error("Re-run repair once the fix has finished:")
+            self._log_error(
+                f"  $ gce-rescue repair {self.vm_name} "
+                f"--zone={self.zone} --project={self.project}"
+            )
+            self._log_error("")
+            self._log_error(
+                "To restore anyway (deliberate manual override):"
+            )
+            self._log_error(
+                f"  $ gce-rescue restore {self.vm_name} "
+                f"--zone={self.zone} --project={self.project}"
+            )
+            return {
+                'status': 'fix_in_progress', 'fixed_count': 0,
+                'fix_lines': [],
+                'error': 'Fix completion could not be confirmed; '
+                         'the fix may still be running',
+                'snapshot_name': snapshot_name,
+                'duration_seconds': 0
+            }
 
         self._init_progress()
         start_time = time.time()
@@ -636,7 +948,7 @@ class RepairOrchestrator:
         script_dir = Path(__file__).parent.parent / 'startup_scripts'
         base_script_path = script_dir / 'rescue_mount.sh'
 
-        with open(base_script_path, 'r') as f:
+        with open(base_script_path, 'r', encoding='utf-8') as f:
             base_script = f.read()
 
         # Get original disk name for placeholder replacement
@@ -702,7 +1014,7 @@ class RepairOrchestrator:
                 f"Cannot proceed with repair — the fix would not be applied."
             )
 
-        with open(script_path, 'r') as f:
+        with open(script_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
         if not content.strip():
@@ -723,8 +1035,26 @@ class RepairOrchestrator:
         Looks for GCE-REPAIR-LINE: and GCE-REPAIR-RESULT: markers.
         Checks both default port and port 2 as fallback.
 
+        Each fix script emits exactly one GCE-REPAIR-RESULT marker, so a
+        multi-category repair produces several. They are aggregated into the
+        single status contract the CLI consumes (cli/repair.py):
+          - fixed_count is the SUM of all SUCCESS counts.
+          - 'failed' if ANY script reported FAILED; error joins all failure
+            reasons with '; '. Partial success is represented within this
+            status: fixed_count and fix_lines still carry the fixes that DID
+            apply, which the CLI's 'failed' branch already prints.
+          - else 'success' if any script reported SUCCESS.
+          - else 'no_issues' if any script reported NO_ISSUES.
+          - else 'unknown' (no markers found).
+
+        Alongside the aggregate, marker_results preserves the PER-SCRIPT
+        outcomes in serial order (one entry per GCE-REPAIR-RESULT marker):
+        {'kind': 'success'|'no_issues'|'failed', 'count': int,
+        'reason': Optional[str]}. Fix scripts compose in category order, so
+        the caller can zip this back onto the categories it requested.
+
         Returns:
-            Dict with: status, fixed_count, fix_lines, error
+            Dict with: status, fixed_count, fix_lines, error, marker_results
         """
         serial_output = ''
         try:
@@ -734,7 +1064,9 @@ class RepairOrchestrator:
                 project=self.project, zone=self.zone,
                 instance=self.vm_name
             ).execute()
-            serial_output = serial_response.get('contents', '')
+            serial_output = self._window_to_last_boot(
+                serial_response.get('contents', '')
+            )
 
             # If no repair markers found, try port 2 as fallback
             if REPAIR_RESULT_MARKER not in serial_output:
@@ -743,48 +1075,80 @@ class RepairOrchestrator:
                     project=self.project, zone=self.zone,
                     instance=self.vm_name, port=2
                 ).execute()
-                port2_output = serial_response.get('contents', '')
+                port2_output = self._window_to_last_boot(
+                    serial_response.get('contents', '')
+                )
                 if REPAIR_RESULT_MARKER in port2_output:
                     serial_output = port2_output
         except Exception as e:
             self._log_debug(f"Could not fetch serial console: {e}")
             return {
                 'status': 'unknown', 'fixed_count': 0,
-                'fix_lines': [], 'error': f'Could not read serial console: {e}'
+                'fix_lines': [], 'error': f'Could not read serial console: {e}',
+                'marker_results': []
             }
 
-        # Strip control characters that may interfere with marker detection
-        serial_output = serial_output.replace('\r', '')
-
-        # Extract repair lines
+        # Single pass: collect fix lines and aggregate result markers. The
+        # per-segment counter tracks [FIXED] lines since the previous result
+        # marker, so a SUCCESS marker with an unparseable count falls back to
+        # the count of ITS OWN script's fixes (not every script's lines).
         fix_lines = []
+        saw_success = False
+        saw_no_issues = False
+        fixed_count = 0
+        segment_fixed_lines = 0
+        failures: List[str] = []
+        marker_results: List[Dict[str, Any]] = []
+
         for line in serial_output.split('\n'):
             if REPAIR_LINE_MARKER in line:
                 idx = line.index(REPAIR_LINE_MARKER)
-                fix_lines.append(line[idx + len(REPAIR_LINE_MARKER):].strip())
-
-        # Extract repair result
-        status = 'unknown'
-        fixed_count = 0
-        error = None
-
-        for line in serial_output.split('\n'):
-            if REPAIR_RESULT_MARKER in line:
+                content = line[idx + len(REPAIR_LINE_MARKER):].strip()
+                fix_lines.append(content)
+                if content.startswith('[FIXED]'):
+                    segment_fixed_lines += 1
+            elif REPAIR_RESULT_MARKER in line:
                 idx = line.index(REPAIR_RESULT_MARKER)
                 result_str = line[idx + len(REPAIR_RESULT_MARKER):].strip()
 
                 if result_str.startswith('SUCCESS:'):
-                    status = 'success'
+                    saw_success = True
                     try:
-                        fixed_count = int(result_str.split(':')[1])
+                        count = int(result_str.split(':')[1])
                     except (ValueError, IndexError):
-                        fixed_count = len(fix_lines)
+                        count = segment_fixed_lines
+                    fixed_count += count
+                    marker_results.append(
+                        {'kind': 'success', 'count': count, 'reason': None}
+                    )
                 elif result_str.startswith('NO_ISSUES:'):
-                    status = 'no_issues'
-                    fixed_count = 0
+                    saw_no_issues = True
+                    marker_results.append(
+                        {'kind': 'no_issues', 'count': 0, 'reason': None}
+                    )
                 elif result_str.startswith('FAILED:'):
-                    status = 'failed'
-                    error = result_str.split(':', 1)[1] if ':' in result_str else 'Unknown'
+                    reason = result_str.split(':', 1)[1] if ':' in result_str else 'Unknown'
+                    failures.append(reason)
+                    marker_results.append(
+                        {'kind': 'failed', 'count': 0, 'reason': reason}
+                    )
+                segment_fixed_lines = 0
+
+        error = None
+        if failures:
+            # Any failure makes the whole repair 'failed'; fixed_count and
+            # fix_lines still reflect the fixes that DID apply (partial
+            # success), which the CLI's failed branch prints.
+            status = 'failed'
+            error = '; '.join(failures)
+        elif saw_success:
+            status = 'success'
+        elif saw_no_issues:
+            status = 'no_issues'
+            fixed_count = 0
+        else:
+            status = 'unknown'
+            fixed_count = 0
 
         if status == 'unknown':
             self._log_debug(
@@ -794,8 +1158,25 @@ class RepairOrchestrator:
 
         return {
             'status': status, 'fixed_count': fixed_count,
-            'fix_lines': fix_lines, 'error': error
+            'fix_lines': fix_lines, 'error': error,
+            'marker_results': marker_results
         }
+
+    @staticmethod
+    def _window_to_last_boot(serial_output: str) -> str:
+        """Slice serial output to the current boot's startup-script run.
+
+        Serial output accumulates across VM restarts within a session, so
+        markers from a PREVIOUS repair attempt would be aggregated (and
+        double-counted) into this one. Only content after the last mount
+        banner belongs to the current run; output without the banner is
+        returned whole (pre-banner failures, custom scripts).
+        """
+        serial_output = serial_output.replace('\r', '')
+        idx = serial_output.rfind(BOOT_BANNER)
+        if idx != -1:
+            return serial_output[idx:]
+        return serial_output
 
     def _verify_boot_after_repair(self) -> Dict[str, Any]:
         """Check if the VM boots successfully after repair.
