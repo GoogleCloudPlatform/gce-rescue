@@ -532,3 +532,197 @@ class TestAutoRepairSuggestion:
         """Auto-repair suggestion should include the zone."""
         report = formatter.format_report(single_error_diagnosis)
         assert '--zone=us-central1-a' in report
+
+
+class TestDetectOnlyFixSection:
+    """Red-team C4: detect-only categories (cpu_lockup) must not be rendered
+    as shell commands inside a rescue/restore workflow."""
+
+    @pytest.fixture
+    def cpu_lockup_diagnosis(self):
+        return {
+            'vm_name': 'prod-db-1',
+            'zone': 'us-central1-a',
+            'status': 'RUNNING',
+            'os_type': 'linux',
+            'os_flavor': 'ubuntu-24.04',
+            'architecture': 'x86_64',
+            'license_type': 'free',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [
+                {
+                    'category': 'cpu_lockup',
+                    'severity': 'warning',
+                    'description': 'Bus lock or split lock detected (performance-degrading memory access)',
+                    'detected_pattern': 'took a bus_lock trap',
+                    'suggested_fixes': [
+                        'Identify the application named in the message and fix its misaligned atomic memory access',
+                        'If the VM is unresponsive, reset it: gcloud compute instances reset VM_NAME --zone=ZONE',
+                    ],
+                    'context_lines': ['x86/split lock detection: #DB: myapp/2211 took a bus_lock trap at address: 0x7f3c'],
+                    'matched_line_index': 0,
+                }
+            ],
+            'recommendations': [],
+        }
+
+    def test_no_rescue_restore_steps_for_detect_only(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        """cpu_lockup-only reports must not tell the user to enter rescue
+        mode — there is nothing to fix on the rescued disk."""
+        report = formatter.format_report(cpu_lockup_diagnosis)
+        assert 'gce-rescue rescue' not in report
+        assert 'gce-rescue restore' not in report
+        assert 'Enter rescue mode' not in report
+
+    def test_prose_guidance_not_rendered_as_command(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        """Prose fix_guidance must not be printed with a '$ ' prompt."""
+        report = formatter.format_report(cpu_lockup_diagnosis)
+        assert '$ Identify' not in report
+        assert 'Identify the offending process/workload' in report
+        assert 'Investigate CPU lockup' in report
+
+    def test_placeholders_substituted_in_detect_only_fixes(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        """VM_NAME/ZONE in per-issue fixes should be substituted."""
+        report = formatter.format_report(cpu_lockup_diagnosis)
+        assert 'gcloud compute instances reset prod-db-1 --zone=us-central1-a' in report
+        assert 'VM_NAME' not in report
+
+    def test_mixed_categories_keep_rescue_steps_for_disk_issues(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        """When a disk category (fstab) co-occurs with cpu_lockup, the
+        rescue steps stay for fstab but cpu_lockup guidance is rendered in
+        its own prose block."""
+        diagnosis = dict(cpu_lockup_diagnosis)
+        diagnosis['boot_errors'] = diagnosis['boot_errors'] + [
+            {
+                'category': 'fstab',
+                'severity': 'critical',
+                'description': 'UUID specified in /etc/fstab cannot be found',
+                'detected_pattern': 'UUID=abc123 does not exist',
+                'suggested_fixes': ['Comment out or fix the invalid UUID entry'],
+                'context_lines': ['UUID=abc123 does not exist'],
+                'matched_line_index': 0,
+            }
+        ]
+        report = formatter.format_report(diagnosis)
+        assert 'gce-rescue rescue prod-db-1' in report
+        assert 'gce-rescue restore prod-db-1' in report
+        assert 'Investigate CPU lockup' in report
+        assert '$ Identify' not in report
+        # cpu_lockup guidance must not appear inside step 2's command list
+        assert '- Identify the offending process/workload' in report
+
+    def test_kernel_panic_only_report_has_no_fake_command(self, formatter):
+        """Integration red-team C3: kernel is detect-only — a panic-only
+        report must not render the prose fix_guidance behind a '$ ' prompt
+        or wrap it in a rescue/restore cycle that does not apply."""
+        diagnosis = {
+            'vm_name': 'vm-1',
+            'zone': 'asia-south1-b',
+            'status': 'TERMINATED',
+            'os_type': 'linux',
+            'os_flavor': 'debian-12',
+            'architecture': 'x86_64',
+            'license_type': 'free',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [
+                {
+                    'category': 'kernel',
+                    'severity': 'critical',
+                    'description': 'Kernel panic detected during boot',
+                    'detected_pattern': 'Kernel panic - not syncing: '
+                                        'Attempted to kill init!',
+                    'suggested_fixes': [
+                        'Reset the VM: gcloud compute instances reset '
+                        'VM_NAME --zone=ZONE',
+                    ],
+                    'context_lines': [
+                        'Kernel panic - not syncing: Attempted to kill init!'
+                    ],
+                    'matched_line_index': 0,
+                }
+            ],
+            'recommendations': [],
+        }
+        report = formatter.format_report(diagnosis)
+        assert '$ Reset the VM' not in report
+        assert 'Enter rescue mode' not in report
+        assert 'gce-rescue rescue' not in report
+        assert 'gce-rescue restore' not in report
+        # Guidance rendered as prose bullets under the category label
+        assert 'Check kernel:' in report
+        assert ('- Reset the VM and select a previous kernel from the GRUB '
+                'menu via the serial console') in report
+
+
+class TestWave2CategoryLabels:
+    """Labels for the Wave 2 categories (lvm, crypt, raid, machine_id)."""
+
+    def test_new_category_labels_defined(self):
+        from gce_rescue_v2.utils.report_formatter import _category_label
+        assert _category_label('lvm') == 'Activate LVM volume group'
+        assert _category_label('crypt') == 'Handle encrypted (LUKS) disk'
+        assert _category_label('raid') == 'Repair RAID array'
+        assert _category_label('machine_id') == 'Regenerate machine-id'
+
+    def test_wave3_category_labels_defined(self):
+        from gce_rescue_v2.utils.report_formatter import _category_label
+        assert (_category_label('switchroot')
+                == 'Restore working init (switch_root)')
+        assert (_category_label('systemd_early')
+                == 'Fix early systemd boot failure')
+
+    def test_wave45_category_labels_defined(self):
+        from gce_rescue_v2.utils.report_formatter import _category_label
+        assert _category_label('readonly') == 'Recover read-only filesystem'
+        assert _category_label('oom') == 'Investigate out-of-memory kills'
+        assert _category_label('selinux') == 'Fix SELinux policy/relabel'
+        assert _category_label('startup_script') == 'Fix startup script'
+        assert _category_label('cloud_init') == 'Fix cloud-init configuration'
+        assert _category_label('network') == 'Fix network configuration'
+
+    def test_crypt_rendered_as_detect_only_guidance(self, formatter):
+        """crypt is detect-only: no rescue/restore workflow is offered."""
+        diagnosis = {
+            'vm_name': 'luks-vm',
+            'zone': 'us-central1-a',
+            'status': 'RUNNING',
+            'os_type': 'linux',
+            'os_flavor': 'rhel-9',
+            'architecture': 'x86_64',
+            'license_type': 'payg',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [
+                {
+                    'name': 'crypt_passphrase_prompt',
+                    'category': 'crypt',
+                    'severity': 'critical',
+                    'description': 'Boot is waiting for a LUKS passphrase '
+                                   'on the console',
+                    'detected_pattern': 'Please enter passphrase for disk '
+                                        'luks-2f4c8e11 on /:',
+                    'suggested_fixes': [
+                        'Connect to the interactive serial console and type '
+                        'the passphrase: gcloud compute '
+                        'connect-to-serial-port VM_NAME --zone=ZONE',
+                    ],
+                    'context_lines': [
+                        'Please enter passphrase for disk luks-2f4c8e11 on /:'
+                    ],
+                    'matched_line_index': 0,
+                }
+            ],
+            'recommendations': [],
+        }
+        report = formatter.format_report(diagnosis)
+        assert 'Handle encrypted (LUKS) disk:' in report
+        assert 'Enter rescue mode' not in report
+        assert 'gce-rescue rescue' not in report
+        assert 'connect-to-serial-port luks-vm --zone=us-central1-a' in report

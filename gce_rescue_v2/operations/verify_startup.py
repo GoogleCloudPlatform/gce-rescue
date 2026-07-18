@@ -85,7 +85,23 @@ class VerifyStartupOperation(BaseOperation):
                         }
                     )
 
-                # Poll serial console
+                # Reliable completion signal: a guest attribute set by the
+                # startup script. Checked before serial because the serial
+                # console can drop the script's final output burst before the
+                # process exits (the marker may never reach serial).
+                if self._completion_guest_attribute_set(compute, vm_name):
+                    duration = time.time() - start_time
+                    self._log_debug(
+                        f"Completion guest attribute set in {duration:.1f}s"
+                    )
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=True,
+                        message=f"Startup script completed ({duration:.0f}s)",
+                        rollback_data=None
+                    )
+
+                # Poll serial console (fallback)
                 try:
                     result = compute.instances().getSerialPortOutput(
                         project=self.project,
@@ -140,6 +156,28 @@ class VerifyStartupOperation(BaseOperation):
                 message=f"Verification failed: {error_msg}",
                 error=error_msg
             )
+
+    def _completion_guest_attribute_set(self, compute, vm_name: str) -> bool:
+        """Check whether the guest set gce-rescue/status=COMPLETE.
+
+        Reliable, deterministic completion signal (unlike serial scraping).
+        Returns False on any error (attribute not set yet, guest attributes
+        disabled, 404) so the caller keeps polling / falls back to serial.
+        """
+        try:
+            resp = compute.instances().getGuestAttributes(
+                project=self.project, zone=self.zone, instance=vm_name,
+                queryPath='gce-rescue/status'
+            ).execute()
+            # Querying a specific key returns variableValue; a path returns items.
+            if str(resp.get('variableValue', '')).strip().upper() == 'COMPLETE':
+                return True
+            for item in resp.get('queryValue', {}).get('items', []):
+                if str(item.get('value', '')).strip().upper() == 'COMPLETE':
+                    return True
+        except Exception:
+            return False
+        return False
 
     def rollback(self, rollback_data: dict) -> bool:
         """

@@ -42,10 +42,16 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
     Returns:
         The combined startup script.
     """
-    # Remove the completion marker line (re-added at the very end)
+    # Move the completion signal (serial marker + guest attribute) to the very
+    # end so verification only proceeds after all fixes finish. The base script
+    # calls signal_complete; relocate that call (the echo lives inside the
+    # function definition, which must stay intact).
+    # Match the bare call ("signal_complete\n") which only appears at the call
+    # site; the definition line is "signal_complete() {" so it is not matched.
     combined = base_script.replace(
-        f'echo "{RESCUE_COMPLETE_MARKER}" >&2',
-        f'# GCE-RESCUE-COMPLETE marker moved to end (repair mode)'
+        'signal_complete\n',
+        '# completion signal moved to end (repair mode)\n',
+        1,
     )
 
     combined += '\n'
@@ -66,7 +72,7 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
         combined += fix_script + '\n\n'
 
     combined += 'log "=== Repair fixes completed ==="\n'
-    combined += f'echo "{RESCUE_COMPLETE_MARKER}" >&2\n'
+    combined += 'signal_complete\n'
     combined += 'log "=== Startup script completed successfully ==="\n'
 
     return combined

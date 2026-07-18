@@ -85,22 +85,15 @@ def handle_rescue(args: argparse.Namespace) -> int:
             print(f"{error_prefix()} {error_msg}", file=sys.stderr)
             return 1
 
-        # Check for Local SSDs using validated VM info
-        local_ssds = preflight._check_local_ssds(vm_info)
-        has_local_ssd = len(local_ssds) > 0
-
-        # In quiet mode with Local SSDs, require --force
-        if args.quiet and has_local_ssd and not args.force:
-            print(f"{error_prefix()} VM has Local SSDs attached.", file=sys.stderr)
-            print("", file=sys.stderr)
-            print(f"Local SSDs found: {', '.join(local_ssds)}", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("WARNING: Stopping this VM will PERMANENTLY LOSE all data on"
-                  " Local SSDs!", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("To proceed in quiet mode, use --force flag:", file=sys.stderr)
-            print(f"  $ gce-rescue rescue {args.instance_name} --zone={args.zone}"
-                  f" --quiet --force", file=sys.stderr)
+        # Local SSD safety gate (shared with repair). In --quiet mode, require
+        # --force; the interactive path warns + confirms below.
+        local_ssds, ssd_err = preflight.check_local_ssd_quiet_gate(
+            vm_info, args.instance_name, args.zone, 'rescue',
+            args.quiet, args.force,
+        )
+        has_local_ssd = bool(local_ssds)
+        if ssd_err:
+            print(f"{error_prefix()} {ssd_err}", file=sys.stderr)
             return 1
 
         # Validate --rescue-image BEFORE confirmation (fast-fail on bad URL,
@@ -116,6 +109,20 @@ def handle_rescue(args: argparse.Namespace) -> int:
                 print(f"{error_prefix()} {err}", file=sys.stderr)
                 return 1
             args.custom_rescue_image_size_gb = size_gb
+
+        # Pre-flight: is the rescue image's project allowed by org policy?
+        # Catches constraints/compute.trustedImageProjects BEFORE stopping the VM
+        # (zero downtime). Fails open if the policy can't be read. Issue #122.
+        image_project = preflight.resolve_rescue_image_project(
+            vm_info, rescue_image_url=getattr(args, 'rescue_image', None)
+        )
+        policy_err = preflight.check_image_org_policy(
+            compute, project, image_project, command='rescue',
+            instance_name=args.instance_name,
+        )
+        if policy_err:
+            print(f"{error_prefix()} {policy_err}", file=sys.stderr)
+            return 1
 
     # Interactive confirmation (unless --quiet or resuming)
     if not args.quiet and not resuming:

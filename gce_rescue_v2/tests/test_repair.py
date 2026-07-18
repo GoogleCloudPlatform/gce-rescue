@@ -347,31 +347,30 @@ class TestRepairScript:
         assert 'fstab' in script.lower()
 
     def test_completion_marker_at_end(self):
-        """GCE-RESCUE-COMPLETE should be at the end, not in the middle."""
+        """The signal_complete call (serial marker + guest attr) should be at the end."""
         orch = self._make_orchestrator()
         diagnosis = {
             'boot_errors': [{'category': 'fstab', 'severity': 'critical'}]
         }
         script = orch._generate_repair_script(diagnosis)
 
-        # Find all occurrences of the marker
+        # The bare 'signal_complete' call (not the 'signal_complete() {' definition)
         lines = script.split('\n')
-        marker_lines = [
-            i for i, line in enumerate(lines)
-            if RESCUE_COMPLETE_MARKER in line and 'moved to end' not in line
+        call_lines = [
+            i for i, line in enumerate(lines) if line.strip() == 'signal_complete'
         ]
-        assert len(marker_lines) >= 1
-        # The active marker should be near the end (last 5 lines)
-        assert marker_lines[-1] > len(lines) - 6
+        assert len(call_lines) >= 1
+        # The active completion call should be near the end (last 5 lines)
+        assert call_lines[-1] > len(lines) - 6
 
     def test_original_marker_commented_out(self):
-        """Original completion marker in rescue_mount.sh should be commented."""
+        """Original completion call in rescue_mount.sh should be relocated/commented."""
         orch = self._make_orchestrator()
         diagnosis = {
             'boot_errors': [{'category': 'fstab', 'severity': 'critical'}]
         }
         script = orch._generate_repair_script(diagnosis)
-        assert 'marker moved to end' in script
+        assert 'moved to end' in script
 
     def test_missing_fix_script_raises_error(self):
         """Fix script for category without a .sh file should raise, not silently skip."""
@@ -880,6 +879,14 @@ class TestSupportedCategories:
 
     def test_grub_is_not_supported(self):
         assert 'grub' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_kernel_is_not_supported(self):
+        """kernel is detect-only — no auto-repair fix script exists."""
+        assert 'kernel' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_initramfs_is_not_supported(self):
+        """initramfs stays unsupported until fixes/initramfs_fix.sh lands."""
+        assert 'initramfs' not in SUPPORTED_FIX_CATEGORIES
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""

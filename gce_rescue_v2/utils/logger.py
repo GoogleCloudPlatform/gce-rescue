@@ -13,6 +13,7 @@ Logging Strategy:
 """
 
 import logging
+import re
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,9 @@ from datetime import datetime
 from typing import Any, Dict
 
 from .colors import error_prefix
+
+# Strips ANSI color codes so we can inspect the plain text of a message.
+_ANSI_RE = re.compile(r'\033\[[0-9;]*m')
 
 
 class CleanFormatter(logging.Formatter):
@@ -43,7 +47,16 @@ class CleanFormatter(logging.Formatter):
 
         # ERROR: Show with prefix (red)
         elif record.levelno == logging.ERROR:
-            return f"{error_prefix()} {record.getMessage()}"
+            msg = record.getMessage()
+            plain = _ANSI_RE.sub('', msg)
+            # Blank spacer lines: emit as-is (no "ERROR:" on an empty line).
+            if not plain.strip():
+                return msg
+            # Pre-formatted ErrorSuggestion blocks already start with "ERROR:";
+            # don't prefix a second time.
+            if plain.lstrip().startswith("ERROR:"):
+                return msg
+            return f"{error_prefix()} {msg}"
 
         # CRITICAL: Show with prefix and emphasis
         elif record.levelno == logging.CRITICAL:

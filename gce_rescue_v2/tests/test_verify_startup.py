@@ -191,6 +191,46 @@ class TestVerifyStartupOperation:
             # Verify tracked client was used (called at least once)
             assert mock_tracked_client.instances().getSerialPortOutput.call_count >= 1
 
+    def test_guest_attr_complete_variable_value(self):
+        """Guest attribute variableValue=COMPLETE is detected."""
+        self.mock_compute.instances().getGuestAttributes().execute.return_value = {
+            'variableValue': 'COMPLETE'
+        }
+        assert self.operation._completion_guest_attribute_set(self.mock_compute, 'vm') is True
+
+    def test_guest_attr_complete_items(self):
+        """Guest attribute via queryValue.items is detected."""
+        self.mock_compute.instances().getGuestAttributes().execute.return_value = {
+            'queryValue': {'items': [
+                {'namespace': 'gce-rescue', 'key': 'status', 'value': 'COMPLETE'}
+            ]}
+        }
+        assert self.operation._completion_guest_attribute_set(self.mock_compute, 'vm') is True
+
+    def test_guest_attr_not_complete(self):
+        """A non-COMPLETE value is not treated as done."""
+        self.mock_compute.instances().getGuestAttributes().execute.return_value = {
+            'variableValue': 'RUNNING'
+        }
+        assert self.operation._completion_guest_attribute_set(self.mock_compute, 'vm') is False
+
+    def test_guest_attr_error_returns_false(self):
+        """A 404/disabled error (attribute not set) returns False, not a crash."""
+        self.mock_compute.instances().getGuestAttributes().execute.side_effect = Exception("404")
+        assert self.operation._completion_guest_attribute_set(self.mock_compute, 'vm') is False
+
+    def test_execute_succeeds_via_guest_attr_without_serial_marker(self):
+        """Completion via guest attribute succeeds even if serial lacks the marker."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'booting... no marker here'
+        }
+        self.mock_compute.instances().getGuestAttributes().execute.return_value = {
+            'variableValue': 'COMPLETE'
+        }
+        result = self.operation.execute(vm_name='test-vm', timeout=10)
+        assert result.success is True
+        assert "completed" in result.message.lower()
+
     def test_rollback_returns_true(self):
         """Test rollback always returns True (no-op for verification)."""
         # Act

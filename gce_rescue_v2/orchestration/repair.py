@@ -986,34 +986,42 @@ class RepairOrchestrator:
 
         self._log_debug(f"Phase: {phase}")
 
-    def _finish_progress(self, success: bool = True):
-        """Finalize the last active phase line with done./FAILED."""
-        if not self._progress_started:
-            return
+    def _finish_progress(self, success: bool = True, error: str = None):
+        """Finalize the last active phase line with done./FAILED.
 
-        self._spinner_stop = True
-        if self._spinner_thread:
-            self._spinner_thread.join(timeout=0.5)
+        When `error` (a pre-formatted, user-facing block) is supplied for a
+        failure, it is printed AFTER the FAILED line so it never interleaves
+        with the live spinner. Operations record the same detail to the log
+        file; in debug mode the spinner is off and the detail is already in the
+        console logs, so it is not reprinted here.
+        """
+        if self._progress_started:
+            self._spinner_stop = True
+            if self._spinner_thread:
+                self._spinner_thread.join(timeout=0.5)
 
-        if not self._is_debug_mode:
-            with self._progress_lock:
-                phase = self._current_phase
-                substeps = list(self._current_line_substeps)
-                substep = self._current_substep
+            if not self._is_debug_mode:
+                with self._progress_lock:
+                    phase = self._current_phase
+                    substeps = list(self._current_line_substeps)
+                    substep = self._current_substep
 
-            # Include current substep if not already recorded
-            if substep and (not substeps or substeps[-1] != substep):
-                substeps.append(substep)
+                # Include current substep if not already recorded
+                if substep and (not substeps or substeps[-1] != substep):
+                    substeps.append(substep)
 
-            trail = " -> ".join(substeps) if substeps else ""
-            phase_num = len(self._progress_phases)
-            prefix = f"  ({phase_num}/{self._total_steps}) {phase + ':':<9}" if phase else "  "
-            status_label = green("done.") if success else red("FAILED.")
+                trail = " -> ".join(substeps) if substeps else ""
+                phase_num = len(self._progress_phases)
+                prefix = f"  ({phase_num}/{self._total_steps}) {phase + ':':<9}" if phase else "  "
+                status_label = green("done.") if success else red("FAILED.")
 
-            if trail:
-                final = f"\r{prefix} {trail}  {status_label}"
-            else:
-                final = f"\r{prefix} {status_label}"
+                if trail:
+                    final = f"\r{prefix} {trail}  {status_label}"
+                else:
+                    final = f"\r{prefix} {status_label}"
 
-            sys.stdout.write(f"{final:<120}\n")
-            sys.stdout.flush()
+                sys.stdout.write(f"{final:<120}\n")
+                sys.stdout.flush()
+
+        if error and not getattr(self, '_is_debug_mode', False):
+            print(f"\n{error}", file=sys.stderr)
