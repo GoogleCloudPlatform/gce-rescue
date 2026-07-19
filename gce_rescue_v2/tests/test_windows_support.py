@@ -205,22 +205,74 @@ class TestConfigWindows:
         assert config.windows_rescue_disk_size_gb == 50
 
 
-class TestWindowsBcdRealignment:
-    """The mount script must repair the #126 GUID-collision damage via BCD
-    realignment, not GUID restoration.
-
-    The default Windows rescue image (windows-2022) shares a GPT disk GUID
-    with same-family affected disks; onlining the affected disk makes Windows
-    regenerate its GUID, invalidating the disk's BCD (unbootable at
-    0xc000000e/0xc0000225 after restore). Restoring the old GUID does NOT
-    work (live-tested: the rescue disk with the same GUID is still online, so
-    the collision immediately recurs). Instead the script detects the GUID
-    change and rebuilds the disk's BCD against its new, stable identity with
-    bcdboot - and only when a change was actually detected.
-    """
+class TestWindowsGuidCollisionPrevention:
+    """Issue #126 is PREVENTED, not repaired: the orchestrator rescues with a
+    different image family than the target's, so the GPT disk GUID collision
+    (which makes Windows regenerate the target's GUID and invalidate its BCD)
+    never happens. The mount script keeps GUID-change detection as a tripwire
+    and warns loudly - it must never rewrite the BCD automatically (unsafe on
+    BitLocker disks; drops custom BCD entries)."""
 
     def _script(self) -> str:
         return _WINDOWS_MOUNT_SCRIPT.read_text(encoding='utf-8')
+
+    def _orchestrator(self):
+        from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
+        orch = RescueOrchestrator(
+            compute=Mock(), project='p', zone='z', vm_name='vm',
+            config=RescueConfig(), logger=None
+        )
+        orch.original_disk_name = 'win-disk'
+        return orch
+
+    def _tracked(self, source_image, family):
+        tracked = Mock()
+        tracked.disks().get().execute.return_value = {'sourceImage': source_image}
+        tracked.images().get().execute.return_value = {'family': family}
+        return tracked
+
+    # --- orchestrator: family auto-selection (the prevention) ---
+
+    def test_same_family_target_selects_alternate(self):
+        orch = self._orchestrator()
+        tracked = self._tracked(
+            'projects/windows-cloud/global/images/windows-server-2022-dc-v1',
+            'windows-2022'
+        )
+        with patch.object(orch, '_create_tracked_compute', return_value=tracked):
+            assert orch._select_windows_rescue_family() == 'windows-2019'
+
+    def test_different_family_target_keeps_configured(self):
+        orch = self._orchestrator()
+        tracked = self._tracked(
+            'projects/windows-cloud/global/images/windows-server-2019-dc-v1',
+            'windows-2019'
+        )
+        with patch.object(orch, '_create_tracked_compute', return_value=tracked):
+            assert orch._select_windows_rescue_family() == 'windows-2022'
+
+    def test_2019_configured_alternates_to_2022(self):
+        from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
+        assert RescueOrchestrator._alternate_windows_family('windows-2019') == 'windows-2022'
+        assert RescueOrchestrator._alternate_windows_family('windows-2022') == 'windows-2019'
+        assert RescueOrchestrator._alternate_windows_family('windows-2025') == 'windows-2019'
+
+    def test_custom_image_without_family_keeps_configured(self):
+        orch = self._orchestrator()
+        tracked = self._tracked(
+            'projects/my-proj/global/images/golden-win', ''
+        )
+        with patch.object(orch, '_create_tracked_compute', return_value=tracked):
+            assert orch._select_windows_rescue_family() == 'windows-2022'
+
+    def test_lookup_failure_keeps_configured(self):
+        orch = self._orchestrator()
+        tracked = Mock()
+        tracked.disks().get().execute.side_effect = Exception('api down')
+        with patch.object(orch, '_create_tracked_compute', return_value=tracked):
+            assert orch._select_windows_rescue_family() == 'windows-2022'
+
+    # --- mount script: detection stays, automatic repair is gone ---
 
     def test_guid_captured_before_online(self):
         text = self._script()
@@ -230,37 +282,29 @@ class TestWindowsBcdRealignment:
         assert capture < online, "GUID must be captured before the disk is onlined"
 
     def test_guid_never_restored(self):
-        # The failed first approach: writing the old GUID back recreates the
-        # live collision (rescue disk still online) and Windows re-resolves
-        # it later. The script must not attempt it.
+        # Writing the old GUID back recreates the live collision (rescue disk
+        # still online) and Windows re-resolves it later (live-tested).
         assert '-Guid $originalGuid' not in self._script()
 
-    def test_change_detection_feeds_realignment(self):
+    def test_change_detection_feeds_warning(self):
         text = self._script()
         assert 'if ($currentGuid -ne $originalGuid)' in text
         assert '$guidChangedDisks += $disk.Number' in text
+        assert 'foreach ($diskNumber in $guidChangedDisks)' in text
 
-    def test_bcdboot_realignment_after_mounting(self):
+    def test_no_automatic_bcd_rewrite(self):
+        # Reviewer-agreed (#149): never rewrite the BCD automatically - it can
+        # push BitLocker disks into recovery and drops custom BCD entries.
         text = self._script()
-        # bcdboot runs in the realignment section, after the partition
-        # mounting loop (it needs the offline \Windows drive letter).
-        assert 'bcdboot' in text
-        assert '/f UEFI' in text
-        assert '/f BIOS' in text
-        mount_loop = text.index('Assigning drive letter')
-        realign = text.index('BCD Realignment')
-        assert mount_loop < realign
+        assert 'BCD Realignment' not in text
+        assert '/f UEFI' not in text
+        assert 'Remove-PartitionAccessPath' not in text  # no temp ESP mounting
 
-    def test_realignment_only_for_changed_disks(self):
-        # A collision-free rescue must never touch the BCD.
-        assert 'foreach ($diskNumber in $guidChangedDisks)' in self._script()
-
-    def test_locates_windows_by_config_hive(self):
-        # Finds the offline install by its registry hive, not a hardcoded D:.
-        assert 'Windows\\System32\\config\\SYSTEM' in self._script()
-
-    def test_releases_temp_esp_letter(self):
-        assert 'Remove-PartitionAccessPath' in self._script()
+    def test_warning_names_the_consequence_and_remediation(self):
+        text = self._script()
+        assert 'may NOT BOOT after restore' in text
+        assert 'windows_bcd_fix.ps1' in text
+        assert 'BitLocker' in text
 
     def test_references_issue_126(self):
         assert '#126' in self._script()
