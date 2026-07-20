@@ -8,6 +8,18 @@ startup script executed successfully.
 import time
 from .base import BaseOperation, OperationResult, extract_error_message
 
+# Failure lines the base mount script prints right before exiting 1. Once one
+# of these is on the serial console the completion marker can never arrive,
+# so verification aborts immediately instead of polling out the full timeout
+# (observed live: 36 minutes spent waiting on a mount that had already
+# failed). The serial buffer is wiped on VM stop and every rescue starts with
+# a stop, so these lines can only come from the CURRENT rescue boot.
+STARTUP_FAILURE_MARKERS = (
+    'ERROR: All mount attempts failed',
+    'ERROR: Disk not found after 5 minutes',
+    'ERROR: No supported filesystem found!',
+)
+
 
 class VerifyStartupOperation(BaseOperation):
     """
@@ -24,7 +36,8 @@ class VerifyStartupOperation(BaseOperation):
         return "Verify Startup Script"
 
     def execute(self, vm_name: str, completion_marker: str = "GCE-RESCUE-COMPLETE",
-                timeout: int = 120, tracking_label: str = None) -> OperationResult:
+                timeout: int = 120, tracking_label: str = None,
+                expected_completion_value: str = 'COMPLETE') -> OperationResult:
         """
         Verify startup script completion by polling serial console.
 
@@ -33,6 +46,12 @@ class VerifyStartupOperation(BaseOperation):
             completion_marker: String to search for in serial output
             timeout: Maximum seconds to wait (default: 120)
             tracking_label: Optional tracking label for analytics
+            expected_completion_value: Exact guest-attribute value that counts
+                as completion. Guest attributes persist across stop/start/
+                restore and cannot be cleared from outside the VM, so the
+                orchestrator passes a per-session token here - a stale value
+                from a PREVIOUS rescue of the same VM must not short-circuit
+                this session's verification.
 
         Returns:
             OperationResult with success=True if marker found, False if timeout
@@ -89,7 +108,8 @@ class VerifyStartupOperation(BaseOperation):
                 # startup script. Checked before serial because the serial
                 # console can drop the script's final output burst before the
                 # process exits (the marker may never reach serial).
-                if self._completion_guest_attribute_set(compute, vm_name):
+                if self._completion_guest_attribute_set(
+                        compute, vm_name, expected_completion_value):
                     duration = time.time() - start_time
                     self._log_debug(
                         f"Completion guest attribute set in {duration:.1f}s"
@@ -125,6 +145,23 @@ class VerifyStartupOperation(BaseOperation):
                             rollback_data=None  # No rollback needed for verification
                         )
 
+                    # A terminal failure line means the marker can never
+                    # arrive - abort now instead of polling out the timeout.
+                    for failure_marker in STARTUP_FAILURE_MARKERS:
+                        if failure_marker in contents:
+                            self._log_debug(
+                                f"Startup script failed: {failure_marker!r}"
+                            )
+                            return OperationResult(
+                                operation_name=self.name,
+                                success=False,
+                                message=f"Startup script failed: {failure_marker}",
+                                error=(
+                                    f"Startup script reported a terminal "
+                                    f"failure: {failure_marker}"
+                                )
+                            )
+
                     # Log progress
                     self._log_debug(f"  Waiting for startup script... ({elapsed:.0f}s/{timeout}s)")
 
@@ -157,23 +194,28 @@ class VerifyStartupOperation(BaseOperation):
                 error=error_msg
             )
 
-    def _completion_guest_attribute_set(self, compute, vm_name: str) -> bool:
-        """Check whether the guest set gce-rescue/status=COMPLETE.
+    def _completion_guest_attribute_set(self, compute, vm_name: str,
+                                        expected_value: str = 'COMPLETE') -> bool:
+        """Check whether the guest set gce-rescue/status to THIS session's value.
 
         Reliable, deterministic completion signal (unlike serial scraping).
-        Returns False on any error (attribute not set yet, guest attributes
-        disabled, 404) so the caller keeps polling / falls back to serial.
+        The value comparison is exact (case-insensitive): guest attributes
+        survive stop/start/restore, so a stale value from a previous rescue
+        session must not count. Returns False on any error (attribute not set
+        yet, guest attributes disabled, 404) so the caller keeps polling /
+        falls back to serial.
         """
+        expected = expected_value.strip().upper()
         try:
             resp = compute.instances().getGuestAttributes(
                 project=self.project, zone=self.zone, instance=vm_name,
                 queryPath='gce-rescue/status'
             ).execute()
             # Querying a specific key returns variableValue; a path returns items.
-            if str(resp.get('variableValue', '')).strip().upper() == 'COMPLETE':
+            if str(resp.get('variableValue', '')).strip().upper() == expected:
                 return True
             for item in resp.get('queryValue', {}).get('items', []):
-                if str(item.get('value', '')).strip().upper() == 'COMPLETE':
+                if str(item.get('value', '')).strip().upper() == expected:
                     return True
         except Exception:
             return False
