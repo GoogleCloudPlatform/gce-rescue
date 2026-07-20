@@ -303,7 +303,12 @@ class TestWindowsGuidCollisionPrevention:
     def test_warning_names_the_consequence_and_remediation(self):
         text = self._script()
         assert 'may NOT BOOT after restore' in text
-        assert 'windows_bcd_fix.ps1' in text
+        # Remediation must reference only what ships with this branch: the
+        # manual bcdboot command, plus the tracking issue for the bundled
+        # script (#150) - not a script file that is not in the repo.
+        assert 'bcdboot <windows-drive>:\\Windows' in text
+        assert '#150' in text
+        assert 'windows_bcd_fix.ps1' not in text
         assert 'BitLocker' in text
 
     def test_references_issue_126(self):

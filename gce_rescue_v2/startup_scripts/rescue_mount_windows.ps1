@@ -221,11 +221,10 @@ foreach ($diskNumber in $guidChangedDisks) {
     Write-Log "(0xc000000e / 0xc0000225)."
     Write-Log ""
     Write-Log "Before restoring, repair the BCD from this rescue session:"
-    Write-Log "  - Recommended: re-run with the bundled fix script:"
-    Write-Log "      gce-rescue repair VM --fix-script=windows_bcd_fix.ps1"
-    Write-Log "  - Or manually: bcdboot <windows-drive>:\Windows"
-    Write-Log "    (NOTE: rebuilds a default BCD - custom entries are lost;"
-    Write-Log "    on BitLocker-protected disks this can trigger recovery)"
+    Write-Log "  bcdboot <windows-drive>:\Windows /s <esp-drive>: /f UEFI"
+    Write-Log "  (NOTE: rebuilds a default BCD - custom entries are lost;"
+    Write-Log "  on BitLocker-protected disks this can trigger recovery."
+    Write-Log "  A bundled fix script for this is tracked in issue #150.)"
     Write-Log "############################################################"
 }
 
