@@ -311,7 +311,10 @@ EXAMPLES
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
 SUPPORTED FIXES
+    - filesystem: Repairs corrupted filesystems (fsck) before mounting
     - fstab: Comments out invalid UUID, device, or label entries
+    - initramfs: Rebuilds the initramfs for the newest installed kernel
+    - grub: Reinstalls GRUB and regenerates its configuration
 
 NOTES
     This command is Linux-only. For Windows VMs, use 'rescue' for manual fix.
@@ -385,6 +388,34 @@ def _add_common_args(parser: argparse.ArgumentParser):
     )
 
 
+def _positive_int(value: str) -> int:
+    """argparse type: a positive integer (for timeout flags)."""
+    try:
+        ivalue = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {ivalue}")
+    return ivalue
+
+
+def _add_verification_timeout_arg(parser: argparse.ArgumentParser):
+    """Add the --verification-timeout flag (shared by rescue and repair)."""
+    group = parser.add_argument_group('VERIFICATION FLAGS')
+    group.add_argument(
+        '--verification-timeout',
+        metavar='SECONDS',
+        dest='verification_timeout',
+        type=_positive_int,
+        default=None,
+        help=(
+            'Seconds to wait for the rescue VM startup script to report'
+            ' completion via serial console. Overrides the OS-aware default'
+            ' (Linux: 300, Windows: 600). Raise it for slow-booting VMs.'
+        )
+    )
+
+
 def _add_rescue_args(parser: argparse.ArgumentParser):
     """Add rescue-specific arguments."""
 
@@ -433,6 +464,8 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         )
     )
 
+    _add_verification_timeout_arg(parser)
+
 
 def _add_repair_args(parser: argparse.ArgumentParser):
     """Add repair-specific arguments."""
@@ -480,6 +513,8 @@ def _add_repair_args(parser: argparse.ArgumentParser):
             ' auto-generated fix, then restores the VM and verifies boot.'
         )
     )
+
+    _add_verification_timeout_arg(parser)
 
 
 def _add_restore_args(parser: argparse.ArgumentParser):
@@ -569,6 +604,10 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):
         config.force = args.force
+
+    # Explicit startup verification timeout (overrides OS-aware defaults)
+    if getattr(args, 'verification_timeout', None) is not None:
+        config.verification_timeout_override = args.verification_timeout
 
     # Verbosity to log level
     verbosity_map = {

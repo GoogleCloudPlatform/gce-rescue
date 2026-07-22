@@ -1,0 +1,72 @@
+# Runtime read-only remount and disk I/O error patterns (modes 29/43).
+#
+# CATEGORY CHOICE: this is a separate category, not extra patterns in
+# filesystem.yaml, because the finding class is different: filesystem.yaml
+# patterns are evidence of on-disk damage found while MOUNTING (superblock,
+# metadata, journal), while these patterns are the kernel's RUNTIME response
+# to a disk that started failing under a mounted filesystem
+# (errors=remount-ro kicking in, block-layer I/O errors). Both categories
+# firing on the same incident is expected and correct (the EXT4-fs error
+# line belongs to filesystem_corruption, the remount-ro line to
+# readonly_remount) - the engine dedupes per (category, description), so
+# a separate category is what lets both findings surface.
+category: readonly
+fix_guidance: "From rescue mode, run fsck on the unmounted disk: sudo umount /mnt/sysroot && sudo fsck -y /dev/sdb1; then check the disk's status in the GCP Console before restoring"
+# auto_repair stays false until startup_scripts/fixes/readonly_fix.sh lands
+# (RepairOrchestrator.validate() requires the script for every auto_repair
+# category). Future fix: offline fsck via the rescue mount.
+auto_repair: false
+# This is a RUNNING-VM condition: the whole point of the errors=remount-ro
+# response is that the VM keeps "running" (and often finished booting long
+# ago) while every write fails. A "Startup finished" marker never resolves
+# it, so findings must survive boot-success suppression.
+survives_boot_success: true
+
+patterns:
+  - name: readonly_remount
+    severity: critical
+    description: "Filesystem was remounted read-only after disk errors (errors=remount-ro)"
+    regex:
+      # ext4's errors=remount-ro response; list the device-bound form first
+      # so the evidence line names the device when present. [\w-]+ (not
+      # \w+): device-mapper names contain hyphens (dm-0, LVM volumes).
+      - 'EXT4-fs \([\w-]+\): Remounting filesystem read-only'
+      # Bare kernel form (ext2/jbd2 print it without the EXT4-fs prefix).
+      # Kernel-unique wording - prose does not say "Remounting filesystem
+      # read-only".
+      - 'Remounting filesystem read-only'
+    fixes:
+      - "The kernel switched the filesystem to read-only to prevent further damage - writes are failing on this VM right now"
+      - "From rescue mode, repair the unmounted disk: sudo fsck -y /dev/sdb1 (ext) or sudo xfs_repair /dev/sdb1 (XFS)"
+      - "Check the serial output for the I/O errors that triggered the remount; if the device itself is failing, restore from a snapshot"
+
+  # severity: error, not critical - I/O errors degrade the VM and usually
+  # precede a read-only remount, but a burst of them does not by itself
+  # prove the filesystem is dead (the remount-ro pattern above is the
+  # critical signal).
+  - name: readonly_io_error
+    severity: error
+    description: "Disk I/O errors reported by the block layer"
+    # ALL four regexes are device-bound with a shared negative lookahead
+    # excluding loop/sr/fd/ram/zram devices (red-team C1): loop-device
+    # I/O errors are routine snapd refresh/remove noise on every Ubuntu
+    # GCE image, sr0/fd0 errors are phantom CD-ROM/floppy probes (the
+    # fd0 'end_request' line is the most famous benign I/O-error line in
+    # VM history), and none of them can be a boot/root disk on GCE.
+    # Real disks (sda, nvme0n1, dm-0, vd*) pass the lookahead.
+    regex:
+      # Kernels ~4.x-5.17: "blk_update_request: I/O error, dev sda, sector 2048"
+      - 'blk_update_request: I/O error, dev (?!loop|sr\d|fd\d|ram\d|zram)[\w-]+'
+      # 5.18+ dropped the function-name prefix: "I/O error, dev sda,
+      # sector 2048 op 0x1:(WRITE) ...". Bound to the ", dev X, sector N"
+      # tail so prose mentioning "I/O error" can never match.
+      - 'I/O error, dev (?!loop|sr\d|fd\d|ram\d|zram)[\w-]+, sector \d+'
+      # Page-cache level companion line, bound to a device name.
+      - 'Buffer I/O error on dev (?!loop|sr\d|fd\d|ram\d|zram)[\w-]+'
+      # Pre-3.x kernels only (removed upstream years ago); kept for old
+      # custom images.
+      - 'end_request: I/O error, dev (?!loop|sr\d|fd\d|ram\d|zram)[\w-]+'
+    fixes:
+      - "The block layer is reporting failed reads/writes - check the disk in the GCP Console and the device named in the error"
+      - "If the errors target the boot disk, snapshot it immediately (gcloud compute disks snapshot DISK_NAME --zone=ZONE) before any repair attempt"
+      - "From rescue mode, check the filesystem on the unmounted disk: sudo fsck -y /dev/sdb1"

@@ -204,28 +204,36 @@ class RestoreOrchestrator:
             self._progress_callback(phase)
         self._log_debug(f"Phase: {phase}")
 
-    def _finish_progress(self, success: bool = True):
-        """Finish spinner display with final status."""
+    def _finish_progress(self, success: bool = True, error: str = None):
+        """Finish spinner display with final status.
+
+        When `error` (a pre-formatted, user-facing block) is supplied for a
+        failure, it is printed AFTER the FAILED line so it never interleaves
+        with the live spinner. Operations record the same detail to the log
+        file; in debug mode the spinner is off and the detail is already in the
+        console logs, so it is not reprinted here.
+        """
         import sys
 
-        if not self._progress_started:
-            return
+        if self._progress_started:
+            # Stop spinner thread
+            self._spinner_stop = True
+            if self._spinner_thread:
+                self._spinner_thread.join(timeout=0.5)
 
-        # Stop spinner thread
-        self._spinner_stop = True
-        if self._spinner_thread:
-            self._spinner_thread.join(timeout=0.5)
+            if not self._is_debug_mode:
+                with self._progress_lock:
+                    phases_str = " -> ".join(self._progress_phases)
+                    current_step = len(self._progress_phases)
 
-        if not self._is_debug_mode:
-            with self._progress_lock:
-                phases_str = " -> ".join(self._progress_phases)
-                current_step = len(self._progress_phases)
+                if success:
+                    sys.stdout.write(f"\r ({self._total_steps}/{self._total_steps}) [{phases_str}] done.\n")
+                else:
+                    sys.stdout.write(f"\r ({current_step}/{self._total_steps}) [{phases_str}] FAILED.\n")
+                sys.stdout.flush()
 
-            if success:
-                sys.stdout.write(f"\r ({self._total_steps}/{self._total_steps}) [{phases_str}] done.\n")
-            else:
-                sys.stdout.write(f"\r ({current_step}/{self._total_steps}) [{phases_str}] FAILED.\n")
-            sys.stdout.flush()
+        if error and not getattr(self, '_is_debug_mode', False):
+            print(f"\n{error}", file=sys.stderr)
 
     def _log_info(self, message: str):
         """Log info message."""
@@ -444,7 +452,7 @@ class RestoreOrchestrator:
                 )
                 self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data, step_number=1)
                 if not result.success:
-                    self._finish_progress(False)
+                    self._finish_progress(False, error=result.error)
                     self._rollback()
                     return False
                 # Update checkpoint
@@ -475,7 +483,7 @@ class RestoreOrchestrator:
                     )
                     self.state_tracker.add_operation("Detach Rescue Disk", result.success, result.message, result.rollback_data, step_number=2)
                     if not result.success:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                     # Update checkpoint
@@ -504,7 +512,7 @@ class RestoreOrchestrator:
                     )
                     self.state_tracker.add_operation("Detach Original Disk", result.success, result.message, result.rollback_data, step_number=3)
                     if not result.success:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                     # Update checkpoint
@@ -534,7 +542,7 @@ class RestoreOrchestrator:
                     )
                     self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data, step_number=4)
                     if not result.success:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                     # Update checkpoint
@@ -557,7 +565,7 @@ class RestoreOrchestrator:
                 )
                 self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data, step_number=5)
                 if not result.success:
-                    self._finish_progress(False)
+                    self._finish_progress(False, error=result.error)
                     self._rollback()
                     return False
                 # Update checkpoint
@@ -588,7 +596,7 @@ class RestoreOrchestrator:
                     )
                     self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data, step_number=6)
                     if not result.success:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                     # Update checkpoint

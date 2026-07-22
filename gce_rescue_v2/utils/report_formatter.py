@@ -195,8 +195,35 @@ class DiagnosisReportFormatter:
                 seen.add(cat)
                 categories.append(cat)
 
+        # Detect-only categories (e.g. cpu_lockup) are runtime conditions:
+        # there is nothing to edit on the rescued disk, so rescue/restore
+        # steps do not apply to them.
+        from ..core.fix_catalog import (
+            SUPPORTED_FIX_CATEGORIES,
+            DETECT_ONLY_CATEGORIES,
+        )
+        disk_categories = [
+            c for c in categories if c not in DETECT_ONLY_CATEGORIES
+        ]
+        detect_only = [c for c in categories if c in DETECT_ONLY_CATEGORIES]
+        disk_errors = [
+            e for e in errors if e['category'] not in DETECT_ONLY_CATEGORIES
+        ]
+        detect_only_errors = [
+            e for e in errors if e['category'] in DETECT_ONLY_CATEGORIES
+        ]
+
+        # All findings are detect-only: print guidance without the
+        # rescue/restore workflow (rescue mode would not help here).
+        if not disk_categories:
+            lines.extend(self._format_detect_only_steps(
+                detect_only, detect_only_errors, vm_name, zone))
+            return "\n".join(lines)
+
+        categories = disk_categories
+        errors = disk_errors
+
         # Check if auto-repair is available AND can identify targets
-        from ..core.fix_catalog import SUPPORTED_FIX_CATEGORIES
         auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
 
         # Auto-repair needs extractable identifiers to target specific entries.
@@ -252,7 +279,44 @@ class DiagnosisReportFormatter:
         lines.append("    3. Restore the VM:")
         lines.append(f"       $ gce-rescue restore {vm_name} --zone={zone}")
 
+        # Detect-only findings get their own guidance block, outside the
+        # rescue/restore steps.
+        if detect_only:
+            lines.append("")
+            lines.extend(self._format_detect_only_steps(
+                detect_only, detect_only_errors, vm_name, zone))
+
         return "\n".join(lines)
+
+    def _format_detect_only_steps(
+        self, categories: List[str], errors: List[Dict[str, Any]],
+        vm_name: str, zone: str
+    ) -> List[str]:
+        """Format guidance for detect-only categories (no rescue workflow).
+
+        Detect-only findings (e.g. CPU lockups) are runtime conditions, so
+        the guidance is rendered as plain steps, never as shell commands
+        inside a rescue/restore cycle.
+        """
+        lines: List[str] = []
+        for cat in categories:
+            lines.append(f"  {_category_label(cat)}:")
+            seen = set()
+            guidance = CATEGORY_FIX_GUIDANCE.get(cat)
+            if guidance:
+                guidance = guidance.replace(
+                    'VM_NAME', vm_name).replace('ZONE', zone)
+                seen.add(guidance)
+                lines.append(f"    - {guidance}")
+            for err in errors:
+                if err['category'] != cat:
+                    continue
+                for fix in err.get('suggested_fixes', []):
+                    fix = fix.replace('VM_NAME', vm_name).replace('ZONE', zone)
+                    if fix not in seen:
+                        seen.add(fix)
+                        lines.append(f"    - {fix}")
+        return lines
 
     def _format_healthy(self, diagnosis: Dict[str, Any]) -> str:
         """Format a healthy VM report."""
@@ -273,7 +337,11 @@ class DiagnosisReportFormatter:
             )
 
         lines.append("")
-        lines.append(dim("Note: Currently checks fstab errors only. "
+        # Derive the checked categories from the loaded rules so this note
+        # can never go stale when new diagnose_rules/*.yaml files land.
+        from ..core.diagnosis import BOOT_ERROR_PATTERNS
+        categories = sorted({p.category for p in BOOT_ERROR_PATTERNS})
+        lines.append(dim(f"Note: Currently checks: {', '.join(categories)}. "
                          "If the VM still won't boot, check the serial console:"))
         gcloud_cmd = f"  $ gcloud compute instances get-serial-port-output {vm_name} --zone={zone}"
         if project:
@@ -367,8 +435,24 @@ def _category_label(category: str) -> str:
     labels = {
         'fstab': 'Fix /etc/fstab',
         'grub': 'Repair GRUB',
+        'firmware': 'Repair boot device',
         'kernel': 'Check kernel',
         'filesystem': 'Fix filesystem',
         'initramfs': 'Rebuild initramfs',
+        'disk_full': 'Free disk space',
+        'ssh': 'Fix SSH configuration',
+        'cpu_lockup': 'Investigate CPU lockup',
+        'lvm': 'Activate LVM volume group',
+        'crypt': 'Handle encrypted (LUKS) disk',
+        'raid': 'Repair RAID array',
+        'machine_id': 'Regenerate machine-id',
+        'switchroot': 'Restore working init (switch_root)',
+        'systemd_early': 'Fix early systemd boot failure',
+        'readonly': 'Recover read-only filesystem',
+        'oom': 'Investigate out-of-memory kills',
+        'selinux': 'Fix SELinux policy/relabel',
+        'startup_script': 'Fix startup script',
+        'cloud_init': 'Fix cloud-init configuration',
+        'network': 'Fix network configuration',
     }
     return labels.get(category, f'Fix {category}')

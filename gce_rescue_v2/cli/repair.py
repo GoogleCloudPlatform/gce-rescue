@@ -7,14 +7,25 @@ import uuid
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TextIO
 from ..core.config import build_user_agent
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
 from ..utils.logger import setup_logging
 from ..orchestration.checkpoint import CheckpointManager
 from .output import _Spinner, _format_duration
-from .preflight import get_gcloud_config, _create_tracked_client
+from .preflight import (
+    get_gcloud_config, _create_tracked_client, check_local_ssd_quiet_gate,
+)
 from .checkpoint_ui import _handle_checkpoint_rollback
+
+# Human-readable labels for fix categories, shared by the repair plan
+# display and the per-category result lines.
+FIX_LABELS = {
+    'fstab': 'Fix fstab',
+    'filesystem': 'Fix filesystem',
+    'initramfs': 'Rebuild initramfs',
+    'grub': 'Fix GRUB',
+}
 
 
 def _show_boot_verification(boot_verified: Optional[bool],
@@ -32,6 +43,25 @@ def _show_boot_verification(boot_verified: Optional[bool],
         print("Consider using rescue mode for manual investigation:")
         print(f"  $ gce-rescue rescue {vm_name} --zone={zone}")
     # If None, skip silently (couldn't verify)
+
+
+def _show_no_change_outcomes(result: Dict[str, Any],
+                             file: Optional[TextIO] = None) -> None:
+    """Print a [NO_CHANGE] line for each category whose fix found nothing.
+
+    Without these, a category whose fix script ran and reported NO_ISSUES
+    would simply vanish from the results. Categories with success/failed
+    outcomes keep their existing presentation (fix lines / error text), so
+    only 'no_issues' outcomes are rendered here. The key is absent when the
+    orchestrator could not attribute markers to categories.
+    """
+    for outcome in result.get('category_outcomes', []):
+        if outcome.get('kind') != 'no_issues':
+            continue
+        category = outcome.get('category', '')
+        label = FIX_LABELS.get(category, f'Fix {category}')
+        print(f"  [NO_CHANGE] {label}: no issues found - nothing to fix",
+              file=file or sys.stdout)
 
 
 def _show_repair_results(result: Dict[str, Any], vm_name: str,
@@ -55,6 +85,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         for line in fix_lines:
             colored_line = line.replace('[FIXED]', green('[FIXED]'), 1)
             print(f"  {colored_line}")
+        _show_no_change_outcomes(result)
         issue_word = "issue" if fixed_count == 1 else "issues"
         print(f"  {fixed_count} {issue_word} fixed.")
         if any('fstab' in line.lower() for line in fix_lines):
@@ -72,7 +103,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
     elif status == 'no_issues':
         print("")
         print("Repair results:")
-        print("  No issues needed fixing (fstab entries were already valid).")
+        print("  No issues needed fixing (boot configuration was already valid).")
         if snapshot_name:
             print(f"  Backup snapshot: {snapshot_name}")
         print("")
@@ -97,6 +128,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
             if any('fstab' in line.lower() for line in fix_lines):
                 print(f"  Original fstab backed up to: /etc/fstab.gce-repair-backup",
                       file=sys.stderr)
+        _show_no_change_outcomes(result, file=sys.stderr)
         print("", file=sys.stderr)
         print(f"Instance [{vm_name}] has been restored and is running.", file=sys.stderr)
         if snapshot_name:
@@ -120,6 +152,39 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if project:
             ssh_cmd += f" --project={project}"
         print(ssh_cmd, file=sys.stderr)
+        restore_cmd = f"  $ gce-rescue restore {vm_name}"
+        if zone:
+            restore_cmd += f" --zone={zone}"
+        if project:
+            restore_cmd += f" --project={project}"
+        print(restore_cmd, file=sys.stderr)
+        return 1
+
+    elif status == 'fix_in_progress':
+        # resume() refused to restore: the previous session's fix scripts
+        # could not be confirmed complete, and restoring stops the VM -
+        # which would interrupt a still-running fsck/rebuild mid-write.
+        print("", file=sys.stderr)
+        print(f"{error_prefix()} {error}", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("The VM was left in rescue mode; nothing was restored.",
+              file=sys.stderr)
+        print("Check the serial console for fix progress:", file=sys.stderr)
+        serial_cmd = f"  $ gcloud compute instances get-serial-port-output {vm_name}"
+        if zone:
+            serial_cmd += f" --zone={zone}"
+        if project:
+            serial_cmd += f" --project={project}"
+        print(serial_cmd, file=sys.stderr)
+        print("Re-run repair once the fix has finished:", file=sys.stderr)
+        repair_cmd = f"  $ gce-rescue repair {vm_name}"
+        if zone:
+            repair_cmd += f" --zone={zone}"
+        if project:
+            repair_cmd += f" --project={project}"
+        print(repair_cmd, file=sys.stderr)
+        print("To restore anyway (may interrupt a running fix):",
+              file=sys.stderr)
         restore_cmd = f"  $ gce-rescue restore {vm_name}"
         if zone:
             restore_cmd += f" --zone={zone}"
@@ -156,7 +221,7 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
 
     elif status == 'unknown':
         # All phases completed but repair markers not found in serial output.
-        # The fix likely applied but we couldn't parse confirmation.
+        # The fix may have applied but there is no confirmation.
         print("")
         print(f"{warning_prefix()} Repair completed but could not confirm fix results"
               f" from serial console.")
@@ -168,6 +233,17 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
         if snapshot_name:
             print(f"Backup snapshot: {snapshot_name}")
         _show_boot_verification(boot_verified, boot_errors_after, vm_name, zone)
+        # Unconfirmed fix + post-restore boot STILL failing = the repair did
+        # not work; automation must see a non-zero exit (a VM was observed
+        # restored still kernel-panicking with exit 0 here). boot_verified
+        # None (inconclusive, e.g. serial disabled) keeps exit 0 with the
+        # warning above.
+        if boot_verified is False:
+            print(
+                f"\n{error_prefix()} Boot verification still detects errors - "
+                f"the repair likely did not apply.", file=sys.stderr
+            )
+            return 1
         return 0
 
     else:
@@ -178,7 +254,8 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
 
 
 def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
-                           project: str, fix_script: str) -> int:
+                           project: str, fix_script: str,
+                           local_ssds: list = None) -> int:
     """Run repair with a custom fix script (--fix-script), skipping diagnosis.
 
     Shows the supplied script and the repair plan, asks for confirmation
@@ -188,29 +265,42 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
     script_name = Path(args.fix_script).name
 
     if not args.quiet:
-        print(f"Repair: {args.instance_name} ({args.zone})")
-        print("")
-        print(f"  Custom fix script: {args.fix_script} "
-              f"({len(script_lines)} lines)")
+        # Build the confirmation block as a list so we can clear exactly as many
+        # lines as we printed, without a manual running tally.
         preview = script_lines[:15]
-        for line in preview:
-            print(f"    | {line}")
+        block = [
+            f"Repair: {args.instance_name} ({args.zone})",
+            "",
+            f"  Custom fix script: {args.fix_script} ({len(script_lines)} lines)",
+        ]
+        block += [f"    | {line}" for line in preview]
         if len(script_lines) > len(preview):
-            print(f"    | ... ({len(script_lines) - len(preview)} more lines)")
-        print("")
-        print("  Repair plan:")
+            block.append(
+                f"    | ... ({len(script_lines) - len(preview)} more lines)"
+            )
+        block += ["", "  Repair plan:"]
         step = 1
         if getattr(args, 'snapshot', True):
-            print(f"    {step}. Create backup snapshot of boot disk")
+            block.append(f"    {step}. Create backup snapshot of boot disk")
             step += 1
-        print(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
+        block.append(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
         step += 1
-        print(f"    {step}. Run the custom fix script against the affected disk")
+        block.append(
+            f"    {step}. Run the custom fix script against the affected disk"
+        )
         step += 1
-        print(f"    {step}. Restore original boot disk and start VM")
-        print("")
-        print("  Diagnosis is skipped: the script runs exactly as provided.")
-        print("")
+        block.append(f"    {step}. Restore original boot disk and start VM")
+        block += ["", "  Diagnosis is skipped: the script runs exactly as provided."]
+        if local_ssds:
+            block += [
+                "",
+                f"  {warning_prefix()} Data on Local SSDs"
+                f" ({', '.join(local_ssds)}) will be permanently lost.",
+            ]
+        block.append("")
+
+        for line in block:
+            print(line)
 
         try:
             response = input("  Proceed? [y/N]: ").strip().lower()
@@ -220,7 +310,10 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
         if response not in ('y', 'yes'):
             print("\nAborted by user.")
             return 0
-        print("")
+
+        # Clear the confirmation block (+1 for the prompt line); the concise
+        # header below replaces it.
+        clear_lines(len(block) + 1)
 
     # Concise repair header
     print(f"Repairing instance [{args.instance_name}]:")
@@ -350,8 +443,8 @@ def handle_repair(args: argparse.Namespace) -> int:
         # Validate --rescue-image BEFORE any destructive ops. Same shared
         # helper used by handle_rescue. Resolved size is mutated onto the
         # orchestrator's config so the inner rescue phase uses it.
+        from . import preflight as _preflight
         if getattr(args, 'rescue_image', None):
-            from . import preflight as _preflight
             size_gb, err = _preflight.validate_custom_rescue_image(
                 compute, vm, args.rescue_image,
                 session_id=session_id, command='repair', mode=mode,
@@ -360,6 +453,36 @@ def handle_repair(args: argparse.Namespace) -> int:
                 print(f"{error_prefix()} {err}", file=sys.stderr)
                 return 1
             orchestrator.config.custom_rescue_image_size_gb = size_gb
+
+        # Pre-flight: is the rescue image's project allowed by org policy?
+        # Catches constraints/compute.trustedImageProjects BEFORE stopping the VM
+        # (zero downtime). Fails open if the policy can't be read. Issue #122.
+        image_project = _preflight.resolve_rescue_image_project(
+            vm, rescue_image_url=getattr(args, 'rescue_image', None)
+        )
+        policy_err = _preflight.check_image_org_policy(
+            compute, project, image_project, command='repair',
+            instance_name=args.instance_name,
+        )
+        if policy_err:
+            print(f"{error_prefix()} {policy_err}", file=sys.stderr)
+            return 1
+
+        # Local SSD safety gate (shared with rescue). In --quiet mode require
+        # --force; otherwise proceed but make the data loss explicit and ensure
+        # the stop discards Local SSDs (force) so it doesn't fail mid-operation.
+        local_ssds, ssd_err = check_local_ssd_quiet_gate(
+            vm, args.instance_name, args.zone, 'repair',
+            args.quiet, getattr(args, 'force', False),
+        )
+        if ssd_err:
+            print(f"{error_prefix()} {ssd_err}", file=sys.stderr)
+            return 1
+        if local_ssds:
+            # Stopping the VM destroys Local SSD data; force the discard so the
+            # stop succeeds (matches rescue). The data-loss warning is shown in
+            # the confirmation plan blocks below, right before the Proceed prompt.
+            config.force = True
 
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])
@@ -467,7 +590,7 @@ def handle_repair(args: argparse.Namespace) -> int:
     # Custom fix script (--fix-script): skip diagnosis, run the supplied fix
     if config.fix_script:
         return _run_custom_fix_script(args, orchestrator, project,
-                                      config.fix_script)
+                                      config.fix_script, local_ssds=local_ssds)
 
     # Diagnose
     spinner = _Spinner("Analyzing serial console output")
@@ -528,13 +651,9 @@ def handle_repair(args: argparse.Namespace) -> int:
 
     # Repair path: show compact summary + plan, get confirmation, then clear
     if not args.quiet:
-        lines_to_clear = 0
-
-        # Header
-        print(f"Repair: {args.instance_name} ({args.zone})")
-        lines_to_clear += 1
-        print("")
-        lines_to_clear += 1
+        # Build the confirmation block as a list so we can clear exactly as many
+        # lines as we printed, without a manual running tally.
+        block = [f"Repair: {args.instance_name} ({args.zone})", ""]
 
         # Compact issue summary grouped by category
         category_counts: Dict[str, int] = Counter(
@@ -555,34 +674,29 @@ def handle_repair(args: argparse.Namespace) -> int:
                     sev_parts.append(f"{severity_counts[cat][sev]} {sev}")
             sev_str = ', '.join(sev_parts)
             issue_word = 'issue' if count == 1 else 'issues'
-            print(f"  Found {count} {cat} {issue_word} ({sev_str})")
-            lines_to_clear += 1
+            block.append(f"  Found {count} {cat} {issue_word} ({sev_str})")
 
         # Unfixable warnings
         if unfixable:
             for cat in unfixable:
-                print(
+                block.append(
                     f"  {warning_prefix()} [{cat.upper()}] requires manual repair"
                 )
-                lines_to_clear += 1
 
-        print("  Run 'diagnose' for details.")
-        lines_to_clear += 1
-        print("")
-        lines_to_clear += 1
-
-        # Repair plan
-        print("  Repair plan:")
-        lines_to_clear += 1
+        block += ["  Run 'diagnose' for details.", "", "  Repair plan:"]
         step = 1
         if snapshot_enabled:
-            print(f"    {step}. Create backup snapshot of boot disk")
-            lines_to_clear += 1
+            block.append(f"    {step}. Create backup snapshot of boot disk")
             step += 1
-        print(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
-        lines_to_clear += 1
+        block.append(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
         step += 1
         # Build fix descriptions with extracted identifiers
+        fix_descriptions = {
+            'filesystem': 'Repair filesystem errors (fsck before mount)',
+            'fstab': 'Fix /etc/fstab (comment out invalid entries)',
+            'initramfs': 'Rebuild the initramfs for the installed kernel',
+            'grub': 'Reinstall GRUB and regenerate its configuration',
+        }
         if fstab_targets:
             from ..utils.report_formatter import _extract_identifier
             identifiers = []
@@ -594,32 +708,25 @@ def handle_repair(args: argparse.Namespace) -> int:
                     identifiers.append(ident)
             if identifiers:
                 target_str = ', '.join(bold(i) for i in identifiers)
-                fix_descriptions = {
-                    'fstab': f'Fix /etc/fstab (comment out {target_str})',
-                }
-            else:
-                fix_descriptions = {
-                    'fstab': 'Fix /etc/fstab (comment out invalid entries)',
-                }
-        else:
-            fix_descriptions = {
-                'fstab': 'Fix /etc/fstab (comment out invalid entries)',
-            }
+                fix_descriptions['fstab'] = (
+                    f'Fix /etc/fstab (comment out {target_str})'
+                )
         for cat in fixable:
             desc = fix_descriptions.get(cat, f'Fix {cat}')
-            print(f"    {step}. {desc}")
-            lines_to_clear += 1
+            block.append(f"    {step}. {desc}")
             step += 1
-        print(f"    {step}. Restore original boot disk and start VM")
-        lines_to_clear += 1
-        print("")
-        lines_to_clear += 1
+        block.append(f"    {step}. Restore original boot disk and start VM")
+        if local_ssds:
+            block.append(f"  {warning_prefix()} Data on Local SSDs"
+                         f" ({', '.join(local_ssds)}) will be permanently lost.")
+        block.append("")
+
+        for line in block:
+            print(line)
 
         # Confirmation
         try:
-            response = input(
-                "  Proceed? [y/N]: "
-            ).strip().lower()
+            response = input("  Proceed? [y/N]: ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             return 0
@@ -628,10 +735,8 @@ def handle_repair(args: argparse.Namespace) -> int:
             print("\nAborted by user.")
             return 0
 
-        lines_to_clear += 1  # input line
-
-        # Clear diagnosis + plan + confirmation
-        clear_lines(lines_to_clear)
+        # Clear diagnosis + plan + confirmation (+1 for the prompt line)
+        clear_lines(len(block) + 1)
 
     # Print concise repair header
     print(f"Repairing instance [{args.instance_name}]:")
@@ -649,9 +754,8 @@ def handle_repair(args: argparse.Namespace) -> int:
     if snapshot_enabled:
         plan_parts.append("Snapshot")
     plan_parts.append("Rescue")
-    fix_labels = {'fstab': 'Fix fstab'}
     for cat in fixable:
-        plan_parts.append(fix_labels.get(cat, f'Fix {cat}'))
+        plan_parts.append(FIX_LABELS.get(cat, f'Fix {cat}'))
     plan_parts.append("Restore")
     print(f"  Plan:   {' -> '.join(plan_parts)}")
     print("")

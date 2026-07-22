@@ -179,6 +179,20 @@ foreach ($drive in $mountedDrives) {
 # This must happen before any operations that might fail (like desktop file creation)
 Write-Log ""
 Write-Log "GCE-RESCUE-COMPLETE"
+# Reliable completion signal: set a guest attribute the orchestrator polls.
+# The serial console can drop the script's final output burst before the
+# process exits, so the marker above is best-effort; this is deterministic.
+# The value is a per-session token (substituted by the orchestrator): guest
+# attributes persist across stop/start/restore, so a stale COMPLETE from a
+# previous rescue would short-circuit the next session's verification.
+try {
+    Invoke-RestMethod -Method PUT -Headers @{'Metadata-Flavor' = 'Google'} `
+        -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/gce-rescue/status' `
+        -Body 'SESSION_ID_PLACEHOLDER' -TimeoutSec 10 -ErrorAction SilentlyContinue | Out-Null
+    Write-Log "Set guest attribute gce-rescue/status (session-scoped)"
+} catch {
+    Write-Log "WARNING: could not set completion guest attribute: $_"
+}
 Write-Log "=== Startup script completed successfully ==="
 
 Write-Log ""

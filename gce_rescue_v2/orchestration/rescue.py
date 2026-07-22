@@ -10,6 +10,7 @@ Coordinates the rescue workflow:
 """
 
 import time
+import uuid
 from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX, build_user_agent
 from .compose import (
     compose_startup_script, compose_startup_script_windows, strip_shebang,
@@ -103,6 +104,13 @@ class RescueOrchestrator:
         self.logger = logger
         self.log_file = log_file
         self._startup_script_override = startup_script_override
+        # Per-session completion token for the guest-attribute signal. Guest
+        # attributes persist across stop/start/restore and cannot be cleared
+        # from outside the VM, so a bare COMPLETE left by a PREVIOUS rescue
+        # of this VM would make verification succeed instantly - before this
+        # session's startup script (and any embedded fixes) ran. The startup
+        # script writes this token; verification only accepts this token.
+        self._completion_token = f"COMPLETE-{uuid.uuid4().hex[:12]}"
         self._suppress_progress = suppress_progress
         self._progress_callback = progress_callback
         self.session_id = session_id
@@ -128,6 +136,7 @@ class RescueOrchestrator:
 
         # Verification status (set after startup verification)
         self.verification_succeeded = None
+        self.verification_result = None  # Full OperationResult (timeout details, etc.)
 
         # Snapshot name (set if snapshot created successfully)
         self.snapshot_name = None
@@ -233,28 +242,36 @@ class RescueOrchestrator:
             self._progress_callback(phase)
         self._log_debug(f"Phase: {phase}")
 
-    def _finish_progress(self, success: bool = True):
-        """Finish spinner display with final status."""
+    def _finish_progress(self, success: bool = True, error: str = None):
+        """Finish spinner display with final status.
+
+        When `error` (a pre-formatted, user-facing block) is supplied for a
+        failure, it is printed AFTER the FAILED line so it never interleaves
+        with the live spinner. Operations record the same detail to the log
+        file; in debug mode the spinner is off and the detail is already in the
+        console logs, so it is not reprinted here.
+        """
         import sys
 
-        if not self._progress_started:
-            return
+        if self._progress_started:
+            # Stop spinner thread
+            self._spinner_stop = True
+            if self._spinner_thread:
+                self._spinner_thread.join(timeout=0.5)
 
-        # Stop spinner thread
-        self._spinner_stop = True
-        if self._spinner_thread:
-            self._spinner_thread.join(timeout=0.5)
+            if not self._is_debug_mode:
+                with self._progress_lock:
+                    phases_str = " -> ".join(self._progress_phases)
+                    current_step = len(self._progress_phases)
 
-        if not self._is_debug_mode:
-            with self._progress_lock:
-                phases_str = " -> ".join(self._progress_phases)
-                current_step = len(self._progress_phases)
+                if success:
+                    sys.stdout.write(f"\r ({self._total_steps}/{self._total_steps}) [{phases_str}] done.\n")
+                else:
+                    sys.stdout.write(f"\r ({current_step}/{self._total_steps}) [{phases_str}] FAILED.\n")
+                sys.stdout.flush()
 
-            if success:
-                sys.stdout.write(f"\r ({self._total_steps}/{self._total_steps}) [{phases_str}] done.\n")
-            else:
-                sys.stdout.write(f"\r ({current_step}/{self._total_steps}) [{phases_str}] FAILED.\n")
-            sys.stdout.flush()
+        if error and not getattr(self, '_is_debug_mode', False):
+            print(f"\n{error}", file=sys.stderr)
 
     def _log_info(self, message: str):
         """Log info message."""
@@ -491,6 +508,18 @@ class RescueOrchestrator:
 
         self._log_debug("Creating validation runner")
 
+        # Validate a custom fix script's pre-mount markers BEFORE any VM
+        # mutation: composition happens at step 6 (VM already stopped, disks
+        # swapped), and a malformed block failing there strands the VM in a
+        # half-rescued state for a purely textual error.
+        if self.config.fix_script:
+            from .compose import extract_premount_blocks
+            try:
+                extract_premount_blocks(strip_shebang(self.config.fix_script))
+            except ValueError as e:
+                self._log_error(f"Invalid --fix-script: {e}")
+                return False
+
         runner = ValidationRunner()
 
         # Add validators with tracking labels
@@ -591,7 +620,7 @@ class RescueOrchestrator:
                 )
                 self.state_tracker.add_operation("Stop VM", result.success, result.message, result.rollback_data, step_number=1)
                 if not result.success:
-                    self._finish_progress(False)
+                    self._finish_progress(False, error=result.error)
                     self._rollback()
                     return False
                 # Update checkpoint after successful step
@@ -613,7 +642,7 @@ class RescueOrchestrator:
                 )
                 self.state_tracker.add_operation("Detach Boot Disk", result.success, result.message, result.rollback_data, step_number=2)
                 if not result.success:
-                    self._finish_progress(False)
+                    self._finish_progress(False, error=result.error)
                     self._rollback()
                     return False
                 # Update checkpoint
@@ -641,7 +670,7 @@ class RescueOrchestrator:
 
                 if not result.success:
                     if self.config.require_snapshot:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                 else:
@@ -736,7 +765,7 @@ class RescueOrchestrator:
                     )
                     self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data, step_number=4)
                     if not result.success:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                     # Update checkpoint
@@ -768,7 +797,7 @@ class RescueOrchestrator:
                     )
                     self.state_tracker.add_operation("Attach Rescue Disk", result.success, result.message, result.rollback_data, step_number=5)
                     if not result.success:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                     # Update checkpoint
@@ -783,6 +812,13 @@ class RescueOrchestrator:
             if not self._should_skip_step(6):
                 self._log_debug("Setting rescue metadata...")
                 startup_script = self._generate_startup_script()
+                # Session-scope the guest-attribute completion signal. Done
+                # here (not in _generate_startup_script) so it also covers
+                # startup_script_override payloads composed by the repair
+                # orchestrator, which pass the placeholder through.
+                startup_script = startup_script.replace(
+                    'SESSION_ID_PLACEHOLDER', self._completion_token
+                )
 
                 if self.os_type == OS_TYPE_WINDOWS:
                     script_key = 'windows-startup-script-ps1'
@@ -793,7 +829,12 @@ class RescueOrchestrator:
                     {'key': script_key, 'value': startup_script},
                     {'key': 'rescue-mode', 'value': str(int(time.time()))},
                     {'key': 'rescue-original-disk', 'value': self.original_disk_name},
-                    {'key': 'rescue-os-type', 'value': self.os_type}
+                    {'key': 'rescue-os-type', 'value': self.os_type},
+                    # Let the guest write a guest attribute on completion, which
+                    # the orchestrator polls as a reliable alternative to the
+                    # serial-console marker (serial can drop the script's final
+                    # output burst before the process exits).
+                    {'key': 'enable-guest-attributes', 'value': 'TRUE'},
                 ]
                 result = set_metadata.execute(
                     vm_name=self.vm_name,
@@ -802,7 +843,7 @@ class RescueOrchestrator:
                 )
                 self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data, step_number=6)
                 if not result.success:
-                    self._finish_progress(False)
+                    self._finish_progress(False, error=result.error)
                     self._rollback()
                     return False
                 # Update checkpoint - include Windows password if set
@@ -841,7 +882,7 @@ class RescueOrchestrator:
                     )
                     self.state_tracker.add_operation("Start VM", result.success, result.message, result.rollback_data, step_number=7)
                     if not result.success:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                     # Update checkpoint
@@ -916,7 +957,7 @@ class RescueOrchestrator:
                     )
                     self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data, step_number=8)
                     if not result.success:
-                        self._finish_progress(False)
+                        self._finish_progress(False, error=result.error)
                         self._rollback()
                         return False
                     # Update checkpoint
@@ -932,12 +973,18 @@ class RescueOrchestrator:
                 self._update_progress("Attaching affected disk")
                 self._log_debug("Verifying startup script...")
                 verify_startup = VerifyStartupOperation(self.compute, self.project, self.zone, self.logger)
+                # expected_completion_value: only THIS session's token counts
+                # (stale guest attributes from previous rescues must not).
+                # If a resumed session re-runs step 9 with a fresh token, the
+                # serial-marker fallback still verifies completion.
                 result = verify_startup.execute(
                     vm_name=self.vm_name,
-                    timeout=self.config.startup_verification_timeout,
-                    tracking_label=self._ua('vm-verify-startup')
+                    timeout=self.config.effective_verification_timeout(self.os_type),
+                    tracking_label=self._ua('vm-verify-startup'),
+                    expected_completion_value=self._completion_token
                 )
                 self.verification_succeeded = result.success
+                self.verification_result = result
                 # Don't fail on verification timeout - continue
                 # Update checkpoint (final step)
                 self.checkpoint_manager.update_checkpoint(
@@ -1026,7 +1073,7 @@ class RescueOrchestrator:
             fallback_script = self._get_linux_fallback_script()
 
         if script_file.exists():
-            with open(script_file, 'r') as f:
+            with open(script_file, 'r', encoding='utf-8') as f:
                 script = f.read()
                 # Replace disk name placeholder
                 script = script.replace('DISK_NAME_PLACEHOLDER', self.original_disk_name)

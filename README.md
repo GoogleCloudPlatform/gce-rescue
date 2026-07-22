@@ -95,6 +95,14 @@ pip install .
    gce-rescue repair VM_NAME --zone=ZONE
    ```
 
+**Already know the fix?** — supply your own fix script (skips diagnosis)
+   ```bash
+   gce-rescue repair VM_NAME --zone=ZONE --fix-script=fix.sh
+   ```
+   Ideal for large-scale events where many VMs share one known fix: the script
+   runs against the mounted boot disk, then the VM is restored and boot-verified
+   automatically. Add `--quiet` for automation.
+
 **Need manual access?** — enter rescue mode, fix it yourself
    ```bash
    gce-rescue rescue VM_NAME --zone=ZONE
@@ -152,6 +160,8 @@ More info: [Application Default Credentials](https://cloud.google.com/docs/authe
 | `--project` | GCP project (default: current gcloud config) |
 | `--no-snapshot` | Skip safety snapshot (faster) |
 | `--rescue-image` | Custom rescue disk image URL (must match VM's OS family + architecture). Useful for restricted-image org policies or hardened rescue environments. Available for `rescue` and `repair`. |
+| `--fix-script` | Path to a custom fix script (bash on Linux, PowerShell on Windows) to run against the affected disk after it is mounted — skips diagnosis. With `repair` the VM is restored and boot-verified afterwards; with `rescue` it stays in rescue mode for inspection. The affected disk is mounted at `/mnt/sysroot` on Linux; on Windows its partitions get drive letters from `D:` onward (iterate non-`C:` volumes rather than assuming `D:`). |
+| `--verification-timeout` | Seconds to wait for the rescue VM startup script to complete (serial console marker). Overrides the OS-aware default (Linux: 300, Windows: 600). Raise it for slow-booting VMs. Available for `rescue` and `repair`. |
 | `--quiet` | No confirmation prompts (for automation) |
 | `--format` | Output format: `json`, `yaml`, `table` |
 
@@ -162,6 +172,7 @@ More info: [Application Default Credentials](https://cloud.google.com/docs/authe
 | **Linux + Windows** | Auto-detects OS, uses appropriate rescue environment |
 | **Boot Diagnostics** | Serial console analysis for fstab, GRUB, kernel, filesystem errors |
 | **Auto-Repair** | Automated fix for fstab errors (more categories planned) |
+| **Custom Fix Scripts** | Bring your own fix (`--fix-script`) for known issues at scale — no diagnosis needed |
 | **Automatic Rollback** | Operations roll back on failure |
 | **Session Recovery** | Resume or rollback interrupted operations |
 | **Safety Snapshots** | Backup snapshot before any changes (default) |

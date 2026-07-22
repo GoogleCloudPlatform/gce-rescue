@@ -1,0 +1,33 @@
+category: disk_full
+# A boot-success marker does not mean the disk is no longer full — a VM
+# can finish booting while writes keep failing. Findings must survive the
+# RUNNING + "Startup finished" suppression.
+survives_boot_success: true
+fix_guidance: "sudo du -xh /mnt/sysroot --max-depth=2 | sort -rh | head -20"
+auto_repair: false
+
+patterns:
+  - name: disk_full_no_space
+    severity: critical
+    description: "Boot disk has no free space (writes are failing)"
+    # Match only lines ENDING with the ENOSPC phrase, and exclude sources
+    # that return ENOSPC without the disk being full:
+    #   - inotify watch/instance exhaustion (systemd "directory watch", tail)
+    #   - cgroup limits on container hosts (kubelet/docker mkdir /sys/fs/cgroup)
+    # Lines merely quoting the phrase mid-sentence no longer match either.
+    regex:
+    # [ \t]*$ (not \s*$) so the match stops at end-of-line and the trailing
+    # newline never leaks into detected_pattern / JSON output.
+      - '^(?!.*(?:inotify|directory watch|/sys/fs/cgroup)).*No space left on device[ \t]*$'
+    fixes:
+      - "Free space from rescue mode: clear journals (/mnt/sysroot/var/log/journal), /mnt/sysroot/tmp and old kernels/packages"
+      - "Or resize the boot disk: gcloud compute disks resize DISK_NAME --zone=ZONE --size=NEW_SIZE_GB, then reboot to auto-expand"
+
+  - name: disk_full_guest_agent
+    severity: error
+    description: "Guest agent cannot write temporary files (disk likely full)"
+    regex:
+      - 'No usable temporary directory found'
+    fixes:
+      - "Free space in /mnt/sysroot/tmp and /mnt/sysroot/var so the guest agent and OS Config agent can write again"
+      - "Check usage from rescue mode: df -h /mnt/sysroot"

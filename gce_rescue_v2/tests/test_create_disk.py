@@ -31,7 +31,7 @@ class TestCreateDiskOperation:
     def test_create_disk_success(self):
         """Test successful disk creation."""
         # Arrange
-        with patch.object(self.operation, '_wait_for_status', return_value=True):
+        with patch.object(self.operation, '_wait_for_operation', return_value=True):
             result = self.operation.execute(
                 disk_name='rescue-disk',
                 size_gb=10,
@@ -47,14 +47,29 @@ class TestCreateDiskOperation:
         assert args['body']['sizeGb'] == '10'
 
     def test_create_disk_timeout(self):
-        """Test timeout waiting for disk creation."""
-        # Arrange
-        with patch.object(self.operation, '_wait_for_status', return_value=False):
+        """Test timeout waiting for the disk-create operation."""
+        # Arrange: operation never completes, no specific error captured
+        with patch.object(self.operation, '_wait_for_operation', return_value=False):
             result = self.operation.execute(disk_name='rescue-disk', timeout=1)
 
         # Assert
         assert result.success is False
         assert "Timeout" in result.message
+
+    def test_create_disk_org_policy_error(self):
+        """Operation failing with a trustedImageProjects violation -> actionable msg."""
+        # The async operation result carries the org-policy error; surface it.
+        self.operation._last_operation_error = (
+            "Constraint constraints/compute.trustedImageProjects violated for "
+            "projects/p. Image projects/debian-cloud/... is not allowed."
+        )
+        with patch.object(self.operation, '_wait_for_operation', return_value=False):
+            result = self.operation.execute(disk_name='rescue-disk')
+
+        assert result.success is False
+        # Mapped to the actionable rescue-image guidance, not a generic timeout
+        assert '--rescue-image' in result.error
+        assert 'Timeout' not in result.message
 
     def test_create_disk_api_error(self):
         """Test API error during creation."""

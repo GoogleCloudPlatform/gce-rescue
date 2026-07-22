@@ -1,0 +1,57 @@
+# Out-of-memory killer patterns (mode 55 - live OOM without a panic).
+#
+# CONTRACT CHANGE (Wave 4, deliberate): before this file existed, OOM-killer
+# lines ('Out of memory: Killed process', 'invoked oom-killer') matched
+# NOTHING - they appeared only as context in kernel_panic_oom fixtures and
+# as proof that grub/disk_full anchors don't cross-fire. They now produce a
+# WARNING-severity oom finding. On a panic_on_oom buffer BOTH findings are
+# reported: oom (warning, the kill) and kernel_panic_oom (critical, the
+# panic). That is safe post-Wave-3: tier-1 dedupe suppressors require
+# CRITICAL severity and _is_boot_root_cause() excludes warnings and
+# detect-only categories, so this finding can never suppress or demote
+# anything.
+category: oom
+fix_guidance: "Identify the killed process in the serial output, then reduce its memory usage, add swap, or resize the VM: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
+auto_repair: false
+# detect_only: there is nothing on the rescued disk to edit - OOM is a
+# workload/sizing condition; the remedy is a bigger machine type, swap, or
+# fixing the memory-hungry process. Rescue mode does not apply.
+detect_only: true
+# Runtime kills persist past boot: a long-running VM that OOM-killed a
+# process last week still has the evidence in its serial buffer, and a
+# "Startup finished" marker does not mean memory pressure is resolved.
+# Severity WARNING keeps this non-alarmist: a single historical kill on an
+# otherwise healthy VM is worth surfacing, not paging over.
+survives_boot_success: true
+
+patterns:
+  # One pattern (not one per line): the 'invoked oom-killer' and
+  # 'Out of memory: Killed process' lines are two halves of the SAME kill
+  # event, so they must produce a single finding, not two.
+  - name: oom_killed_process
+    severity: warning
+    description: "The kernel out-of-memory killer terminated a process (VM ran out of memory)"
+    regex:
+      # Modern kernels: "Out of memory: Killed process 1234 (java) ...";
+      # pre-4.6: "Out of memory: Kill process 1234 (java) score 500 or
+      # sacrifice child". Bound to the PID so prose can't match.
+      - 'Out of memory: Kill(?:ed)? process \d+'
+      # The invocation header: "java invoked oom-killer: gfp_mask=0x...".
+      # Bound to the gfp_mask= tail (always present) - 'invoked
+      # oom-killer' alone could be quoted in application logs.
+      - 'invoked oom-killer: gfp_mask='
+      # cgroup-scoped kills ("Memory cgroup out of memory: Killed process
+      # ...") already match the first regex; the oom-kill summary line
+      # (4.19+) is a distinct wording:
+      # DECISION (red-team C5): memcg/container kills DELIBERATELY still
+      # match - a regex-level exclusion is impossible (the 'invoked
+      # oom-killer: gfp_mask=' header is byte-identical for global and
+      # memcg kills) and a memcg kill can still be the customer's real
+      # problem. The container-vs-VM distinction is handled in the fixes
+      # text instead; WARNING + detect_only keeps this safe.
+      - 'oom-kill:constraint='
+    fixes:
+      - "Find the OOM report block in the serial output - it names the killed process and the per-process memory table"
+      - "If the line says 'Memory cgroup out of memory' or constraint=CONSTRAINT_MEMCG, a container/cgroup hit its OWN memory limit - raise the container/pod limit instead of resizing the VM"
+      - "Resize the VM to a larger machine type: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
+      - "Or reduce the workload's memory usage / add swap; if a critical service was killed, restart it or reboot the VM"

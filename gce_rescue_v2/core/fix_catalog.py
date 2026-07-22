@@ -6,6 +6,8 @@ Each YAML file contains both detection patterns and fix info in one place.
 Exports:
     CATEGORY_FIX_GUIDANCE: Dict mapping category -> manual fix command
     SUPPORTED_FIX_CATEGORIES: Set of categories with auto_repair: true
+    DETECT_ONLY_CATEGORIES: Set of categories with detect_only: true
+        (runtime conditions — rescue mode does not apply)
     get_fixes_for_pattern(): Look up suggested fixes by category + pattern name
 """
 
@@ -87,10 +89,12 @@ def _build_exports(
     """Build module-level exports from loaded fix data.
 
     Returns:
-        Tuple of (category_fix_guidance, supported_fix_categories, pattern_fixes_map)
+        Tuple of (category_fix_guidance, supported_fix_categories,
+        detect_only_categories, pattern_fixes_map)
     """
     guidance: Dict[str, str] = {}
     supported: Set[str] = set()
+    detect_only: Set[str] = set()
     pattern_fixes: Dict[str, Dict[str, List[str]]] = {}
 
     for category, data in fix_data.items():
@@ -99,6 +103,9 @@ def _build_exports(
         if data.get('auto_repair', False):
             supported.add(category)
 
+        if data.get('detect_only', False):
+            detect_only.add(category)
+
         pattern_fixes[category] = {}
         for pattern in data.get('patterns', []):
             pattern_name = pattern.get('name', '')
@@ -106,12 +113,13 @@ def _build_exports(
             if pattern_name and fixes:
                 pattern_fixes[category][pattern_name] = list(fixes)
 
-    return guidance, supported, pattern_fixes
+    return guidance, supported, detect_only, pattern_fixes
 
 
 # Load at module level (fail fast if fix files are broken)
 _FIX_DATA = _load_fix_files()
-CATEGORY_FIX_GUIDANCE, SUPPORTED_FIX_CATEGORIES, _PATTERN_FIXES = _build_exports(_FIX_DATA)
+(CATEGORY_FIX_GUIDANCE, SUPPORTED_FIX_CATEGORIES, DETECT_ONLY_CATEGORIES,
+ _PATTERN_FIXES) = _build_exports(_FIX_DATA)
 
 
 def get_fixes_for_pattern(category: str, pattern_name: str) -> List[str]:

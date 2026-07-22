@@ -1,0 +1,46 @@
+# LVM activation failures (RHEL/enterprise images with LVM root).
+#
+# Ownership contract: device-mapper (/dev/mapper/*, dev-mapper-*) wait
+# failures live HERE, not in fstab.yaml (which carves them out with
+# (?!mapper)) and not in initramfs.yaml (whose dracut does-not-exist
+# regex excludes /dev/mapper/).
+category: lvm
+fix_guidance: "from the rescue VM scan and activate the volume group (sudo vgscan; sudo vgchange -ay), mount the logical volume at /mnt/sysroot, then rebuild the initramfs (dracut -f) if LVM config changed"
+# auto_repair stays false until startup_scripts/fixes/lvm_fix.sh exists.
+auto_repair: false
+
+patterns:
+  - name: lvm_vg_not_found
+    severity: critical
+    description: "LVM volume group not found during boot"
+    regex:
+      - 'Volume group "\S+" not found'
+      - 'Cannot process volume group'
+    fixes:
+      - "From rescue mode, scan for volume groups: sudo vgscan --mknodes, then sudo vgchange -ay"
+      - "If the VG metadata is damaged, list backups on the mounted disk (/mnt/sysroot/etc/lvm/backup) and restore: sudo vgcfgrestore VG_NAME"
+      - "Verify the physical volume is present: sudo pvs; if the PV disk is missing, reattach it or restore from a snapshot"
+
+  - name: lvm_device_timeout
+    severity: critical
+    description: "Timed out waiting for an LVM (device-mapper) device"
+    regex:
+      # Escaped systemd unit form: dev-mapper-vg\x2droot.device
+      - 'Timed out waiting for device [^\n]*dev-mapper'
+      - 'Timed out waiting for device /dev/mapper/\S+'
+    fixes:
+      - "The logical volume never appeared - activate it from rescue mode: sudo vgscan; sudo vgchange -ay, then inspect /mnt/sysroot/etc/fstab"
+      - "If the LV was removed or renamed, fix or comment out its /etc/fstab entry"
+
+  - name: lvm_dracut_device_missing
+    severity: critical
+    description: "dracut cannot find the LVM root device (volume group not activated)"
+    regex:
+      # /dev/mapper/* only: the VG-path form (/dev/<vg>/<lv>) cannot be
+      # distinguished from arbitrary device paths without knowing VG
+      # names, and the initramfs dracut pattern already reports those.
+      - 'Warning: /dev/mapper/\S+ does not exist'
+    fixes:
+      - "The LVM root was not activated inside the initramfs - from rescue mode run: sudo vgscan; sudo vgchange -ay and verify the LV exists (sudo lvs)"
+      - "Rebuild the initramfs so it includes the LVM tools/config: sudo chroot /mnt/sysroot, then dracut -f"
+      - "Check rd.lvm.lv= kernel arguments match the real VG/LV names: compare the kernel command line in the serial output with sudo lvs"

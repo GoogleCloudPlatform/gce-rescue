@@ -95,6 +95,7 @@ class OperationResult:
     message: str
     rollback_data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None  # Structured extras (e.g. timeout info)
 
     def __str__(self):
         """String representation."""
@@ -148,6 +149,10 @@ class BaseOperation(ABC):
         self.zone = zone
         self.logger = logger
         self.result: Optional[OperationResult] = None
+        # Error message from the most recent _wait_for_operation failure, so
+        # callers can surface the real cause (e.g. an org-policy violation that
+        # only appears in the async operation result).
+        self._last_operation_error: Optional[str] = None
 
     @abstractmethod
     def execute(self, **kwargs) -> OperationResult:
@@ -312,8 +317,12 @@ class BaseOperation(ABC):
                     if 'error' in result:
                         errors = result['error'].get('errors', [])
                         error_msg = '; '.join([e.get('message', 'Unknown error') for e in errors])
-                        self._log_error(f"Operation failed: {error_msg}")
+                        self._last_operation_error = error_msg
+                        # Captured above for the caller to surface a formatted,
+                        # actionable message; keep the raw line out of user output.
+                        self._log_debug(f"Operation failed: {error_msg}")
                         return False
+                    self._last_operation_error = None
                     return True
 
             except Exception as e:
