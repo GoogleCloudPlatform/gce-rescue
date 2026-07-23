@@ -1025,6 +1025,63 @@ class TestFstabFixScript:
 
 
 # ---------------------------------------------------------------------------
+# TestGrubFixScript
+# ---------------------------------------------------------------------------
+
+class TestGrubFixScript:
+    """Validate that the GRUB fix script file is well-formed."""
+
+    def test_fix_script_exists(self):
+        """grub_fix.sh should exist in startup_scripts/fixes/."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'grub_fix.sh'
+        )
+        assert fix_path.exists(), f"Fix script not found at {fix_path}"
+
+    def test_fix_script_emits_repair_markers(self):
+        """Script should emit GCE-REPAIR-LINE and GCE-REPAIR-RESULT markers."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'grub_fix.sh'
+        )
+        content = fix_path.read_text()
+        assert 'GCE-REPAIR-LINE:' in content
+        assert 'GCE-REPAIR-RESULT:' in content
+
+    def test_fix_script_handles_debian_and_rhel(self):
+        """Script should handle both Debian update-grub and RHEL grub2-mkconfig."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'grub_fix.sh'
+        )
+        content = fix_path.read_text()
+        assert 'update-grub' in content
+        assert 'grub2-mkconfig' in content
+        assert 'grub-install' in content or 'grub2-install' in content
+
+    def test_fix_script_bind_mounts(self):
+        """Script should set up chroot bind mounts for proc, sys, dev, dev/pts, run, and efivars."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'grub_fix.sh'
+        )
+        content = fix_path.read_text()
+        assert 'proc' in content
+        assert 'sys' in content
+        assert 'dev/pts' in content
+        assert 'efivars' in content
+
+    def test_fix_script_resolves_parent_disk(self):
+        """Script should resolve parent block device when target_disk is a partition symlink."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'grub_fix.sh'
+        )
+        content = fix_path.read_text()
+        assert 'readlink' in content or 'parent_disk' in content
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
 # TestExtractFstabTargets
 # ---------------------------------------------------------------------------
 
@@ -1352,6 +1409,101 @@ class TestGenerateRepairScriptTargets:
 
 
 # ---------------------------------------------------------------------------
+# TestGenerateRepairScriptGrub
+# ---------------------------------------------------------------------------
+
+class TestGenerateRepairScriptGrub:
+    """Tests for _generate_repair_script() with GRUB fix category."""
+
+    def _make_orchestrator(self):
+        compute = _make_compute()
+        return RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+
+    def test_generate_script_includes_grub_fix_script(self):
+        """Generated script should include grub_fix.sh logic for grub category."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'grub',
+                'severity': 'critical',
+                'detected_pattern': 'Minimal BASH-like line editing is supported',
+            }]
+        }
+        with patch.object(orch, '_load_base_script', return_value="#!/bin/bash\nlog \"Detecting filesystem type...\"\nsignal_complete\n"):
+            script = orch._generate_repair_script(diagnosis)
+        assert 'GRUB repair started' in script
+        assert 'update-grub' in script
+        assert 'grub-install' in script
+
+    def test_multi_category_script_order_includes_fstab_and_grub(self):
+        """When both fstab and grub errors exist, both fix scripts are composed in order."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [
+                {
+                    'category': 'grub',
+                    'severity': 'critical',
+                    'detected_pattern': 'Minimal BASH-like line editing is supported',
+                },
+                {
+                    'category': 'fstab',
+                    'severity': 'critical',
+                    'detected_pattern': 'UUID=12345 does not exist',
+                },
+            ]
+        }
+        with patch.object(orch, '_load_base_script', return_value="#!/bin/bash\nlog \"Detecting filesystem type...\"\nsignal_complete\n"):
+            script = orch._generate_repair_script(diagnosis)
+        assert 'fstab repair started' in script
+        assert 'GRUB repair started' in script
+        # fstab fix comes before grub fix in FIX_EXECUTION_ORDER
+        fstab_idx = script.find('fstab repair started')
+        grub_idx = script.find('GRUB repair started')
+        assert fstab_idx < grub_idx
+
+
+# ---------------------------------------------------------------------------
+# TestGrubPatternMatching
+# ---------------------------------------------------------------------------
+
+class TestGrubPatternMatching:
+    """Tests pattern matching regexes for all 12 GRUB error scenarios."""
+
+    def test_grub_patterns_match_sample_outputs(self):
+        """Verify all 12 GRUB pattern regexes match expected serial console strings."""
+        import re
+        from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
+
+        grub_patterns = {p.name: p for p in BOOT_ERROR_PATTERNS if p.category == 'grub'}
+
+        test_cases = [
+            ('grub_rescue_prompt', 'Entering rescue mode...'),
+            ('grub_normal_shell', 'Minimal BASH-like line editing is supported'),
+            ('grub_file_not_found', "error: file '/boot/grub/grub.cfg' not found"),
+            ('grub_kernel_not_found', "error: file '/boot/vmlinuz-6.1.0-51-cloud-amd64' not found"),
+            ('grub_load_kernel_first', 'error: you need to load the kernel first'),
+            ('grub_no_such_partition', 'error: no such partition'),
+            ('grub_no_such_device', 'error: no such device: 11111111-2222-3333-4444-555555555555'),
+            ('grub_disk_not_found', "error: disk 'hd0,gpt2' not found"),
+            ('grub_unknown_filesystem', 'error: unknown filesystem'),
+            ('grub_symbol_not_found', "error: symbol 'grub_calloc' not found"),
+            ('grub_out_of_memory', 'error: out of memory'),
+            ('grub_invalid_magic', 'error: invalid magic number'),
+        ]
+
+        for pattern_name, sample_text in test_cases:
+            pattern = grub_patterns.get(pattern_name)
+            assert pattern is not None, f"Pattern '{pattern_name}' missing from BOOT_ERROR_PATTERNS"
+            matched = any(re.search(r, sample_text, re.MULTILINE) for r in pattern.patterns)
+            assert matched, f"Pattern '{pattern_name}' regexes failed to match sample: '{sample_text}'"
+
+
+
+
+
+# ---------------------------------------------------------------------------
 # TestSupportedCategories
 # ---------------------------------------------------------------------------
 
@@ -1367,7 +1519,7 @@ class TestSupportedCategories:
 
     def test_supported_set_is_exactly_the_shipped_scripts(self):
         """The full auto-repairable set — update when a new fix script lands."""
-        assert SUPPORTED_FIX_CATEGORIES == {'fstab'}
+        assert SUPPORTED_FIX_CATEGORIES == {'fstab', 'grub'}
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""

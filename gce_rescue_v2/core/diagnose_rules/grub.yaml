@@ -25,7 +25,7 @@ fix_guidance: "chroot into /mnt/sysroot, reinstall GRUB to the boot disk (grub-i
 # auto_repair: true has a fix script, so flipping this early makes
 # `repair` fail preflight for ALL categories. Flip to true in the same
 # commit that adds the script.
-auto_repair: false
+auto_repair: true
 # NOT detect_only: GRUB damage is genuinely fixable from rescue mode
 # (grub-install + update-grub/grub2-mkconfig on the mounted original disk).
 # No survives_boot_success: a stale GRUB error from an older boot IS
