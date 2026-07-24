@@ -363,6 +363,14 @@ if [ -z "$FAIL_REASON" ]; then
         repair_line "[FIXED] grub: Regenerated GRUB configuration ($CFG_INSIDE)"
     else
         FAIL_REASON="GRUB config regeneration failed: $(last_line "$output")"
+        # A failed regeneration can leave a truncated grub.cfg - worse than
+        # the pre-repair state. Put the backup back so the disk is no worse
+        # off; the result stays FAILED so nobody mistakes this for a fix.
+        if [ -f "$GRUB_CFG.gce-repair-backup" ]; then
+            if cp "$GRUB_CFG.gce-repair-backup" "$GRUB_CFG" 2>>"$LOGFILE"; then
+                repair_line "grub: Regeneration failed - restored the pre-repair grub.cfg from backup"
+            fi
+        fi
     fi
 fi
 

@@ -269,6 +269,17 @@ class TestGrubFixScriptBehavior:
         regen_pos = text.index('Regenerating GRUB config')
         assert backup_pos < regen_pos, 'backup must happen before regen'
 
+    def test_restores_backup_when_regeneration_fails(self) -> None:
+        # A failed regen can leave a truncated grub.cfg; the script must put
+        # the backup back (damage containment) while still reporting FAILED.
+        text = _script_text()
+        assert 'restored the pre-repair grub.cfg from backup' in text
+        restore_pos = text.index('restored the pre-repair grub.cfg from backup')
+        fail_pos = text.index('GRUB config regeneration failed')
+        assert fail_pos < restore_pos, 'restore happens on the failure path'
+        # The restore must NOT increment the fix count (not a [FIXED] line).
+        assert '[FIXED] grub: Regeneration failed' not in text
+
     def test_runs_target_tools_inside_chroot(self) -> None:
         text = _script_text()
         assert 'chroot "$SYSROOT"' in text
