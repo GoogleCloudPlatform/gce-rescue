@@ -413,6 +413,89 @@ class TestShowRepairResults:
         captured = capsys.readouterr()
         assert '3 issues fixed' in captured.out
 
+    def test_show_repair_results_no_change_line_for_no_issues_category(self, capsys):
+        """A category whose fix found nothing gets a [NO_CHANGE] line."""
+        result = {
+            'status': 'success',
+            'fixed_count': 1,
+            'fix_lines': ['[FIXED] fstab: Commented out bad UUID'],
+            'error': None,
+            'snapshot_name': None,
+            'duration_seconds': 30,
+            'category_outcomes': [
+                {'category': 'filesystem', 'kind': 'no_issues', 'count': 0,
+                 'reason': None},
+                {'category': 'fstab', 'kind': 'success', 'count': 1,
+                 'reason': None},
+            ],
+        }
+        exit_code = cli._show_repair_results(result, 'my-vm')
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert ('[NO_CHANGE] Fix filesystem: no issues found - nothing to fix'
+                in captured.out)
+        # success outcomes keep their existing presentation (no extra line)
+        assert captured.out.count('[NO_CHANGE]') == 1
+
+    def test_show_repair_results_no_change_absent_without_key(self, capsys):
+        """No category_outcomes key (mismatch/custom flow): no [NO_CHANGE]."""
+        result = {
+            'status': 'success',
+            'fixed_count': 1,
+            'fix_lines': ['[FIXED] fstab: Commented out bad UUID'],
+            'error': None,
+            'snapshot_name': None,
+            'duration_seconds': 30,
+        }
+        exit_code = cli._show_repair_results(result, 'my-vm')
+        assert exit_code == 0
+        captured = capsys.readouterr()
+        assert '[NO_CHANGE]' not in captured.out
+
+    def test_show_repair_results_no_change_in_failed_partial_results(self, capsys):
+        """Failed repairs also show [NO_CHANGE] for untouched categories."""
+        result = {
+            'status': 'failed',
+            'fixed_count': 0,
+            'fix_lines': ['[SKIPPED] grub: unsupported layout'],
+            'error': 'grub-install returned 1',
+            'snapshot_name': None,
+            'duration_seconds': 30,
+            'category_outcomes': [
+                {'category': 'fstab', 'kind': 'no_issues', 'count': 0,
+                 'reason': None},
+                {'category': 'grub', 'kind': 'failed', 'count': 0,
+                 'reason': 'grub-install returned 1'},
+            ],
+        }
+        exit_code = cli._show_repair_results(result, 'my-vm')
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert ('[NO_CHANGE] Fix fstab: no issues found - nothing to fix'
+                in captured.err)
+
+    def test_show_repair_results_fix_in_progress(self, capsys):
+        """fix_in_progress: exit 1 with serial/re-run/restore guidance."""
+        result = {
+            'status': 'fix_in_progress',
+            'fixed_count': 0,
+            'fix_lines': [],
+            'error': 'Fix completion could not be confirmed; '
+                     'the fix may still be running',
+            'snapshot_name': None,
+            'duration_seconds': 0,
+        }
+        exit_code = cli._show_repair_results(
+            result, 'my-vm', zone='zone-a', project='proj'
+        )
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert 'still be running' in captured.err
+        assert 'rescue mode' in captured.err.lower()
+        assert 'get-serial-port-output my-vm --zone=zone-a' in captured.err
+        assert 'gce-rescue repair my-vm --zone=zone-a' in captured.err
+        assert 'gce-rescue restore my-vm --zone=zone-a' in captured.err
+
 
 # ---------------------------------------------------------------------------
 # CLI Handler Tests

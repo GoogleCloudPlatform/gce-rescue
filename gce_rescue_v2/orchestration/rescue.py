@@ -10,6 +10,7 @@ Coordinates the rescue workflow:
 """
 
 import time
+import uuid
 from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX, build_user_agent
 from .compose import (
     compose_startup_script, compose_startup_script_windows, strip_shebang,
@@ -103,6 +104,13 @@ class RescueOrchestrator:
         self.logger = logger
         self.log_file = log_file
         self._startup_script_override = startup_script_override
+        # Per-session completion token for the guest-attribute signal. Guest
+        # attributes persist across stop/start/restore and cannot be cleared
+        # from outside the VM, so a bare COMPLETE left by a PREVIOUS rescue
+        # of this VM would make verification succeed instantly - before this
+        # session's startup script (and any embedded fixes) ran. The startup
+        # script writes this token; verification only accepts this token.
+        self._completion_token = f"COMPLETE-{uuid.uuid4().hex[:12]}"
         self._suppress_progress = suppress_progress
         self._progress_callback = progress_callback
         self.session_id = session_id
@@ -128,6 +136,7 @@ class RescueOrchestrator:
 
         # Verification status (set after startup verification)
         self.verification_succeeded = None
+        self.verification_result = None  # Full OperationResult (timeout details, etc.)
 
         # Snapshot name (set if snapshot created successfully)
         self.snapshot_name = None
@@ -499,6 +508,18 @@ class RescueOrchestrator:
 
         self._log_debug("Creating validation runner")
 
+        # Validate a custom fix script's pre-mount markers BEFORE any VM
+        # mutation: composition happens at step 6 (VM already stopped, disks
+        # swapped), and a malformed block failing there strands the VM in a
+        # half-rescued state for a purely textual error.
+        if self.config.fix_script:
+            from .compose import extract_premount_blocks
+            try:
+                extract_premount_blocks(strip_shebang(self.config.fix_script))
+            except ValueError as e:
+                self._log_error(f"Invalid --fix-script: {e}")
+                return False
+
         runner = ValidationRunner()
 
         # Add validators with tracking labels
@@ -791,6 +812,13 @@ class RescueOrchestrator:
             if not self._should_skip_step(6):
                 self._log_debug("Setting rescue metadata...")
                 startup_script = self._generate_startup_script()
+                # Session-scope the guest-attribute completion signal. Done
+                # here (not in _generate_startup_script) so it also covers
+                # startup_script_override payloads composed by the repair
+                # orchestrator, which pass the placeholder through.
+                startup_script = startup_script.replace(
+                    'SESSION_ID_PLACEHOLDER', self._completion_token
+                )
 
                 if self.os_type == OS_TYPE_WINDOWS:
                     script_key = 'windows-startup-script-ps1'
@@ -945,12 +973,18 @@ class RescueOrchestrator:
                 self._update_progress("Attaching affected disk")
                 self._log_debug("Verifying startup script...")
                 verify_startup = VerifyStartupOperation(self.compute, self.project, self.zone, self.logger)
+                # expected_completion_value: only THIS session's token counts
+                # (stale guest attributes from previous rescues must not).
+                # If a resumed session re-runs step 9 with a fresh token, the
+                # serial-marker fallback still verifies completion.
                 result = verify_startup.execute(
                     vm_name=self.vm_name,
                     timeout=self.config.effective_verification_timeout(self.os_type),
-                    tracking_label=self._ua('vm-verify-startup')
+                    tracking_label=self._ua('vm-verify-startup'),
+                    expected_completion_value=self._completion_token
                 )
                 self.verification_succeeded = result.success
+                self.verification_result = result
                 # Don't fail on verification timeout - continue
                 # Update checkpoint (final step)
                 self.checkpoint_manager.update_checkpoint(
@@ -1089,7 +1123,7 @@ class RescueOrchestrator:
             fallback_script = self._get_linux_fallback_script()
 
         if script_file.exists():
-            with open(script_file, 'r') as f:
+            with open(script_file, 'r', encoding='utf-8') as f:
                 script = f.read()
                 # Replace disk name placeholder
                 script = script.replace('DISK_NAME_PLACEHOLDER', self.original_disk_name)
