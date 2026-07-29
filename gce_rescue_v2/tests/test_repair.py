@@ -1058,7 +1058,7 @@ class TestGrubFixScript:
         assert 'grub-install' in content or 'grub2-install' in content
 
     def test_fix_script_bind_mounts(self):
-        """Script should set up chroot bind mounts for proc, sys, dev, dev/pts, run, and efivars."""
+        """Script should set up chroot bind mounts for proc, sys, dev, dev/pts, and run."""
         fix_path = (
             Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'grub_fix.sh'
         )
@@ -1066,7 +1066,6 @@ class TestGrubFixScript:
         assert 'proc' in content
         assert 'sys' in content
         assert 'dev/pts' in content
-        assert 'efivars' in content
 
     def test_fix_script_resolves_parent_disk(self):
         """Script should resolve parent block device when target_disk is a partition symlink."""
@@ -1074,7 +1073,7 @@ class TestGrubFixScript:
             Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'grub_fix.sh'
         )
         content = fix_path.read_text()
-        assert 'readlink' in content or 'parent_disk' in content
+        assert 'findmnt' in content or 'readlink' in content or 'parent_disk' in content
 
 
 
