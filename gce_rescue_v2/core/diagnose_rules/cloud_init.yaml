@@ -1,0 +1,57 @@
+# cloud-init failure patterns (Stage 8 - late boot, mode 45).
+#
+# Like startup_script, these fire on a VM that reached multi-user.target
+# but whose provisioning failed - Ubuntu GCE images lean heavily on
+# cloud-init, so a broken user-data/config is a booted-but-unprovisioned
+# VM. Severity error (not warning): unlike a custom startup script,
+# cloud-init failures break SSH keys, users, and network config that the
+# platform itself relies on.
+category: cloud_init
+fix_guidance: "Check the full trace in /mnt/sysroot/var/log/cloud-init.log from rescue mode (or /var/log/cloud-init.log over SSH if the VM is reachable) and fix the user-data or /etc/cloud config it names"
+auto_repair: false
+# detect_only: the usual culprit is user-data (VM metadata) or distro
+# cloud config - not simple on-disk boot configuration a fix script could
+# safely edit. Follows the master-plan flag proposal for cloud_init.
+detect_only: true
+# The boot-success marker appears regardless of cloud-init's outcome
+# (multi-user.target is reached; cloud-final just fails alongside it), so
+# findings must survive boot-success suppression to ever be visible.
+survives_boot_success: true
+
+patterns:
+  - name: cloud_init_stage_failure
+    severity: error
+    description: "cloud-init failed while running a boot stage or module"
+    regex:
+      # All alternatives are bound to the cloud-init[PID]: journald prefix
+      # so a generic Python 'Traceback' from any other service can never
+      # match. Covers: module crashes (Traceback), the util.py 'Failed to
+      # run module ...' / 'failed to run' warnings, and the datasource
+      # failure 'Can not apply stage config'.
+      - 'cloud-init\[\d+\]:.*(?:Traceback|failed to run|Can not apply stage)'
+    fixes:
+      - "The failing module/stage is named on the matched line; the full trace is in /var/log/cloud-init.log on the disk"
+      - "Validate the instance's user-data before the next boot: sudo cloud-init schema --system (on the VM) or fix the metadata user-data key"
+      - "Re-run after fixing: sudo cloud-init clean --logs && sudo reboot"
+
+  # JUSTIFICATION vs the no-generic-'Failed to start' rule (see
+  # systemd_early.yaml): this regex is NOT generic - it is bound to the
+  # Cloud-init unit vocabulary. Every cloud-init unit's name or systemd
+  # description contains one of these tokens (cloud-init.service /
+  # cloud-init-local.service description 'Initial cloud-init job ...' or
+  # 'Cloud-init: ...' on newer images; cloud-config.service /
+  # cloud-final.service carry the cloud-config/cloud-final unit names),
+  # while no non-cloud-init unit does, so it cannot fire on the benign
+  # unit failures (apt-daily, fwupd, ...) that rule exists to exclude.
+  - name: cloud_init_unit_failed
+    severity: error
+    description: "A cloud-init boot unit failed to start"
+    regex:
+      - 'Failed to start .*cloud[- ]?init'
+      # cloud-config.service / cloud-final.service descriptions do not
+      # contain the string 'cloud-init' ('Apply the settings specified
+      # in cloud-config', 'Execute cloud user/final scripts').
+      - 'Failed to start .*cloud-(?:config|final)'
+    fixes:
+      - "Check why the unit failed: journalctl -u cloud-init.service on the disk (via rescue-mode chroot) or the cloud-init lines in this serial log"
+      - "Common causes: broken user-data (validate with sudo cloud-init schema --system), an unreachable datasource, or a broken Python environment on the disk"

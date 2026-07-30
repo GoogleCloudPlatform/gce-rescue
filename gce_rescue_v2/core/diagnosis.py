@@ -27,6 +27,13 @@ class BootErrorPattern:
     severity: str  # critical, error, warning
     description: str
     fixes: List[str] = field(default_factory=list)  # Suggested fixes
+    # Category-level flags, copied onto each pattern of the category:
+    # survives_boot_success: findings are NOT cleared by the RUNNING +
+    #   boot-success-marker suppression (failures that don't block boot).
+    # detect_only: runtime condition, not on-disk boot config — never a
+    #   suppressing "root cause" in dedupe.
+    survives_boot_success: bool = False
+    detect_only: bool = False
 
 
 @dataclass
@@ -83,6 +90,12 @@ def _validate_pattern_file(data: dict, filename: str) -> None:
 
     if not isinstance(data['patterns'], list) or len(data['patterns']) == 0:
         raise ValueError(f"{filename}: 'patterns' must be a non-empty list")
+
+    for flag in ('survives_boot_success', 'detect_only'):
+        if flag in data and not isinstance(data[flag], bool):
+            raise ValueError(
+                f"{filename}: '{flag}' must be a boolean"
+            )
 
     required_pattern_fields = ['name', 'severity', 'description', 'regex']
     for i, pattern in enumerate(data['patterns']):
@@ -142,6 +155,8 @@ def _load_patterns_from_yaml(
         _validate_pattern_file(data, yaml_file.name)
 
         category = data['category']
+        survives = bool(data.get('survives_boot_success', False))
+        detect_only = bool(data.get('detect_only', False))
 
         for p in data['patterns']:
             all_patterns.append(BootErrorPattern(
@@ -151,6 +166,8 @@ def _load_patterns_from_yaml(
                 severity=p['severity'],
                 description=p['description'],
                 fixes=list(p.get('fixes', [])),
+                survives_boot_success=survives,
+                detect_only=detect_only,
             ))
 
     return all_patterns
@@ -159,9 +176,17 @@ def _load_patterns_from_yaml(
 # Load patterns at module level (fail fast if patterns are broken)
 BOOT_ERROR_PATTERNS = _load_patterns_from_yaml()
 
+# Category behavior sets derived from the YAML flags — the analysis engine
+# never hardcodes category names.
+SURVIVES_BOOT_SUCCESS_CATEGORIES = frozenset(
+    p.category for p in BOOT_ERROR_PATTERNS if p.survives_boot_success)
+DETECT_ONLY_CATEGORIES = frozenset(
+    p.category for p in BOOT_ERROR_PATTERNS if p.detect_only)
+
 
 def _extract_context_lines(
-    serial_output: str, match_text: str, context_lines: int = 3
+    serial_output: str, match_text: str, context_lines: int = 3,
+    match_pos: int = None
 ) -> Tuple[List[str], int]:
     """Extract lines around a matched pattern for context.
 
@@ -169,6 +194,14 @@ def _extract_context_lines(
         serial_output: Full serial console output
         match_text: The matched text to find context for
         context_lines: Number of lines before and after to include
+        match_pos: Character offset of the actual regex match. When given,
+            the matched line is derived from this offset directly — never
+            by re-searching for match_text. This matters when the matched
+            text also appears on earlier lines (e.g. a generic
+            'Kernel panic - not syncing' whose lookahead rejected an older
+            panic line): re-searching would anchor the evidence on the
+            wrong (first) occurrence, while the matcher deliberately uses
+            the last one.
 
     Returns:
         Tuple of (context lines cleaned of ANSI codes, index of matched line)
@@ -176,12 +209,18 @@ def _extract_context_lines(
     # Split output into lines
     lines = serial_output.split('\n')
 
-    # Find the line containing the match
-    match_line_idx = -1
-    for i, line in enumerate(lines):
-        if match_text in line:
-            match_line_idx = i
-            break
+    if match_pos is not None:
+        # Line index = number of newlines before the match offset
+        match_line_idx = serial_output.count('\n', 0, match_pos)
+        if match_line_idx >= len(lines):
+            match_line_idx = -1
+    else:
+        # Fallback: find the first line containing the match text
+        match_line_idx = -1
+        for i, line in enumerate(lines):
+            if match_text in line:
+                match_line_idx = i
+                break
 
     if match_line_idx == -1:
         return [match_text], 0  # Fallback: single line, index 0
@@ -268,10 +307,12 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                     # Avoid duplicate errors for the same category
                     if not any(err.category == pattern_def.category and err.description == pattern_def.description
                               for err in detected_errors):
-                        # Extract context around the error
+                        # Extract context around the error, anchored on the
+                        # actual match offset (not a re-search of the text)
                         context, match_idx = _extract_context_lines(
                             serial_output, match.group(0),
-                            context_lines=1
+                            context_lines=1,
+                            match_pos=match.start()
                         )
 
                         # Use inline fixes from the pattern definition
@@ -303,9 +344,36 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         "Failed to mount filesystem listed in /etc/fstab",
         "Mount point dependency failed (device not available)",
     }
+    # Snapshot the full evidence set before dedupe: the boot-success
+    # suppression below must reason over everything that matched (positions,
+    # emergency-mode presence), not just the deduped survivors.
+    all_detected = list(detected_errors)
+
+    # A finding only counts as a suppressing "root cause" if it can actually
+    # explain a boot failure: detect-only categories (YAML flag
+    # 'detect_only') describe runtime conditions, not on-disk boot config;
+    # survives-boot-success categories (e.g. ssh) describe failures that by
+    # definition do NOT block boot and so can never explain emergency mode;
+    # and warnings are informational. None of these may hide critical
+    # boot-failure findings like emergency mode.
+    def _is_boot_root_cause(err: DetectedError) -> bool:
+        return (err.category not in DETECT_ONLY_CATEGORIES
+                and err.category not in SURVIVES_BOOT_SUCCESS_CATEGORIES
+                and err.severity != 'warning')
+
     if len(detected_errors) > 1:
+        # Tier 1 is additionally gated on CRITICAL severity: emergency mode
+        # is itself a critical boot-blocker, so only a finding that names a
+        # critical root cause may replace it. Error-level companions (e.g.
+        # systemd_no_console, which fires on EVERY emergency entry because
+        # root is locked on GCP images, or an ordering-cycle report) are
+        # symptoms/context — letting them suppress the catch-all demotes a
+        # real emergency incident to a lone ERROR whose fix text points at
+        # a "failure reported above" that no longer exists.
         has_non_catchall = any(
-            e.description not in _CATCH_ALL for e in detected_errors
+            _is_boot_root_cause(e) and e.severity == 'critical'
+            and e.description not in _CATCH_ALL
+            for e in detected_errors
         )
         if has_non_catchall:
             detected_errors = [
@@ -313,14 +381,21 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
                 if e.description not in _CATCH_ALL
             ]
     if len(detected_errors) > 1:
-        has_root_cause = any(
-            e.description not in _GENERIC_SYMPTOM for e in detected_errors
-        )
-        if has_root_cause:
-            detected_errors = [
-                e for e in detected_errors
-                if e.description not in _GENERIC_SYMPTOM
-            ]
+        # Tier 2 is category-scoped AND root-cause gated: a generic symptom
+        # is only demoted when a genuine root-cause finding of the SAME
+        # category exists. A finding from an unrelated category (e.g. a
+        # stale ssh auth error or a cpu_lockup runtime condition in the
+        # serial buffer) must never erase fstab boot-blockers, and
+        # warnings/runtime findings never demote anything.
+        root_cause_categories = {
+            e.category for e in detected_errors
+            if _is_boot_root_cause(e) and e.description not in _GENERIC_SYMPTOM
+        }
+        detected_errors = [
+            e for e in detected_errors
+            if e.description not in _GENERIC_SYMPTOM
+            or e.category not in root_cause_categories
+        ]
 
     # Boot success detection: if VM is RUNNING and the LATEST boot completed
     # successfully, clear non-emergency errors entirely.
@@ -336,16 +411,32 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         r'Started .*OpenBSD Secure Shell server',
         r'Started .*Google Compute Engine Startup Scripts',
     ]
-    if vm_status == 'RUNNING' and detected_errors:
+    # Categories flagged 'survives_boot_success' in their YAML (e.g. ssh,
+    # filesystem) describe failures that do not block boot — sshd dies but
+    # boot completes, or a corrupt nofail secondary disk lets the VM boot
+    # while the disk stays broken. A "Startup finished" marker does not mean
+    # they are resolved, so they are exempt from boot-success suppression.
+    suppressible = [
+        e for e in detected_errors
+        if e.category not in SURVIVES_BOOT_SUCCESS_CATEGORIES
+    ]
+    if vm_status == 'RUNNING' and suppressible:
         # Find the position of the last boot success marker
         last_success_pos = -1
         for marker in _BOOT_SUCCESS_MARKERS:
             for match in re.finditer(marker, serial_output, re.IGNORECASE):
                 last_success_pos = max(last_success_pos, match.end())
 
-        # Find the position of the last detected error
+        # Find the position of the last detected error. Use the full
+        # pre-dedupe evidence set: a finding removed by dedupe (e.g.
+        # emergency mode) still proves the latest boot failed.
+        # Skip survives-boot-success categories: they are exempt from
+        # suppression anyway, so a post-marker ssh/filesystem line must not
+        # veto the clearing of stale boot-blocker noise from an older boot.
         last_error_pos = -1
-        for err in detected_errors:
+        for err in all_detected:
+            if err.category in SURVIVES_BOOT_SUCCESS_CATEGORIES:
+                continue
             for match in re.finditer(
                 re.escape(err.detected_pattern), serial_output, re.IGNORECASE
             ):
@@ -357,17 +448,24 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         )
 
         if boot_completed:
-            has_emergency = any(
-                'emergency mode' in e.description.lower()
-                for e in detected_errors
+            # No emergency-mode veto here: boot_completed already requires
+            # the last success marker to sit AFTER the last occurrence of
+            # every non-surviving finding in all_detected — including the
+            # emergency-mode line itself (fstab/initramfs, neither of which
+            # survives boot success). Any emergency evidence at this point
+            # is therefore provably from an older, resolved boot in the
+            # accumulating serial buffer; keeping a presence-based veto
+            # made every resolved emergency incident report CRITICAL
+            # forever until the buffer rotated.
+            logger.debug(
+                f"VM booted successfully (success at pos {last_success_pos}, "
+                f"last error at pos {last_error_pos}) — clearing "
+                f"{len(suppressible)} non-blocking error(s)"
             )
-            if not has_emergency:
-                logger.debug(
-                    f"VM booted successfully (success at pos {last_success_pos}, "
-                    f"last error at pos {last_error_pos}) — clearing "
-                    f"{len(detected_errors)} non-blocking error(s)"
-                )
-                detected_errors = []
+            detected_errors = [
+                e for e in detected_errors
+                if e.category in SURVIVES_BOOT_SUCCESS_CATEGORIES
+            ]
 
     # Determine diagnosis status and recommendations
     if detected_errors:

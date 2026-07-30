@@ -9,6 +9,7 @@ import pytest
 
 from gce_rescue_v2.orchestration.repair import (
     RepairOrchestrator,
+    FIX_EXECUTION_ORDER,
     REPAIR_LINE_MARKER,
     REPAIR_RESULT_MARKER,
     RESCUE_COMPLETE_MARKER,
@@ -149,7 +150,7 @@ class TestRepairOrchestrator:
             assert orch.diagnose() is None
 
     def test_get_fixable_categories(self):
-        """Should return only categories with fix scripts."""
+        """Should return only categories with fix scripts, in execution order."""
         compute = _make_compute()
         orch = RepairOrchestrator(
             compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
@@ -157,8 +158,8 @@ class TestRepairOrchestrator:
         diagnosis = {
             'boot_errors': [
                 {'category': 'fstab', 'severity': 'critical'},
-                {'category': 'grub', 'severity': 'error'},
                 {'category': 'fstab', 'severity': 'warning'},  # duplicate
+                {'category': 'kernel', 'severity': 'error'},  # no fix script
             ]
         }
         fixable = orch.get_fixable_categories(diagnosis)
@@ -173,12 +174,10 @@ class TestRepairOrchestrator:
         diagnosis = {
             'boot_errors': [
                 {'category': 'fstab', 'severity': 'critical'},
-                {'category': 'grub', 'severity': 'error'},
                 {'category': 'kernel', 'severity': 'error'},
             ]
         }
         unfixable = orch.get_unfixable_categories(diagnosis)
-        assert 'grub' in unfixable
         assert 'kernel' in unfixable
         assert 'fstab' not in unfixable
 
@@ -189,7 +188,7 @@ class TestRepairOrchestrator:
             compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
         )
         diagnosis = {
-            'boot_errors': [{'category': 'grub', 'severity': 'error'}]
+            'boot_errors': [{'category': 'kernel', 'severity': 'error'}]
         }
         result = orch.execute(diagnosis)
         assert result['status'] == 'no_fix'
@@ -238,6 +237,80 @@ class TestRepairOrchestrator:
             "projects/debian-cloud/global/images/family/debian-12"
         )
         assert captured['rescue_config'].custom_rescue_image_size_gb == 20
+
+
+# ---------------------------------------------------------------------------
+# TestFixExecutionOrdering
+# ---------------------------------------------------------------------------
+
+class TestFixExecutionOrdering:
+    """get_fixable_categories returns categories in fix execution order."""
+
+    def _make_orchestrator(self):
+        compute = _make_compute()
+        return RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+
+    def test_execution_order_constant(self):
+        """filesystem first, grub last (grub must see the rebuilt initrd)."""
+        assert FIX_EXECUTION_ORDER == [
+            'filesystem', 'fstab', 'initramfs', 'grub'
+        ]
+
+    def test_categories_sorted_into_execution_order(self):
+        """Diagnosis order must not leak into fix composition order."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [
+                {'category': 'grub', 'severity': 'critical'},
+                {'category': 'initramfs', 'severity': 'critical'},
+                {'category': 'fstab', 'severity': 'critical'},
+                {'category': 'filesystem', 'severity': 'critical'},
+            ]
+        }
+        # Simulate all four categories having fix scripts (the scripts for
+        # filesystem/initramfs/grub land in follow-up changes).
+        with patch(
+            'gce_rescue_v2.orchestration.repair.SUPPORTED_FIX_CATEGORIES',
+            {'fstab', 'filesystem', 'initramfs', 'grub'},
+        ):
+            fixable = orch.get_fixable_categories(diagnosis)
+        assert fixable == ['filesystem', 'fstab', 'initramfs', 'grub']
+
+    def test_subset_keeps_execution_order(self):
+        """A subset of known categories still sorts by execution order."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [
+                {'category': 'grub', 'severity': 'critical'},
+                {'category': 'filesystem', 'severity': 'critical'},
+            ]
+        }
+        with patch(
+            'gce_rescue_v2.orchestration.repair.SUPPORTED_FIX_CATEGORIES',
+            {'fstab', 'filesystem', 'initramfs', 'grub'},
+        ):
+            fixable = orch.get_fixable_categories(diagnosis)
+        assert fixable == ['filesystem', 'grub']
+
+    def test_unknown_categories_stable_after_known(self):
+        """Future categories keep diagnosis order, after the known ones."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [
+                {'category': 'zeta_future', 'severity': 'critical'},
+                {'category': 'grub', 'severity': 'critical'},
+                {'category': 'alpha_future', 'severity': 'critical'},
+                {'category': 'fstab', 'severity': 'critical'},
+            ]
+        }
+        with patch(
+            'gce_rescue_v2.orchestration.repair.SUPPORTED_FIX_CATEGORIES',
+            {'fstab', 'grub', 'zeta_future', 'alpha_future'},
+        ):
+            fixable = orch.get_fixable_categories(diagnosis)
+        assert fixable == ['fstab', 'grub', 'zeta_future', 'alpha_future']
 
 
 # ---------------------------------------------------------------------------
@@ -375,8 +448,8 @@ class TestRepairScript:
     def test_missing_fix_script_raises_error(self):
         """Fix script for category without a .sh file should raise, not silently skip."""
         orch = self._make_orchestrator()
-        with pytest.raises(FileNotFoundError, match="Fix script missing for category 'grub'"):
-            orch._get_fix_script('grub')
+        with pytest.raises(FileNotFoundError, match="Fix script missing for category 'kernel'"):
+            orch._get_fix_script('kernel')
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +522,84 @@ class TestRepairResultParsing:
         assert result['status'] == 'unknown'
         assert result['fixed_count'] == 0
 
+    def test_aggregate_multiple_success_results(self):
+        """Multiple SUCCESS markers (one per fix script) sum their counts."""
+        serial = (
+            "GCE-REPAIR-LINE:[FIXED] filesystem: fsck repaired /dev/sdb1\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            "GCE-REPAIR-LINE:[FIXED] fstab: UUID for /data\n"
+            "GCE-REPAIR-LINE:[FIXED] fstab: device /dev/sdc1\n"
+            "GCE-REPAIR-RESULT:SUCCESS:2\n"
+            "GCE-RESCUE-COMPLETE\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'success'
+        assert result['fixed_count'] == 3
+        assert len(result['fix_lines']) == 3
+        assert result['error'] is None
+
+    def test_aggregate_success_and_no_issues(self):
+        """SUCCESS + NO_ISSUES collapses to success with the SUCCESS count."""
+        serial = (
+            "GCE-REPAIR-RESULT:NO_ISSUES:0\n"
+            "GCE-REPAIR-LINE:[FIXED] fstab: UUID for /data\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'success'
+        assert result['fixed_count'] == 1
+
+    def test_aggregate_success_and_failed(self):
+        """Any FAILED marker makes the overall status failed (partial fixes kept)."""
+        serial = (
+            "GCE-REPAIR-LINE:[FIXED] fstab: UUID for /data\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            "GCE-REPAIR-RESULT:FAILED:grub.cfg regeneration failed\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'failed'
+        assert 'grub.cfg regeneration failed' in result['error']
+        # Partial success is preserved for the CLI's failed branch
+        assert result['fixed_count'] == 1
+        assert len(result['fix_lines']) == 1
+
+    def test_aggregate_failed_after_success_not_overridden(self):
+        """FAILED wins even when a later script reports SUCCESS."""
+        serial = (
+            "GCE-REPAIR-RESULT:FAILED:fsck could not repair\n"
+            "GCE-REPAIR-RESULT:SUCCESS:2\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'failed'
+        assert result['fixed_count'] == 2
+
+    def test_aggregate_multiple_failures_join_reasons(self):
+        """Multiple FAILED markers join all reasons in the error."""
+        serial = (
+            "GCE-REPAIR-RESULT:FAILED:first reason\n"
+            "GCE-REPAIR-RESULT:FAILED:second reason\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'failed'
+        assert 'first reason' in result['error']
+        assert 'second reason' in result['error']
+
+    def test_aggregate_all_no_issues(self):
+        """Only NO_ISSUES markers collapse to no_issues."""
+        serial = (
+            "GCE-REPAIR-RESULT:NO_ISSUES:0\n"
+            "GCE-REPAIR-RESULT:NO_ISSUES:0\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'no_issues'
+        assert result['fixed_count'] == 0
+
     def test_parse_serial_console_error(self):
         """Should handle serial console fetch failure gracefully."""
         compute = Mock()
@@ -463,6 +614,339 @@ class TestRepairResultParsing:
         result = orch._parse_repair_results()
         assert result['status'] == 'unknown'
         assert result['error'] is not None
+        assert result['marker_results'] == []
+
+    # --- per-marker outcomes (marker_results) ---
+
+    def test_marker_results_preserve_serial_order_mixed_kinds(self):
+        """One entry per RESULT marker, in serial order, with kind/count/reason."""
+        serial = (
+            "GCE-REPAIR-RESULT:NO_ISSUES:0\n"
+            "GCE-REPAIR-LINE:[FIXED] fstab: UUID for /data\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            "GCE-REPAIR-RESULT:FAILED:grub install failed\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['marker_results'] == [
+            {'kind': 'no_issues', 'count': 0, 'reason': None},
+            {'kind': 'success', 'count': 1, 'reason': None},
+            {'kind': 'failed', 'count': 0, 'reason': 'grub install failed'},
+        ]
+        # Aggregate contract unchanged alongside the new key
+        assert result['status'] == 'failed'
+        assert result['fixed_count'] == 1
+
+    def test_marker_results_empty_without_markers(self):
+        """No RESULT markers -> empty marker_results list."""
+        orch = self._make_orchestrator("just some boot output\n")
+        result = orch._parse_repair_results()
+        assert result['marker_results'] == []
+
+    def test_marker_results_malformed_count_uses_segment_fallback(self):
+        """An unparseable SUCCESS count records its own segment's count."""
+        serial = (
+            "GCE-REPAIR-LINE:[FIXED] grub: Reinstalled GRUB\n"
+            "GCE-REPAIR-LINE:[FIXED] grub: Regenerated config\n"
+            "GCE-REPAIR-RESULT:SUCCESS:oops\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['marker_results'] == [
+            {'kind': 'success', 'count': 2, 'reason': None},
+        ]
+
+    def test_marker_results_windowed_to_current_boot(self):
+        """Markers from a previous boot are not in marker_results."""
+        banner = '=== GCE Rescue Auto-Mount Started ==='
+        serial = (
+            f"{banner}\n"
+            "GCE-REPAIR-RESULT:FAILED:old attempt\n"
+            f"{banner}\n"
+            "GCE-REPAIR-RESULT:NO_ISSUES:0\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['marker_results'] == [
+            {'kind': 'no_issues', 'count': 0, 'reason': None},
+        ]
+
+
+# ---------------------------------------------------------------------------
+# TestRepairHardening
+# ---------------------------------------------------------------------------
+
+class TestRepairHardening:
+    """Guards for multi-category repair: serial windowing, snapshot
+    requirement, verification-timeout floors, and non-boot-disk filtering."""
+
+    BANNER = '=== GCE Rescue Auto-Mount Started ==='
+
+    def _make_orchestrator(self, serial_output='', config=None,
+                           debug_console=False):
+        compute = _make_compute(serial_output=serial_output)
+        logger = _make_logger()
+        if debug_console:
+            # Debug console level disables the spinner/progress display so
+            # flow tests do not write progress lines to stdout.
+            logger.console_level = logging.DEBUG
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', config=config, logger=logger
+        )
+        orch._create_tracked_client = lambda label: compute
+        return orch
+
+    # --- serial-output windowing (one rescue session, several boots) ---
+
+    def test_markers_from_previous_boot_not_counted(self):
+        """Only markers after the LAST mount banner belong to this run."""
+        serial = (
+            f"{self.BANNER}\n"
+            "GCE-REPAIR-LINE:[FIXED] fstab: old attempt\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            f"{self.BANNER}\n"
+            "GCE-REPAIR-LINE:[FIXED] grub: Reinstalled GRUB to /dev/sdb (BIOS)\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['fixed_count'] == 1
+        assert len(result['fix_lines']) == 1
+        assert 'grub' in result['fix_lines'][0]
+
+    def test_previous_boot_failure_does_not_taint_current(self):
+        """A FAILED marker from an earlier boot must not fail this run."""
+        serial = (
+            f"{self.BANNER}\n"
+            "GCE-REPAIR-RESULT:FAILED:old attempt failed\n"
+            f"{self.BANNER}\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'success'
+        assert result['error'] is None
+
+    def test_output_without_banner_parsed_whole(self):
+        """No banner (custom scripts, pre-banner failures): parse everything."""
+        serial = "GCE-REPAIR-RESULT:SUCCESS:2\n"
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'success'
+        assert result['fixed_count'] == 2
+
+    # --- malformed SUCCESS count falls back to its OWN segment ---
+
+    def test_malformed_success_count_uses_own_segment(self):
+        """An unparseable count falls back to that script's [FIXED] lines,
+        not every script's lines."""
+        serial = (
+            "GCE-REPAIR-LINE:[FIXED] filesystem: e2fsck repaired /dev/sdb1\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            "GCE-REPAIR-LINE:[FIXED] grub: Reinstalled GRUB\n"
+            "GCE-REPAIR-LINE:[FIXED] grub: Regenerated config\n"
+            "GCE-REPAIR-LINE:[WARNING] grub: informational only\n"
+            "GCE-REPAIR-RESULT:SUCCESS:oops\n"
+        )
+        orch = self._make_orchestrator(serial)
+        result = orch._parse_repair_results()
+        assert result['status'] == 'success'
+        # 1 (parsed) + 2 (grub segment's [FIXED] lines; WARNING not counted)
+        assert result['fixed_count'] == 3
+
+    # --- snapshot guard for destructive fixes ---
+
+    def test_fstab_repair_allows_no_snapshot(self):
+        """Non-destructive categories keep --no-snapshot working."""
+        config = RescueConfig(create_snapshot=False)
+        orch = self._make_orchestrator(config=config)
+        diagnosis = {'boot_errors': [{
+            'category': 'fstab', 'severity': 'critical',
+            'detected_pattern': 'mount: bad UUID',
+        }]}
+        sentinel = {'status': 'success'}
+        with patch.object(orch, '_generate_repair_script',
+                          return_value='script'):
+            with patch.object(orch, '_run_repair_flow',
+                              return_value=sentinel) as flow:
+                result = orch.execute(diagnosis)
+        assert result is sentinel
+        assert flow.called
+
+    # --- verification-timeout floors and require_snapshot propagation ---
+
+    def _run_flow_capture_config(self, config=None, categories=None):
+        orch = self._make_orchestrator(config=config, debug_console=True)
+        captured = {}
+
+        class _FakeRescue:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.snapshot_name = None
+
+            def execute(self):
+                return False  # Short-circuit the flow after config capture
+
+        with patch('gce_rescue_v2.orchestration.repair.RescueOrchestrator',
+                   _FakeRescue):
+            result = orch._run_repair_flow(
+                'script', fixable_categories=categories
+            )
+        assert result['status'] == 'rescue_failed'
+        return captured['config']
+
+    def test_filesystem_raises_verification_timeout_and_requires_snapshot(self):
+        cfg = self._run_flow_capture_config(
+            categories=['filesystem', 'fstab', 'grub']
+        )
+        assert cfg.verification_timeout_override == 1800
+        assert cfg.require_snapshot is True
+
+    def test_grub_only_gets_smaller_floor_without_snapshot_requirement(self):
+        cfg = self._run_flow_capture_config(categories=['grub'])
+        assert cfg.verification_timeout_override == 900
+        assert cfg.require_snapshot is False
+
+    def test_fstab_only_keeps_os_default_timeout(self):
+        cfg = self._run_flow_capture_config(categories=['fstab'])
+        assert cfg.verification_timeout_override is None
+
+    def test_explicit_timeout_override_beats_category_floor(self):
+        config = RescueConfig(verification_timeout_override=120)
+        cfg = self._run_flow_capture_config(
+            config=config, categories=['filesystem']
+        )
+        assert cfg.verification_timeout_override == 120
+
+    # --- filesystem findings on non-boot disks are not rescue-fixable ---
+
+    def _fs_diagnosis(self, *patterns):
+        return {'boot_errors': [
+            {'category': 'filesystem', 'severity': 'critical',
+             'detected_pattern': p} for p in patterns
+        ]}
+
+    def test_filesystem_on_secondary_disk_not_fixable(self):
+        """Rescuing the boot disk cannot fsck a corrupt SECONDARY disk."""
+        orch = self._make_orchestrator()
+        diagnosis = self._fs_diagnosis('EXT4-fs error (device sdb1): bad block')
+        assert orch.get_fixable_categories(diagnosis) == []
+        assert 'filesystem' in orch.get_unfixable_categories(diagnosis)
+
+    # --- custom fix script pre-mount markers validated pre-flight ---
+
+    def test_validate_rejects_malformed_premount_markers(self):
+        """A BEGIN without END must fail validate(), not rescue step 6."""
+        config = RescueConfig(fix_script=(
+            '#!/bin/bash\n'
+            '# === GCE-REPAIR-PREMOUNT-BEGIN ===\n'
+            'echo unterminated\n'
+        ))
+        compute = _make_compute()
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', config=config,
+            logger=_make_logger()
+        )
+        with patch.object(orch, '_create_tracked_client',
+                          return_value=compute):
+            assert orch.validate() is False
+
+
+# ---------------------------------------------------------------------------
+# TestCategoryOutcomes
+# ---------------------------------------------------------------------------
+
+class TestCategoryOutcomes:
+    """Per-category outcome attribution in _run_repair_flow().
+
+    Scripts compose in get_fixable_categories() order and each emits one
+    RESULT marker, so serial marker order == category order and the two
+    lists zip 1:1. On any length mismatch the key is omitted (attribution
+    would be a guess)."""
+
+    def _run_flow(self, serial, fixable_categories=None, fix_script=None):
+        compute = _make_compute(serial_output=serial)
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        orch._verify_boot_after_repair = lambda: {
+            'verified': True, 'errors': []
+        }
+
+        mock_rescue = MagicMock()
+        mock_rescue.execute.return_value = True
+        mock_rescue.snapshot_name = 'pre-rescue-boot-123'
+        mock_rescue.verification_succeeded = True
+        mock_restore = MagicMock()
+        mock_restore.execute.return_value = True
+
+        with patch.object(orch, '_init_progress'), \
+                patch.object(orch, '_update_progress'), \
+                patch.object(orch, '_finish_progress'), \
+                patch('gce_rescue_v2.orchestration.repair.RescueOrchestrator',
+                      return_value=mock_rescue), \
+                patch('gce_rescue_v2.orchestration.repair.RestoreOrchestrator',
+                      return_value=mock_restore):
+            return orch._run_repair_flow(
+                'script' if fix_script is None else None,
+                fix_script=fix_script,
+                fixable_categories=fixable_categories,
+            )
+
+    def test_outcomes_zip_categories_in_composition_order(self):
+        """Markers map 1:1 onto categories when the counts match."""
+        serial = (
+            "GCE-REPAIR-RESULT:NO_ISSUES:0\n"
+            "GCE-REPAIR-LINE:[FIXED] fstab: UUID for /data\n"
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            "GCE-RESCUE-COMPLETE\n"
+        )
+        result = self._run_flow(
+            serial, fixable_categories=['filesystem', 'fstab']
+        )
+        assert result['category_outcomes'] == [
+            {'category': 'filesystem', 'kind': 'no_issues', 'count': 0,
+             'reason': None},
+            {'category': 'fstab', 'kind': 'success', 'count': 1,
+             'reason': None},
+        ]
+
+    def test_marker_count_mismatch_omits_key(self):
+        """Serial dropped a marker: no guessing, the key is absent."""
+        serial = (
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            "GCE-RESCUE-COMPLETE\n"
+        )
+        result = self._run_flow(
+            serial, fixable_categories=['filesystem', 'fstab']
+        )
+        assert 'category_outcomes' not in result
+
+    def test_custom_fix_script_flow_omits_key(self):
+        """--fix-script flows have no categories: never attribute."""
+        serial = (
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            "GCE-RESCUE-COMPLETE\n"
+        )
+        result = self._run_flow(serial, fix_script='#!/bin/bash\necho fix\n')
+        assert 'category_outcomes' not in result
+
+    def test_failed_marker_keeps_reason_in_outcomes(self):
+        """A failed category carries its reason for per-category display."""
+        serial = (
+            "GCE-REPAIR-RESULT:SUCCESS:1\n"
+            "GCE-REPAIR-RESULT:FAILED:grub-install returned 1\n"
+            "GCE-RESCUE-COMPLETE\n"
+        )
+        result = self._run_flow(
+            serial, fixable_categories=['fstab', 'grub']
+        )
+        assert result['status'] == 'failed'
+        assert result['category_outcomes'][1] == {
+            'category': 'grub', 'kind': 'failed', 'count': 0,
+            'reason': 'grub-install returned 1',
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -877,8 +1361,13 @@ class TestSupportedCategories:
     def test_fstab_is_supported(self):
         assert 'fstab' in SUPPORTED_FIX_CATEGORIES
 
-    def test_grub_is_not_supported(self):
-        assert 'grub' not in SUPPORTED_FIX_CATEGORIES
+    def test_kernel_is_not_supported(self):
+        """kernel is detect-only — no auto-repair fix script exists."""
+        assert 'kernel' not in SUPPORTED_FIX_CATEGORIES
+
+    def test_supported_set_is_exactly_the_shipped_scripts(self):
+        """The full auto-repairable set — update when a new fix script lands."""
+        assert SUPPORTED_FIX_CATEGORIES == {'fstab'}
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""
@@ -981,7 +1470,7 @@ class TestRepairExecuteReturnValues:
             compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
         )
         diagnosis = {
-            'boot_errors': [{'category': 'grub', 'severity': 'error'}]
+            'boot_errors': [{'category': 'kernel', 'severity': 'error'}]
         }
         result = orch.execute(diagnosis)
         assert result['snapshot_name'] is None
@@ -994,7 +1483,7 @@ class TestRepairExecuteReturnValues:
             compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
         )
         diagnosis = {
-            'boot_errors': [{'category': 'grub', 'severity': 'error'}]
+            'boot_errors': [{'category': 'kernel', 'severity': 'error'}]
         }
         result = orch.execute(diagnosis)
         assert 'duration_seconds' in result
@@ -1008,7 +1497,7 @@ class TestRepairExecuteReturnValues:
             compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
         )
         diagnosis = {
-            'boot_errors': [{'category': 'grub', 'severity': 'error'}]
+            'boot_errors': [{'category': 'kernel', 'severity': 'error'}]
         }
         result = orch.execute(diagnosis)
         # Duration should be captured for no_fix result
@@ -1035,6 +1524,9 @@ class TestRepairResumeMethod:
         orch._find_rescue_snapshot = lambda: snapshot_name
         orch._create_tracked_client = lambda label: compute
         orch._verify_boot_after_repair = lambda: {'verified': None, 'errors': []}
+        # Completion confirmed: these tests exercise the restore path, not
+        # the fix_in_progress guard (covered by TestResumeSafetyGuard).
+        orch._rescue_fixes_completed = lambda: True
         return orch
 
     def test_resume_sets_total_steps_to_2(self):
@@ -1128,6 +1620,144 @@ class TestRepairResumeMethod:
 
 
 # ---------------------------------------------------------------------------
+# TestResumeSafetyGuard
+# ---------------------------------------------------------------------------
+
+class TestResumeSafetyGuard:
+    """resume() must not restore (stop the VM) while the previous session's
+    fix scripts may still be running - a restore mid-fsck/mid-rebuild
+    corrupts the very disk being repaired."""
+
+    TOKEN = 'COMPLETE-abc123def456'
+
+    def _make_orchestrator(self, metadata_items=None, guest_attr=None,
+                           serial_output=''):
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/rescue-disk',
+                'deviceName': 'rescue-disk',
+            }],
+            'metadata': {'items': metadata_items or [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info=vm_info, serial_output=serial_output)
+        if guest_attr is None:
+            compute.instances.return_value.getGuestAttributes.return_value \
+                .execute.side_effect = Exception('404 attribute not set')
+        else:
+            compute.instances.return_value.getGuestAttributes.return_value \
+                .execute.return_value = guest_attr
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        return orch
+
+    def _script_metadata(self, key='startup-script'):
+        return [{'key': key,
+                 'value': f'#!/bin/bash\n... {self.TOKEN} ...\n'}]
+
+    # --- _rescue_fixes_completed() signal checks ---
+
+    def test_confirmed_via_session_token_guest_attribute(self):
+        """Token from metadata matching gce-rescue/status confirms completion."""
+        orch = self._make_orchestrator(
+            metadata_items=self._script_metadata(),
+            guest_attr={'variableValue': self.TOKEN},
+        )
+        assert orch._rescue_fixes_completed() is True
+
+    def test_confirmed_via_windows_startup_script_token(self):
+        """Token embedded in windows-startup-script-ps1 is also recovered."""
+        orch = self._make_orchestrator(
+            metadata_items=self._script_metadata(
+                key='windows-startup-script-ps1'
+            ),
+            guest_attr={'queryValue': {'items': [{'value': self.TOKEN}]}},
+        )
+        assert orch._rescue_fixes_completed() is True
+
+    def test_confirmed_via_serial_fallback_without_token(self):
+        """No token in metadata: the serial completion marker still counts."""
+        orch = self._make_orchestrator(
+            metadata_items=[],
+            serial_output='boot output\nGCE-RESCUE-COMPLETE\n',
+        )
+        assert orch._rescue_fixes_completed() is True
+
+    def test_stale_guest_attr_falls_back_to_serial(self):
+        """A stale non-session guest attribute must not confirm by itself,
+        but the serial marker still can."""
+        orch = self._make_orchestrator(
+            metadata_items=self._script_metadata(),
+            guest_attr={'variableValue': 'COMPLETE'},  # previous-era value
+            serial_output='GCE-RESCUE-COMPLETE\n',
+        )
+        assert orch._rescue_fixes_completed() is True
+
+    def test_unconfirmed_returns_false(self):
+        """No matching guest attribute and no serial marker: not confirmed."""
+        orch = self._make_orchestrator(
+            metadata_items=self._script_metadata(),
+            guest_attr={'variableValue': 'COMPLETE'},
+            serial_output='fsck is still running...\n',
+        )
+        assert orch._rescue_fixes_completed() is False
+
+    def test_marker_from_previous_boot_not_confirmed(self):
+        """A completion marker BEFORE the last mount banner belongs to an
+        earlier boot and must not confirm the current fix."""
+        banner = '=== GCE Rescue Auto-Mount Started ==='
+        orch = self._make_orchestrator(
+            metadata_items=[],
+            serial_output=(
+                f'GCE-RESCUE-COMPLETE\n{banner}\nrunning e2fsck...\n'
+            ),
+        )
+        assert orch._rescue_fixes_completed() is False
+
+    # --- resume() behavior on the guard ---
+
+    def _resume(self, confirmed):
+        compute = _make_compute()
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        orch._find_rescue_snapshot = lambda: 'pre-rescue-boot-123'
+        orch._rescue_fixes_completed = lambda: confirmed
+        orch._verify_boot_after_repair = lambda: {
+            'verified': None, 'errors': []
+        }
+
+        mock_restore = MagicMock()
+        mock_restore.execute.return_value = True
+
+        with patch.object(orch, '_init_progress'), \
+                patch.object(orch, '_update_progress'), \
+                patch.object(orch, '_finish_progress'), \
+                patch('gce_rescue_v2.orchestration.repair.RestoreOrchestrator',
+                      return_value=mock_restore) as restore_class:
+            result = orch.resume()
+        return result, restore_class
+
+    def test_unconfirmed_blocks_restore(self):
+        """Unconfirmed completion: no restore, status fix_in_progress."""
+        result, restore_class = self._resume(confirmed=False)
+        assert result['status'] == 'fix_in_progress'
+        assert 'still be running' in result['error']
+        assert result['snapshot_name'] == 'pre-rescue-boot-123'
+        restore_class.assert_not_called()
+
+    def test_confirmed_proceeds_to_restore(self):
+        """Confirmed completion: resume restores as before."""
+        result, restore_class = self._resume(confirmed=True)
+        assert result['status'] != 'fix_in_progress'
+        restore_class.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # TestRescueSubstepLabels
 # ---------------------------------------------------------------------------
 
@@ -1180,6 +1810,39 @@ class TestRepairMountFailure:
         assert result['status'] == 'mount_failed'
         assert result['fixed_count'] == 0
         assert result['snapshot_name'] == 'pre-rescue-boot-123'
+
+    def test_mount_failed_timeout_message_includes_duration(self):
+        """When verification timed out, the error must say so with the
+        duration (mirrors the rescue command's #133 messaging)."""
+        compute = _make_compute()
+        logger = MagicMock()
+        orch = RepairOrchestrator(compute, 'proj', 'zone-a', 'vm-1', logger=logger)
+        orch._create_tracked_client = lambda label: compute
+
+        diagnosis = {
+            'boot_errors': [{'category': 'fstab', 'severity': 'critical'}]
+        }
+
+        mock_rescue = MagicMock()
+        mock_rescue.execute.return_value = True
+        mock_rescue.snapshot_name = None
+        mock_rescue.verification_succeeded = False
+        mock_rescue.verification_result = OperationResult(
+            operation_name='Verify startup script',
+            success=False,
+            message='timed out',
+            rollback_data={},
+            details={'timed_out': True, 'timeout_seconds': 900},
+        )
+
+        with patch.object(orch, '_init_progress'):
+            with patch.object(orch, '_update_progress'):
+                with patch.object(orch, '_finish_progress'):
+                    with patch('gce_rescue_v2.orchestration.repair.RescueOrchestrator', return_value=mock_rescue):
+                        orch.execute(diagnosis)
+
+        logged = ' '.join(str(c) for c in logger.error.call_args_list)
+        assert 'timed out after 900s' in logged
 
     def test_mount_failed_does_not_restore(self):
         """Mount failure should NOT trigger restore (VM stays in rescue mode)."""
@@ -1327,6 +1990,7 @@ class TestRepairResumeRestoreFailure:
         )
         orch._create_tracked_client = lambda label: compute
         orch._find_rescue_snapshot = lambda: 'pre-rescue-boot-123'
+        orch._rescue_fixes_completed = lambda: True
         orch._progress_lock = __import__('threading').Lock()
         orch._progress_started = False
 
@@ -1350,6 +2014,7 @@ class TestRepairResumeRestoreFailure:
         )
         orch._create_tracked_client = lambda label: compute
         orch._find_rescue_snapshot = lambda: None
+        orch._rescue_fixes_completed = lambda: True
         orch._progress_lock = __import__('threading').Lock()
         orch._progress_started = False
 

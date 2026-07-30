@@ -1,0 +1,18 @@
+# Missing/unreadable /etc/machine-id (badly cloned images) - cascades
+# into dbus/systemd unit failures. Boot usually continues with a
+# transient ID, so on a healthy completed boot these findings are
+# cleared by boot-success suppression (no survives_boot_success).
+category: machine_id
+fix_guidance: "chroot into /mnt/sysroot and regenerate the machine ID: rm -f /etc/machine-id && systemd-machine-id-setup (also remove /var/lib/dbus/machine-id if it is a stale copy)"
+auto_repair: false
+
+patterns:
+  - name: machine_id_missing
+    severity: error
+    description: "/etc/machine-id is missing or unreadable"
+    regex:
+      - 'Failed to (?:read|open) [^\n]{0,60}machine.id'
+      - 'Could not get machine ID'
+    fixes:
+      - "Regenerate from rescue mode: sudo chroot /mnt/sysroot, then rm -f /etc/machine-id && systemd-machine-id-setup"
+      - "If /var/lib/dbus/machine-id exists as a stale copy, remove it too and let dbus recreate the symlink"

@@ -1,0 +1,55 @@
+# SELinux boot failure patterns (mode 51 - RHEL/Rocky/Alma/CentOS family).
+#
+# NOT detect_only: unlike kernel panics or OOM, these ARE fixable from
+# rescue mode - touch /.autorelabel on the mounted root, fix the policy
+# store via chroot, or boot with selinux=0/enforcing=0 on the kernel
+# command line. auto_repair stays false until startup_scripts/fixes/
+# selinux_fix.sh lands (RepairOrchestrator.validate() requires it).
+#
+# No survives_boot_success (deviation from the master-plan draft, which
+# suggested true): a policy-load failure freezes boot, so it can never
+# coexist with a LATER success marker from the same boot - and if a later
+# boot did complete, the policy demonstrably loaded (someone fixed it or
+# booted permissive), making the old finding stale noise that boot-success
+# suppression must clear. Same reasoning as grub/systemd_early.
+category: selinux
+fix_guidance: "From rescue mode, force a full relabel on next boot (sudo touch /mnt/sysroot/.autorelabel), or boot once with SELinux disabled by adding selinux=0 to the kernel command line via the GRUB menu"
+auto_repair: false
+
+patterns:
+  - name: selinux_policy_load_failure
+    severity: critical
+    description: "SELinux policy failed to load - init froze the boot"
+    regex:
+      # systemd/init wording; covers both the classic one-line RHEL form
+      # 'Failed to load SELinux policy, freezing.' and the modern
+      # 'Failed to load SELinux policy.' followed by a separate freeze
+      # line (which systemd_early's 'Freezing execution' also reports -
+      # both firing on that two-line form is correct, they are the cause
+      # and the terminal action).
+      - 'Failed to load SELinux policy'
+      # Older upstart/init wording (RHEL 6 era).
+      - 'Unable to load SELinux policy'
+      # Kernel-side read failure; \s+ tolerates the kernel's double-space
+      # after 'SELinux:'.
+      - 'SELinux:\s+policy read failure'
+    fixes:
+      - "The policy store on the disk is missing or corrupt - from rescue mode reinstall it via chroot: sudo chroot /mnt/sysroot dnf reinstall selinux-policy-targeted"
+      - "To boot immediately, add selinux=0 to the kernel command line from the GRUB menu (interactive serial console), then repair the policy from inside the VM"
+      - "If /etc/selinux/config names a policy type that is not installed (e.g. SELINUXTYPE=mls without the mls policy), fix it to match the installed policy"
+
+  # severity: warning - this banner is printed at the START of a normal,
+  # self-resolving autorelabel run (the system relabels and reboots
+  # itself). It becomes a problem only when the relabel loops forever,
+  # which the user can judge from the report; a single occurrence on an
+  # otherwise healthy VM must not be alarmist.
+  - name: selinux_relabel_required
+    severity: warning
+    description: "SELinux is performing (or requires) a full filesystem relabel"
+    regex:
+      # Console banner: '*** Warning -- SELinux targeted policy relabel is
+      # required. ***'. \S+ covers targeted/mls/minimum policy types.
+      - 'Warning -- SELinux \S+ policy relabel is required'
+    fixes:
+      - "A full relabel runs automatically and reboots the VM when done - large disks can take many minutes; wait before intervening"
+      - "If the VM loops on relabeling (this banner repeats across reboots), boot with selinux=0 from the GRUB menu and inspect /etc/selinux/config and /.autorelabel"

@@ -165,6 +165,17 @@ More info: [Application Default Credentials](https://cloud.google.com/docs/authe
 | `--quiet` | No confirmation prompts (for automation) |
 | `--format` | Output format: `json`, `yaml`, `table` |
 
+### Update check
+
+At the end of `rescue`, `restore`, `diagnose`, and `repair`, the CLI checks PyPI
+(`https://pypi.org/pypi/gce-rescue/json`) for a newer release and prints an
+upgrade notice to stderr if one exists. The check runs at most once every 24
+hours (cached in `~/.config/gce-rescue/version-check.json`), never delays or
+fails a command, and is skipped entirely with `--quiet`, with machine-readable
+`--format` values, or when the environment variable
+`GCE_RESCUE_DISABLE_VERSION_CHECK=1` is set — use the variable in restricted
+networks where outbound calls to pypi.org are unwanted.
+
 ## Features
 
 | Feature | Description |

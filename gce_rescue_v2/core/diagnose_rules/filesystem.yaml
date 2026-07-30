@@ -1,0 +1,124 @@
+category: filesystem
+fix_guidance: "sudo umount /mnt/sysroot && sudo fsck -y /dev/sdb1"
+# auto_repair stays false until startup_scripts/fixes/filesystem_fix.sh exists
+# and repair orchestration is wired for it. Detect-only with manual guidance.
+auto_repair: false
+# A corrupt secondary disk marked nofail lets the VM boot fine while the
+# disk stays broken — a successful boot never resolves these findings.
+survives_boot_success: true
+
+# Dedupe interplay with fstab.yaml:
+# fstab_fsck_failed matches generic boot-time fsck failure output (e.g.
+# "UNEXPECTED INCONSISTENCY", "fsck exited with status code"). The patterns
+# below match filesystem-level corruption evidence (superblock damage, kernel
+# EXT4/XFS corruption reports) and intentionally do NOT match plain fstab
+# configuration errors (bad UUID, missing device, mount timeouts). When a
+# corrupted filesystem causes a boot-time fsck failure, BOTH categories firing
+# on the same buffer is expected and correct: they are different, both-true
+# findings, and none of these descriptions belong in the _CATCH_ALL or
+# _GENERIC_SYMPTOM dedupe tiers in core/diagnosis.py.
+
+patterns:
+  - name: filesystem_bad_superblock
+    severity: critical
+    description: "Filesystem superblock is corrupt or unreadable"
+    regex:
+      - 'Bad magic number in super-block'
+      - 'Superblock invalid, trying backup blocks'
+      - 'The superblock could not be read or does not describe a valid'
+      # Kernel mount error observed live on GCE serial console (Debian 12) when a
+      # superblock is wiped: systemd-fsck detail stays in the journal, but the
+      # kernel prints "EXT4-fs (sdX): VFS: Can't find ext4 filesystem".
+      # Anchored to a real mount failure in the same boot window: healthy VMs
+      # whose startup scripts do "try mount, else mkfs" on a blank disk emit the
+      # same VFS line right before mkfs output and must NOT be flagged. The
+      # lookahead keeps match.group(0) single-line so evidence extraction in
+      # _extract_context_lines still renders a clean context window.
+      - 'VFS: Can''t find ext4 filesystem(?=[\s\S]{0,600}?(?:\[FAILED\] Failed to mount|Dependency failed for))'
+    fixes:
+      - "From rescue mode, run fsck with a backup superblock on the unmounted disk: fsck -b 32768 -y /dev/sdX"
+      - "If fsck cannot recover the filesystem, restore the disk from a snapshot"
+
+  - name: filesystem_corruption
+    severity: critical
+    description: "Filesystem corruption detected on a disk"
+    regex:
+      - 'Either the superblock or the partition table is likely to be corrupt'
+      - 'Corruption of in-memory data detected'
+      # [\w-]+ (not \w+): device-mapper names contain hyphens (dm-0, LVM on
+      # RHEL/SAP images) and \w alone silently misses them.
+      - 'XFS \([\w-]+\): Metadata corruption detected'
+      # Modern kernels report checksum-verified corruption with different
+      # wording; also match the canonical companion line the kernel emits for
+      # both variants ("Unmount and run xfs_repair").
+      - 'XFS \([\w-]+\): Metadata CRC error detected'
+      - 'XFS \([\w-]+\): Unmount and run xfs_repair'
+      # Combined-line form seen on modern kernels: "XFS (sda1): Corruption
+      # detected. Unmount and run xfs_repair" (no 'Metadata' prefix, and
+      # 'Unmount' is not at the message start).
+      - 'XFS \([\w-]+\): Corruption (?:detected|warning)\. Unmount'
+      - 'EXT4-fs error \(device'
+      # Severe corruption (superblock + partition table destroyed) makes the
+      # device unopenable, so fsck/mount emit this instead of "Bad magic
+      # number". Anchored to a real device path to avoid matching prose.
+      # (?!root\b) carves out "/dev/root: Can't open blockdev" - /dev/root
+      # is the initramfs's ALIAS for the not-yet-resolved root device, and
+      # the line appears on every initramfs load failure with no corruption
+      # present (confirmed live: repair fsck reported NO_ISSUES). Those
+      # boots are owned by initramfs.yaml.
+      - "/dev/(?!root\\b)\\S+: Can't open blockdev"
+    fixes:
+      - "From rescue mode, check the unmounted disk: fsck -y /dev/sdX (ext) or xfs_repair /dev/sdX (XFS)"
+      - "If corruption persists, check disk health in GCP Console and restore from a snapshot"
+
+  - name: filesystem_btrfs_corruption
+    severity: critical
+    description: "Btrfs filesystem corruption detected (SLES/openSUSE root)"
+    regex:
+      # Bound to the kernel's '(device ...)' form so prose mentioning
+      # 'BTRFS error' can never match. 'BTRFS info'/'BTRFS warning' lines
+      # on healthy boots do not match any of these.
+      - 'BTRFS error \(device'
+      - 'BTRFS critical \(device'
+      - 'open_ctree failed'
+      - 'BTRFS: failed to read chunk tree'
+      - 'parent transid verify failed'
+    fixes:
+      - "From rescue mode, check the unmounted disk read-only first: sudo btrfs check /dev/sdX (do NOT use --repair without a snapshot)"
+      - "Try recovery mounts before repairing: sudo mount -o ro,rescue=usebackuproot /dev/sdX /mnt/recovery"
+      - "On SUSE root disks, a snapper snapshot rollback from the GRUB snapshot menu is often the safest fix"
+      - "If the chunk/root trees are unreadable, restore the disk from a snapshot"
+
+  - name: filesystem_xfs_log_failure
+    severity: critical
+    description: "XFS journal (log) mount or recovery failed"
+    regex:
+      - 'XFS \([\w-]+\): log mount/recovery failed'
+      - 'XFS \([\w-]+\): log mount failed'
+    fixes:
+      - "From rescue mode, replay/repair the log on the unmounted disk: sudo xfs_repair /dev/sdX"
+      - "If xfs_repair refuses because the log is dirty, retry with -L (zeroes the log; last transactions are lost): sudo xfs_repair -L /dev/sdX"
+      - "If corruption persists after repair, restore the disk from a snapshot"
+
+  - name: filesystem_ext4_feature_mismatch
+    severity: critical
+    description: "ext4 filesystem uses features unsupported by this kernel"
+    regex:
+      # Printed when a disk formatted by newer e2fsprogs (e.g.
+      # metadata_csum_seed, orphan_file) is mounted by an older kernel -
+      # typical after moving a disk to an older-distro rescue/host image.
+      - "couldn't mount (?:RDWR |read-only )?because of unsupported optional features"
+    fixes:
+      - "The disk was formatted with newer ext4 features than this kernel supports - mount it from a VM/rescue image at least as new as the OS that created it"
+      - "Check which features are set: sudo dumpe2fs -h /dev/sdX | grep features"
+      - "Some features can be disabled offline if you must mount on the older kernel, e.g.: sudo tune2fs -O ^orphan_file /dev/sdX (verify with e2fsck afterwards)"
+
+  - name: filesystem_xfs_duplicate_uuid
+    severity: error
+    description: "XFS refused to mount a filesystem whose UUID is already mounted (duplicate UUID)"
+    regex:
+      - "Filesystem has duplicate UUID [^\\n]{0,80}- can't mount"
+    fixes:
+      - "This is expected in rescue mode when the original XFS boot disk is attached as the secondary disk: the rescue image's root has the same UUID (same base image), so the kernel refuses the second mount"
+      - "Mount the original disk without UUID checking: sudo mount -o nouuid /dev/sdb1 /mnt/sysroot"
+      - "Or give the original filesystem a new UUID permanently: sudo xfs_admin -U generate /dev/sdb1 (then update fstab/grub references to the new UUID)"

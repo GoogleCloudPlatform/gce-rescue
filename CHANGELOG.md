@@ -5,6 +5,20 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-07-24
+
+### Added
+- `diagnose`: expanded from fstab-only to 21 boot-failure categories (81 patterns) across the boot chain, storage, kernel, and runtime (#148)
+- `repair`: multi-category repair engine — dependency-ordered fixes, aggregated serial results, category-based verification timeout floors, mandatory snapshot for destructive fixes, and per-session completion tokens so repeated repairs cannot short-circuit on a stale signal (#151)
+- CLI: prints a notice when a newer version is available on PyPI (checked at most once daily, cached; disable with `GCE_RESCUE_DISABLE_VERSION_CHECK=1`) (#156)
+
+### Fixed
+- Windows: VMs could become unbootable (`0xc000000e`) after a rescue/restore cycle — same-family rescue disks share a GPT disk GUID, and resolving the collision invalidated the disk's BCD. Rescue now automatically selects an image family different from the target's so the collision never occurs; if a GUID change is still detected (custom images), the mount script warns with repair guidance instead of modifying the BCD (#149)
+- `rescue`/`repair`: startup verification timeouts now report how long was waited and capture recent serial output to the log for diagnosis (#133)
+
+### Security
+- pyasn1 pinned to 0.6.3 — fixes a denial-of-service via unbounded recursion on crafted ASN.1 input (#130)
+
 ## [2.3.1] - 2026-07-01
 
 ### Fixed

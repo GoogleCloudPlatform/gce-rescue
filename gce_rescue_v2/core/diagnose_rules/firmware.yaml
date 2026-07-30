@@ -1,0 +1,86 @@
+# Firmware-stage failure patterns (boot stage 1: SeaBIOS / UEFI-OVMF).
+#
+# These fire before GRUB or the kernel ever runs, so the lines carry no
+# timestamps and no unit prefixes. All strings below are firmware-unique
+# (SeaBIOS 'Boot failed'/'No bootable device', OVMF 'BdsDxe:') and cannot
+# appear in kernel or systemd output.
+category: firmware
+fix_guidance: "From rescue mode, verify the original disk's partition table (sgdisk --verify /dev/sdX or fdisk -l /dev/sdX) and reinstall the bootloader from a chroot; Secure Boot violations cannot be fixed by disk edits - they need correctly signed boot components"
+# auto_repair MUST stay false until startup_scripts/fixes/firmware_fix.sh
+# lands. RepairOrchestrator.validate() checks that every category with
+# auto_repair: true has a fix script, so flipping this early makes
+# `repair` fail preflight for ALL categories. Flip to true in the same
+# commit that adds the script.
+auto_repair: false
+# NOT detect_only: a wiped MBR/GPT or a missing/unformatted EFI system
+# partition IS repairable from rescue mode with partition and bootloader
+# surgery on the attached original disk. The exception is Secure Boot
+# rejection, which is advise-only — its per-pattern fixes say so.
+# No survives_boot_success: firmware failures block boot entirely, so a
+# later completed boot proves the stale finding is resolved.
+
+patterns:
+  - name: firmware_no_bootable_device
+    severity: critical
+    description: "Firmware found no bootable device (wiped or corrupt MBR / boot disk)"
+    regex:
+      # Deliberately NOT matched: 'Booting from Hard Disk...' — SeaBIOS
+      # prints that on EVERY healthy boot; only the explicit failure
+      # strings below are reliable signals.
+      # Start-anchored so a startup-script echo merely MENTIONING the
+      # phrase mid-line cannot fire. The live SeaBIOS capture starts the
+      # line with the phrase ('No bootable device.SeaBIOS ...'), and when
+      # SeaBIOS glues it after 'Boot failed: could not read the boot
+      # disk', that line's own pattern below still reports the finding.
+      - '^\s*No bootable device'
+      - '^\s*Boot failed: not a bootable disk'
+      - '^\s*Boot failed: could not read the boot disk'
+    fixes:
+      - "Verify the boot disk is attached as the boot device: gcloud compute instances describe VM_NAME --zone=ZONE --format='value(disks[].boot)'"
+      - "From rescue mode, check the partition table of the original disk: sudo fdisk -l /dev/sdX - if it is empty, the MBR/GPT was wiped"
+      - "Reinstall the bootloader from a chroot: sudo chroot /mnt/sysroot, then grub-install /dev/sdX (Debian-family) or grub2-install /dev/sdX (RHEL-family)"
+      - "If the partition table is unrecoverable, restore the disk from a snapshot"
+
+  - name: firmware_uefi_boot_load_failed
+    severity: critical
+    description: "UEFI firmware could not load a boot option (missing or unformatted EFI system partition)"
+    regex:
+      # 'BdsDxe' is unique to OVMF/EDK2 firmware output.
+      - 'BdsDxe: failed to load Boot[0-9A-Fa-f]{4}'
+      - 'BdsDxe: No bootable option or device was found'
+    fixes:
+      - "From rescue mode, check the EFI system partition exists on the original disk: sudo sgdisk -p /dev/sdX (look for an EF00 partition)"
+      - "Mount the ESP and verify it contains the bootloader: sudo mount /dev/sdX15 /mnt/esp && ls /mnt/esp/EFI"
+      - "Reinstall the EFI bootloader from a chroot (with the ESP mounted at /boot/efi): grub-install --target=x86_64-efi /dev/sdX (Debian-family) or dnf reinstall grub2-efi-x64 shim-x64 (RHEL-family)"
+
+  - name: firmware_secure_boot_violation
+    severity: critical
+    description: "Secure Boot rejected the bootloader or kernel (unsigned or wrongly signed)"
+    regex:
+      - 'Verification failed: \(0x1A\) Security Violation'
+      # shim/GRUB-emitted forms — line-start 'error:' bound like grub.yaml,
+      # with the same optional RHEL/Fedora source-location prefix
+      # (error: ../../grub-core/...c:NNN:<message>).
+      - '^\s*error: (?:\S+\.c:\d+:)?bad shim signature'
+      - '^\s*error: (?:\S+\.c:\d+:)?shim_lock protocol not found'
+      - '^\s*error: (?:\S+\.c:\d+:)?prohibited by secure boot policy'
+    fixes:
+      - "Advise-only: Secure Boot violations cannot be fixed by editing the disk from rescue mode - the Shielded VM firmware rejects the boot chain itself"
+      - "If a custom/unsigned kernel or bootloader was installed, reinstall the distro-signed shim and GRUB packages from a chroot: apt-get install --reinstall shim-signed grub-efi-amd64-signed (Debian-family) or dnf reinstall shim-x64 grub2-efi-x64 (RHEL-family)"
+      - "Or disable Secure Boot on the stopped VM: gcloud compute instances update VM_NAME --zone=ZONE --no-shielded-secure-boot"
+
+  - name: firmware_gpt_corrupt
+    severity: critical
+    description: "Partition table on the boot disk is corrupt or invalid"
+    regex:
+      # Deliberately NOT matched: 'GPT: Primary header thinks Alt. header
+      # is not at the end of the disk' — the kernel prints that benign
+      # warning on every resized-but-not-yet-expanded persistent disk and
+      # the VM boots fine (it is also a kernel message, not firmware).
+      # Only unambiguous failure strings are matched here.
+      - '^\s*Invalid partition table'
+      - 'partition table (?:is )?corrupt'
+    fixes:
+      - "From rescue mode, inspect the original disk's partition table: sudo sgdisk --verify /dev/sdX or sudo fdisk -l /dev/sdX"
+      - "Recover the GPT from its backup header using gdisk's recovery menu: sudo gdisk /dev/sdX, then 'r' (recovery) and 'b' (use backup header)"
+      - "If the table is unrecoverable, restore the disk from a snapshot"

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # Version for usage tracking (SemVer: MAJOR.MINOR.PATCH-PRERELEASE)
-VERSION = '2.3.1'
+VERSION = '2.4.0'
 
 
 def _sanitize_ua_value(value: str) -> str:
