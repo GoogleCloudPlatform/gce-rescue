@@ -98,13 +98,23 @@ fi
 
 # 5. Regenerate GRUB config inside chroot
 log "Regenerating GRUB configuration..."
+# Create pre-repair backups for damage containment if regeneration fails
+if [ -s "$SYSROOT/boot/grub/grub.cfg" ] && [ ! -f "$SYSROOT/boot/grub/grub.cfg.gce-repair-backup" ]; then
+    cp "$SYSROOT/boot/grub/grub.cfg" "$SYSROOT/boot/grub/grub.cfg.gce-repair-backup" 2>/dev/null || true
+fi
 if [ "$is_debian" = true ] && [ -x "$SYSROOT/usr/sbin/update-grub" ]; then
     chroot "$SYSROOT" update-grub 2>&1 | tee -a "$LOGFILE"
     if [ ${PIPESTATUS[0]} -eq 0 ] && [ -s "$SYSROOT/boot/grub/grub.cfg" ]; then
         fixes=$((fixes + 1))
         repair_line "[FIXED] grub: Successfully regenerated /boot/grub/grub.cfg via update-grub"
+        rm -f "$SYSROOT/boot/grub/grub.cfg.gce-repair-backup" 2>/dev/null || true
     else
         log "WARNING: update-grub failed or grub.cfg is empty"
+        if [ -f "$SYSROOT/boot/grub/grub.cfg.gce-repair-backup" ]; then
+            if cp "$SYSROOT/boot/grub/grub.cfg.gce-repair-backup" "$SYSROOT/boot/grub/grub.cfg" 2>/dev/null; then
+                repair_line "grub: Regeneration failed - restored the pre-repair grub.cfg from backup"
+            fi
+        fi
     fi
 elif [ -x "$SYSROOT/usr/sbin/grub2-mkconfig" ] || [ -x "$SYSROOT/sbin/grub2-mkconfig" ]; then
     mkconfig_cmd="grub2-mkconfig"
@@ -118,58 +128,84 @@ elif [ -x "$SYSROOT/usr/sbin/grub2-mkconfig" ] || [ -x "$SYSROOT/sbin/grub2-mkco
         fi
     fi
     mkdir -p "$(dirname "$SYSROOT/$cfg_dest")"
+    if [ -s "$SYSROOT/$cfg_dest" ] && [ ! -f "$SYSROOT/$cfg_dest.gce-repair-backup" ]; then
+        cp "$SYSROOT/$cfg_dest" "$SYSROOT/$cfg_dest.gce-repair-backup" 2>/dev/null || true
+    fi
     chroot "$SYSROOT" "$mkconfig_cmd" -o "$cfg_dest" 2>&1 | tee -a "$LOGFILE"
     if [ ${PIPESTATUS[0]} -eq 0 ] && [ -s "$SYSROOT/$cfg_dest" ]; then
         fixes=$((fixes + 1))
         repair_line "[FIXED] grub: Successfully regenerated $cfg_dest via grub2-mkconfig"
+        rm -f "$SYSROOT/$cfg_dest.gce-repair-backup" 2>/dev/null || true
     else
         log "WARNING: $mkconfig_cmd failed or $cfg_dest is empty"
+        if [ -f "$SYSROOT/$cfg_dest.gce-repair-backup" ]; then
+            if cp "$SYSROOT/$cfg_dest.gce-repair-backup" "$SYSROOT/$cfg_dest" 2>/dev/null; then
+                repair_line "grub: Regeneration failed - restored the pre-repair grub.cfg from backup"
+            fi
+        fi
     fi
 elif [ -x "$SYSROOT/usr/sbin/grub-mkconfig" ]; then
     chroot "$SYSROOT" grub-mkconfig -o /boot/grub/grub.cfg 2>&1 | tee -a "$LOGFILE"
     if [ ${PIPESTATUS[0]} -eq 0 ] && [ -s "$SYSROOT/boot/grub/grub.cfg" ]; then
         fixes=$((fixes + 1))
         repair_line "[FIXED] grub: Successfully regenerated /boot/grub/grub.cfg via grub-mkconfig"
+        rm -f "$SYSROOT/boot/grub/grub.cfg.gce-repair-backup" 2>/dev/null || true
     else
         log "WARNING: grub-mkconfig failed or grub.cfg is empty"
+        if [ -f "$SYSROOT/boot/grub/grub.cfg.gce-repair-backup" ]; then
+            if cp "$SYSROOT/boot/grub/grub.cfg.gce-repair-backup" "$SYSROOT/boot/grub/grub.cfg" 2>/dev/null; then
+                repair_line "grub: Regeneration failed - restored the pre-repair grub.cfg from backup"
+            fi
+        fi
     fi
 fi
 
-# 6. Reinstall GRUB bootloader (BIOS-only for v1; skip for UEFI or if target_disk is unresolved)
-if [ -n "$target_disk" ] && [ -b "$target_disk" ]; then
-    if [ -d "$SYSROOT/boot/efi/EFI" ]; then
-        log "UEFI system detected: skipping bootloader binary install (config regeneration only for v1)"
-    elif [ -x "$SYSROOT/usr/sbin/grub-install" ] || [ -x "$SYSROOT/sbin/grub-install" ]; then
-        grub_inst="grub-install"
-        [ -x "$SYSROOT/sbin/grub-install" ] && grub_inst="/sbin/grub-install"
-        chroot "$SYSROOT" "$grub_inst" "$target_disk" 2>&1 | tee -a "$LOGFILE"
-        if [ ${PIPESTATUS[0]} -eq 0 ]; then
-            fixes=$((fixes + 1))
-            repair_line "[FIXED] grub: Executed grub-install on $target_disk"
-        else
-            log "WARNING: grub-install on $target_disk failed"
-        fi
-    elif [ -x "$SYSROOT/usr/sbin/grub2-install" ] || [ -x "$SYSROOT/sbin/grub2-install" ]; then
-        grub_inst="grub2-install"
-        [ -x "$SYSROOT/sbin/grub2-install" ] && grub_inst="/sbin/grub2-install"
-        chroot "$SYSROOT" "$grub_inst" "$target_disk" 2>&1 | tee -a "$LOGFILE"
-        if [ ${PIPESTATUS[0]} -eq 0 ]; then
-            fixes=$((fixes + 1))
-            repair_line "[FIXED] grub: Executed grub2-install on $target_disk"
-        else
-            log "WARNING: grub2-install on $target_disk failed"
-        fi
-    fi
-else
-    log "Skipping bootloader reinstall: target block device unresolved"
+# Verify that a valid grub.cfg exists before attempting bootloader install or declaring success
+cfg_valid=false
+if [ -s "$SYSROOT/boot/grub/grub.cfg" ] || [ -s "$SYSROOT/boot/grub2/grub.cfg" ] || ([ -n "$cfg_dest" ] && [ -s "$SYSROOT/$cfg_dest" ]); then
+    cfg_valid=true
 fi
 
-log "=== GRUB repair completed: $fixes fixes applied ==="
-
-if [ $fixes -gt 0 ]; then
-    repair_result "SUCCESS:$fixes"
+if [ "$cfg_valid" = false ]; then
+    log "ERROR: No valid grub.cfg found after regeneration attempt. Aborting bootloader install."
+    repair_result "FAILED:grub.cfg missing or empty after repair"
 else
-    repair_result "FAILED:0 fixes applied"
+    # 6. Reinstall GRUB bootloader (BIOS-only for v1; skip for UEFI or if target_disk is unresolved)
+    if [ -n "$target_disk" ] && [ -b "$target_disk" ]; then
+        if [ -d "$SYSROOT/boot/efi/EFI" ]; then
+            log "UEFI system detected: skipping bootloader binary install (config regeneration only for v1)"
+        elif [ -x "$SYSROOT/usr/sbin/grub-install" ] || [ -x "$SYSROOT/sbin/grub-install" ]; then
+            grub_inst="grub-install"
+            [ -x "$SYSROOT/sbin/grub-install" ] && grub_inst="/sbin/grub-install"
+            chroot "$SYSROOT" "$grub_inst" "$target_disk" 2>&1 | tee -a "$LOGFILE"
+            if [ ${PIPESTATUS[0]} -eq 0 ]; then
+                fixes=$((fixes + 1))
+                repair_line "[FIXED] grub: Executed grub-install on $target_disk"
+            else
+                log "WARNING: grub-install on $target_disk failed"
+            fi
+        elif [ -x "$SYSROOT/usr/sbin/grub2-install" ] || [ -x "$SYSROOT/sbin/grub2-install" ]; then
+            grub_inst="grub2-install"
+            [ -x "$SYSROOT/sbin/grub2-install" ] && grub_inst="/sbin/grub2-install"
+            chroot "$SYSROOT" "$grub_inst" "$target_disk" 2>&1 | tee -a "$LOGFILE"
+            if [ ${PIPESTATUS[0]} -eq 0 ]; then
+                fixes=$((fixes + 1))
+                repair_line "[FIXED] grub: Executed grub2-install on $target_disk"
+            else
+                log "WARNING: grub2-install on $target_disk failed"
+            fi
+        fi
+    else
+        log "Skipping bootloader reinstall: target block device unresolved"
+    fi
+
+    log "=== GRUB repair completed: $fixes fixes applied ==="
+
+    if [ $fixes -gt 0 ]; then
+        repair_result "SUCCESS:$fixes"
+    else
+        repair_result "FAILED:0 fixes applied"
+    fi
 fi
 
 fi # end sysroot guard

@@ -1075,6 +1075,15 @@ class TestGrubFixScript:
         content = fix_path.read_text()
         assert 'findmnt' in content or 'readlink' in content or 'parent_disk' in content
 
+    def test_fix_script_restores_backup_on_regeneration_failure(self):
+        """Script should restore pre-repair grub.cfg backup if regeneration fails."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'grub_fix.sh'
+        )
+        content = fix_path.read_text()
+        assert 'gce-repair-backup' in content
+        assert 'restored the pre-repair grub.cfg from backup' in content
+
 
 
 
