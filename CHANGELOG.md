@@ -5,6 +5,38 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-07-24
+
+### Added
+- `diagnose`: expanded from fstab-only to 21 boot-failure categories (81 patterns) across the boot chain, storage, kernel, and runtime (#148)
+- `repair`: multi-category repair engine — dependency-ordered fixes, aggregated serial results, category-based verification timeout floors, mandatory snapshot for destructive fixes, and per-session completion tokens so repeated repairs cannot short-circuit on a stale signal (#151)
+- CLI: prints a notice when a newer version is available on PyPI (checked at most once daily, cached; disable with `GCE_RESCUE_DISABLE_VERSION_CHECK=1`) (#156)
+
+### Fixed
+- Windows: VMs could become unbootable (`0xc000000e`) after a rescue/restore cycle — same-family rescue disks share a GPT disk GUID, and resolving the collision invalidated the disk's BCD. Rescue now automatically selects an image family different from the target's so the collision never occurs; if a GUID change is still detected (custom images), the mount script warns with repair guidance instead of modifying the BCD (#149)
+- `rescue`/`repair`: startup verification timeouts now report how long was waited and capture recent serial output to the log for diagnosis (#133)
+
+### Security
+- pyasn1 pinned to 0.6.3 — fixes a denial-of-service via unbounded recursion on crafted ASN.1 input (#130)
+
+## [2.3.1] - 2026-07-01
+
+### Fixed
+- Deterministic rescue completion signal for Windows (and Linux). Verification previously relied only on the serial console, which can drop the startup script's final output before the process exits — so the `GCE-RESCUE-COMPLETE` marker never reached serial and verification falsely timed out even though the rescue succeeded. The startup script now sets a guest attribute (`gce-rescue/status=COMPLETE`) and verification polls that first, with the serial marker kept as a fallback (#144).
+- `repair` now pre-flights Local SSDs the same way `rescue` does: in `--quiet` mode it requires `--force` (with a clear hint) and shows a data-loss warning before the confirmation prompt, instead of failing mid-operation with a raw "undefined value for discard-local-ssd" API error (#135).
+
+## [2.3.0] - 2026-06-30
+
+### Added
+- Up-front detection of organization-policy rescue-image blocks. When a project enforces `constraints/compute.trustedImageProjects` and the default rescue image's project (e.g. `debian-cloud` / `windows-cloud`) is not allowed, `rescue` and `repair` now fail fast **before any change is made** — the VM is never stopped (zero downtime) — with an actionable error that names the allowed image projects and shows a copy-pasteable `--rescue-image` example. A pre-flight org-policy query (`getEffectiveOrgPolicy`) catches the common case; if the policy cannot be read, a creation-time safety net surfaces the same guidance and rolls back cleanly. Previously this surfaced only mid-operation, after the VM was already stopped and snapshotted (#137, #122).
+- `--verification-timeout=SECONDS` flag for `rescue` and `repair` to override the startup-script verification timeout. OS-aware defaults (Linux 300s, Windows 600s) replace the previous fixed 120s, fixing intermittent false verification failures on slow-booting Windows rescue VMs whose mount script can take several minutes to detect the affected disk (#131, #123).
+
+### Fixed
+- Cleaner error output across `rescue`, `restore`, and `repair`: removed a doubled `ERROR: ERROR:` prefix and stray empty `ERROR:` lines, and operation errors no longer interleave with the live progress spinner — they now print after the step resolves to `FAILED.` (#137).
+
+### Changed
+- Dependency and GitHub Actions maintenance updates (#112–#117).
+
 ## [2.2.0] - 2026-06-12
 
 ### Added
