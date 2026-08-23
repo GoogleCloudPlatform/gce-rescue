@@ -7,6 +7,7 @@
 # cloud-init failures break SSH keys, users, and network config that the
 # platform itself relies on.
 category: cloud_init
+os: linux
 fix_guidance: "Check the full trace in /mnt/sysroot/var/log/cloud-init.log from rescue mode (or /var/log/cloud-init.log over SSH if the VM is reachable) and fix the user-data or /etc/cloud config it names"
 auto_repair: false
 # detect_only: the usual culprit is user-data (VM metadata) or distro

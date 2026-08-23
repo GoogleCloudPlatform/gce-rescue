@@ -1,4 +1,5 @@
 category: fstab
+os: linux
 fix_guidance: "sudo nano /mnt/sysroot/etc/fstab"
 auto_repair: true
 

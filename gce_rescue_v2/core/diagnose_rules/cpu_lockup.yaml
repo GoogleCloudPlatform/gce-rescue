@@ -13,6 +13,7 @@
 # the serial console output, so they cannot be detected by this serial-based
 # engine. Covering them needs an API extension (future work).
 category: cpu_lockup
+os: linux
 fix_guidance: "Identify the offending process/workload from the serial log, then reset the VM; if lockups repeat, stop and start the VM to move it to a different host"
 auto_repair: false
 # detect_only: rescue mode does not help (nothing to edit on the rescued

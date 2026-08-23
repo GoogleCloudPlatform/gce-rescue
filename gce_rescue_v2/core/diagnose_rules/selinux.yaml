@@ -13,6 +13,7 @@
 # booted permissive), making the old finding stale noise that boot-success
 # suppression must clear. Same reasoning as grub/systemd_early.
 category: selinux
+os: linux
 fix_guidance: "From rescue mode, force a full relabel on next boot (sudo touch /mnt/sysroot/.autorelabel), or boot once with SELinux disabled by adding selinux=0 to the kernel command line via the GRUB menu"
 auto_repair: false
 

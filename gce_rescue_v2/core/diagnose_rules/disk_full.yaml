@@ -1,4 +1,5 @@
 category: disk_full
+os: linux
 # A boot-success marker does not mean the disk is no longer full — a VM
 # can finish booting while writes keep failing. Findings must survive the
 # RUNNING + "Startup finished" suppression.

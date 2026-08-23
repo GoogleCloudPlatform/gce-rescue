@@ -3,6 +3,7 @@
 # transient ID, so on a healthy completed boot these findings are
 # cleared by boot-success suppression (no survives_boot_success).
 category: machine_id
+os: linux
 fix_guidance: "chroot into /mnt/sysroot and regenerate the machine ID: rm -f /etc/machine-id && systemd-machine-id-setup (also remove /var/lib/dbus/machine-id if it is a stale copy)"
 auto_repair: false
 

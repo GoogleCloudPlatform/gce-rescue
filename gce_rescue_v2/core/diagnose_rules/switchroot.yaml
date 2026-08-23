@@ -16,6 +16,7 @@
 # No survives_boot_success: if a later boot completes, init executed and
 # the failure is resolved, so boot-success suppression must clear these.
 category: switchroot
+os: linux
 fix_guidance: "In rescue mode, verify /mnt/sysroot/sbin/init exists and its symlink target resolves (ls -l /mnt/sysroot/sbin/init), check its libraries (chroot /mnt/sysroot ldd /sbin/init), and reinstall systemd from a chroot if broken"
 # auto_repair MUST stay false until startup_scripts/fixes/switchroot_fix.sh
 # lands. RepairOrchestrator.validate() checks that every category with
