@@ -23,7 +23,7 @@ jobs:
 
     - name: Restore pipenv cache
       id: cache-pipenv
-      uses: actions/cache@v5
+      uses: actions/cache@v6
       with:
         path: ./.venv
         key: test-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-pipenv-${{ hashFiles('Pipfile.lock') }}
