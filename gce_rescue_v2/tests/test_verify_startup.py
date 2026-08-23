@@ -122,6 +122,48 @@ class TestVerifyStartupOperation:
         assert result.success is False
         assert "Timeout" in result.message
 
+    def test_timeout_returns_structured_details(self):
+        """On timeout, result carries structured timeout details (issue #132)."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'booting...\nwaiting for disk\n'
+        }
+        with patch('time.sleep'):
+            with patch('time.time', side_effect=[0, 5, 121]):
+                result = self.operation.execute(vm_name='test-vm', timeout=120)
+        assert result.success is False
+        assert result.details is not None
+        assert result.details['timed_out'] is True
+        assert result.details['timeout_seconds'] == 120
+
+    def test_timeout_captures_serial_tail(self):
+        """The last serial output seen is captured in the timeout details."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'booting...\nwaiting for affected disk\n'
+        }
+        with patch('time.sleep'):
+            with patch('time.time', side_effect=[0, 5, 121]):
+                result = self.operation.execute(vm_name='test-vm', timeout=120)
+        assert 'waiting for affected disk' in result.details['serial_tail']
+
+    def test_timeout_empty_serial_has_empty_tail(self):
+        """Empty serial output yields an empty (not missing) tail."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': ''
+        }
+        with patch('time.sleep'):
+            with patch('time.time', side_effect=[0, 5, 121]):
+                result = self.operation.execute(vm_name='test-vm', timeout=120)
+        assert result.details['serial_tail'] == ''
+
+    def test_success_has_no_timeout_details(self):
+        """On success, details stays None (only set on timeout)."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'GCE-RESCUE-COMPLETE'
+        }
+        result = self.operation.execute(vm_name='test-vm', timeout=10)
+        assert result.success is True
+        assert result.details is None
+
     def test_tracking_label_used(self):
         """Test that tracking label creates custom User-Agent."""
         # Arrange
@@ -188,6 +230,55 @@ class TestVerifyStartupOperation:
         result = self.operation.execute(vm_name='test-vm', timeout=10)
         assert result.success is True
         assert "completed" in result.message.lower()
+
+    def test_guest_attr_session_token_accepted(self):
+        """The session token value counts as completion when expected."""
+        self.mock_compute.instances().getGuestAttributes().execute.return_value = {
+            'variableValue': 'COMPLETE-abc123def456'
+        }
+        assert self.operation._completion_guest_attribute_set(
+            self.mock_compute, 'vm', expected_value='COMPLETE-abc123def456'
+        ) is True
+
+    def test_guest_attr_stale_complete_rejected_for_session_token(self):
+        """A stale COMPLETE from a previous rescue must NOT satisfy a
+        session-token verification (guest attributes persist across
+        stop/start/restore and would short-circuit repeat repairs)."""
+        self.mock_compute.instances().getGuestAttributes().execute.return_value = {
+            'variableValue': 'COMPLETE'
+        }
+        assert self.operation._completion_guest_attribute_set(
+            self.mock_compute, 'vm', expected_value='COMPLETE-abc123def456'
+        ) is False
+
+    def test_execute_stale_guest_attr_does_not_short_circuit(self):
+        """execute() with a session token ignores a stale COMPLETE and times
+        out when neither the token nor the serial marker appears."""
+        self.mock_compute.instances().getGuestAttributes().execute.return_value = {
+            'variableValue': 'COMPLETE'  # from a previous rescue session
+        }
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'booting... no marker'
+        }
+        with patch('time.sleep'), patch('time.time', side_effect=[0, 0, 20, 20]):
+            result = self.operation.execute(
+                vm_name='test-vm', timeout=10,
+                expected_completion_value='COMPLETE-abc123def456'
+            )
+        assert result.success is False
+
+    def test_startup_failure_marker_aborts_early(self):
+        """A terminal failure line on serial fails verification immediately
+        instead of polling out the timeout (a mount that already failed can
+        never produce the completion marker)."""
+        self.mock_compute.instances().getSerialPortOutput().execute.return_value = {
+            'contents': 'mounting...\nERROR: All mount attempts failed\n'
+        }
+        result = self.operation.execute(vm_name='test-vm', timeout=600)
+        assert result.success is False
+        assert 'All mount attempts failed' in result.message
+        # One poll was enough - no timeout wait
+        assert self.mock_compute.instances().getSerialPortOutput().execute.call_count == 1
 
     def test_rollback_returns_true(self):
         """Test rollback always returns True (no-op for verification)."""

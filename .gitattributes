@@ -1,0 +1,4 @@
+# Shell scripts must keep LF endings on every platform: they execute on
+# Linux rescue VMs, and fix scripts are embedded verbatim into startup
+# scripts (CRLF breaks bash keyword parsing).
+*.sh text eol=lf

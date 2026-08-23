@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from ..core.config import RescueConfig, RestoreConfig, VERSION
 from ..utils.colors import error_prefix
+from ..utils.version_check import VersionChecker
 
 # Re-export submodule symbols for backward compatibility.
 # Tests and external code import these as gce_rescue_v2.cli.<name>.
@@ -310,7 +311,10 @@ EXAMPLES
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
 SUPPORTED FIXES
+    - filesystem: Repairs corrupted filesystems (fsck) before mounting
     - fstab: Comments out invalid UUID, device, or label entries
+    - initramfs: Rebuilds the initramfs for the newest installed kernel
+    - grub: Reinstalls GRUB and regenerates its configuration
 
 NOTES
     This command is Linux-only. For Windows VMs, use 'rescue' for manual fix.
@@ -679,15 +683,18 @@ def main():
         # Validate
         if not validate_args(args):
             exit_code = 1
-        # Execute command
-        elif args.command == 'rescue':
-            exit_code = handle_rescue(args)
-        elif args.command == 'restore':
-            exit_code = handle_restore(args)
-        elif args.command == 'diagnose':
-            exit_code = handle_diagnose(args)
-        elif args.command == 'repair':
-            exit_code = handle_repair(args)
+        elif args.command in ('rescue', 'restore', 'diagnose', 'repair'):
+            version_checker = VersionChecker(args)
+            version_checker.start()
+            if args.command == 'rescue':
+                exit_code = handle_rescue(args)
+            elif args.command == 'restore':
+                exit_code = handle_restore(args)
+            elif args.command == 'diagnose':
+                exit_code = handle_diagnose(args)
+            elif args.command == 'repair':
+                exit_code = handle_repair(args)
+            version_checker.display_notice()
         else:
             print(f"{error_prefix()} (gce-rescue) Unknown command: {args.command}",
                   file=sys.stderr)
