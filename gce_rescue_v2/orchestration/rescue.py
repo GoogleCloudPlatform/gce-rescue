@@ -736,7 +736,7 @@ class RescueOrchestrator:
                         )
                     elif self.os_type == OS_TYPE_WINDOWS:
                         rescue_image_project = self.config.windows_rescue_image_project
-                        rescue_image_family = self.config.windows_rescue_image_family
+                        rescue_image_family = self._select_windows_rescue_family()
                         rescue_disk_size = self.config.windows_rescue_disk_size_gb
                         source_image = f'projects/{rescue_image_project}/global/images/family/{rescue_image_family}'
                         self._log_debug(f"Creating rescue disk ({rescue_disk_size}GB, {rescue_image_family})...")
@@ -1041,6 +1041,56 @@ class RescueOrchestrator:
                 self.original_device_name = disk['deviceName']
                 self._log_debug(f"Original disk: {self.original_disk_name}")
                 break
+
+    @staticmethod
+    def _alternate_windows_family(family: str) -> str:
+        """The collision-free counterpart of a Windows image family."""
+        return 'windows-2022' if '2019' in family else 'windows-2019'
+
+    def _select_windows_rescue_family(self) -> str:
+        """Pick a rescue image family that cannot GUID-collide with the target.
+
+        Disks built from the same GCE image family share a GPT disk GUID.
+        Onlining the target disk next to a same-GUID rescue disk makes Windows
+        regenerate the target's GUID, which invalidates its BCD and leaves the
+        VM unbootable after restore (issue #126). Rebuilding the BCD afterwards
+        is unsafe on BitLocker disks and drops custom entries, so PREVENT the
+        collision instead: when the target derives from the configured rescue
+        family, rescue with a different family. Best effort — custom images
+        without family metadata fall back to the configured default, where the
+        mount script's GUID-change warning is the tripwire.
+        """
+        configured = self.config.windows_rescue_image_family
+        if not self.original_disk_name:
+            return configured
+        try:
+            tracked = self._create_tracked_compute(self._ua('image-lookup-target'))
+            disk = tracked.disks().get(
+                project=self.project, zone=self.zone,
+                disk=self.original_disk_name
+            ).execute()
+            source_image = disk.get('sourceImage', '')
+            if '/global/images/' not in source_image:
+                return configured
+            parts = source_image.split('/')
+            img_project = parts[parts.index('projects') + 1]
+            img_name = parts[-1]
+            image = tracked.images().get(
+                project=img_project, image=img_name
+            ).execute()
+            target_family = image.get('family', '')
+            if not target_family or target_family != configured:
+                return configured
+            alternate = self._alternate_windows_family(configured)
+            self._log_info(
+                f"Using {alternate} rescue image: the target disk derives from "
+                f"{target_family}, and same-family rescue disks share a GPT "
+                f"disk GUID (issue #126)."
+            )
+            return alternate
+        except Exception as e:
+            self._log_debug(f"Target image family lookup failed: {e}")
+            return configured
 
     def _generate_startup_script(self) -> str:
         """Generate startup script for rescue mode based on OS type."""

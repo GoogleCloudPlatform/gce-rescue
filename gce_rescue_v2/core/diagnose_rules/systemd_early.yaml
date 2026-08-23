@@ -16,6 +16,7 @@
 # matters while stuck in emergency mode), so boot-success suppression
 # must clear stale findings from an older boot.
 category: systemd_early
+os: linux
 fix_guidance: "In rescue mode, inspect the unit files named in the serial output under /mnt/sysroot/etc/systemd/system/ and fix the broken dependency or drop-in; for the locked-root emergency dead end, set a root password or add a systemd debug-shell via chroot"
 # auto_repair MUST stay false until startup_scripts/fixes/
 # systemd_early_fix.sh lands. RepairOrchestrator.validate() checks that

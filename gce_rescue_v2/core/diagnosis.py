@@ -16,6 +16,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 VALID_SEVERITIES = {'critical', 'error', 'warning'}
+VALID_OS_SCOPES = {'linux', 'windows', 'any'}
 
 
 @dataclass
@@ -34,6 +35,11 @@ class BootErrorPattern:
     #   suppressing "root cause" in dedupe.
     survives_boot_success: bool = False
     detect_only: bool = False
+    # os: OS scope for the category ('linux', 'windows' or 'any').
+    #   Patterns only run against serial output from a matching OS;
+    #   'any' (the default) runs everywhere. Prevents cross-fire, e.g.
+    #   Windows boot-manager patterns matching text in a Linux buffer.
+    os: str = 'any'
 
 
 @dataclass
@@ -97,6 +103,12 @@ def _validate_pattern_file(data: dict, filename: str) -> None:
                 f"{filename}: '{flag}' must be a boolean"
             )
 
+    if 'os' in data and data['os'] not in VALID_OS_SCOPES:
+        raise ValueError(
+            f"{filename}: 'os' must be one of: "
+            f"{', '.join(sorted(VALID_OS_SCOPES))} (got '{data['os']}')"
+        )
+
     required_pattern_fields = ['name', 'severity', 'description', 'regex']
     for i, pattern in enumerate(data['patterns']):
         for pf in required_pattern_fields:
@@ -157,6 +169,7 @@ def _load_patterns_from_yaml(
         category = data['category']
         survives = bool(data.get('survives_boot_success', False))
         detect_only = bool(data.get('detect_only', False))
+        os_scope = data.get('os', 'any')
 
         for p in data['patterns']:
             all_patterns.append(BootErrorPattern(
@@ -168,6 +181,7 @@ def _load_patterns_from_yaml(
                 fixes=list(p.get('fixes', [])),
                 survives_boot_success=survives,
                 detect_only=detect_only,
+                os=os_scope,
             ))
 
     return all_patterns
@@ -254,7 +268,10 @@ def _extract_context_lines(
     return cleaned, final_match_idx
 
 
-def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status: str) -> DiagnosisResult:
+def analyze_serial_output(
+    serial_output: str, vm_name: str, zone: str, vm_status: str,
+    os_type: str = 'unknown'
+) -> DiagnosisResult:
     """Analyze serial console output for boot errors.
 
     Args:
@@ -262,6 +279,10 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         vm_name: Name of the VM
         zone: Zone where VM is located
         vm_status: Current VM status (RUNNING, TERMINATED, etc.)
+        os_type: Detected OS type ('linux', 'windows' or 'unknown').
+            Patterns scoped to a specific OS only run when it matches;
+            'unknown' (detection failed or unavailable) runs every
+            pattern, matching pre-OS-scoping behavior.
 
     Returns:
         DiagnosisResult with detected errors and recommendations
@@ -296,6 +317,14 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
     # Serial console buffers accumulate across reboots, so the first
     # match may be from an old boot.  We want the most recent occurrence.
     for pattern_def in BOOT_ERROR_PATTERNS:
+        # OS scoping: skip patterns authored for a different OS. 'any'
+        # patterns always run; an 'unknown' os_type (detection failed,
+        # e.g. the caller lacks instances.get) runs everything so the
+        # degraded-permission path behaves exactly as before scoping.
+        if (pattern_def.os != 'any'
+                and os_type in ('linux', 'windows')
+                and pattern_def.os != os_type):
+            continue
         for regex_pattern in pattern_def.patterns:
             try:
                 match = None
@@ -410,6 +439,13 @@ def analyze_serial_output(serial_output: str, vm_name: str, zone: str, vm_status
         r'Reached target .*multi-user\.target',
         r'Started .*OpenBSD Secure Shell server',
         r'Started .*Google Compute Engine Startup Scripts',
+        # Windows: GCEInstanceSetup emits this line only after a Windows boot
+        # completes and the instance is ready. Without a Windows-side marker,
+        # the ordering-based suppression below could never clear stale or
+        # transient Windows findings (e.g. a bugcheck or update-loop screen
+        # from an earlier boot) that linger in the accumulating serial buffer
+        # after the VM has since booted cleanly.
+        r'Instance setup finished',
     ]
     # Categories flagged 'survives_boot_success' in their YAML (e.g. ssh,
     # filesystem) describe failures that do not block boot — sshd dies but

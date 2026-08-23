@@ -454,5 +454,7 @@ def _category_label(category: str) -> str:
         'startup_script': 'Fix startup script',
         'cloud_init': 'Fix cloud-init configuration',
         'network': 'Fix network configuration',
+        'windows_boot_manager': 'Repair Windows Boot Manager (BCD)',
+        'windows_bugcheck': 'Investigate Windows bugcheck (BSOD)',
     }
     return labels.get(category, f'Fix {category}')
