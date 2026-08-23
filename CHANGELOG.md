@@ -5,6 +5,16 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-08-23
+
+### Added
+- `repair`: automatic GRUB bootloader repair on Linux. The `grub` category (missing or empty `grub.cfg`, broken kernel paths, invalid filesystem UUIDs, corrupt EFI modules) is now auto-repaired by chrooting into the affected disk, regenerating the GRUB configuration and reinstalling the bootloader. Detects separate `/boot` and `/boot/efi` partitions and handles Debian/Ubuntu and RHEL-family distributions. Validated end to end against five real failure modes (#157, #158)
+- `diagnose`: Windows support. Patterns are now scoped to the VM's operating system, and two Windows categories ship: `windows_boot_manager` (BCD/winload failures such as `0xc000000e`, `0xc0000001`, `0xc0000034`, `0xc0000225`) and `windows_bugcheck` (STOP codes, requires EMS). Windows boot errors are read from serial port 2, where the boot manager and SAC/EMS write them (#152)
+
+### Fixed
+- Windows: post-repair boot verification reported a VM as healthy while it was stuck at a boot-manager error, because verification only read serial port 1 with Linux patterns. Verification now applies Windows patterns against port 2 (#124, #152)
+- Tests: running `pytest` no longer leaves CLI log files in the repository root (#163)
+
 ## [2.4.0] - 2026-07-24
 
 ### Added
