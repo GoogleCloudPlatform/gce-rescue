@@ -332,9 +332,9 @@ class TestShippedFixInfo:
     def test_grub_fix_guidance_loaded(self):
         assert 'grub' in CATEGORY_FIX_GUIDANCE
 
-    def test_grub_is_not_auto_repairable(self):
-        """grub stays auto_repair: false until startup_scripts/fixes/grub_fix.sh lands."""
-        assert 'grub' not in SUPPORTED_FIX_CATEGORIES
+    def test_grub_is_auto_repairable(self):
+        """grub is auto_repair: true now that startup_scripts/fixes/grub_fix.sh has landed."""
+        assert 'grub' in SUPPORTED_FIX_CATEGORIES
 
     def test_grub_patterns_have_fixes(self):
         """Every grub pattern should have at least one fix suggestion."""

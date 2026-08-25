@@ -4,6 +4,7 @@
 # provisioning code failed. Severity warning - it is the user's script,
 # not the platform, and the VM is up.
 category: startup_script
+os: linux
 fix_guidance: "Read the startup-script output lines above the exit-status line in the serial log, then fix the script in metadata: gcloud compute instances describe VM_NAME --zone=ZONE --format=\"value(metadata.items.extract(startup-script))\""
 auto_repair: false
 # detect_only: the failing code is the USER's startup script (VM metadata,

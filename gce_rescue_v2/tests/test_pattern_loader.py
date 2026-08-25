@@ -106,6 +106,50 @@ patterns:
         patterns = _load_patterns_from_yaml(tmp_path)
         assert patterns[0].fixes == []
 
+    def test_os_scope_loaded_from_yaml(self, tmp_path):
+        yaml_with_os = """\
+category: win_boot
+os: windows
+patterns:
+  - name: win_pattern
+    severity: critical
+    description: "Windows-scoped pattern"
+    regex:
+      - 'Windows failed to start'
+"""
+        _write_yaml(tmp_path, 'test.yaml', yaml_with_os)
+        patterns = _load_patterns_from_yaml(tmp_path)
+        assert patterns[0].os == 'windows'
+
+    def test_os_scope_defaults_to_any(self, tmp_path):
+        """Absent 'os' key means 'any' — the 21 pre-scoping Linux YAMLs
+        load unmodified and keep running against every buffer."""
+        _write_yaml(tmp_path, 'test.yaml', VALID_YAML)
+        patterns = _load_patterns_from_yaml(tmp_path)
+        assert patterns[0].os == 'any'
+
+    def test_os_scope_copied_onto_every_pattern(self, tmp_path):
+        """Like survives_boot_success/detect_only, 'os' is a category-level
+        flag copied onto each pattern in the file."""
+        yaml_multi_os = """\
+category: linux_only
+os: linux
+patterns:
+  - name: linux_first
+    severity: critical
+    description: "First"
+    regex:
+      - 'first.*match'
+  - name: linux_second
+    severity: warning
+    description: "Second"
+    regex:
+      - 'second.*match'
+"""
+        _write_yaml(tmp_path, 'test.yaml', yaml_multi_os)
+        patterns = _load_patterns_from_yaml(tmp_path)
+        assert [p.os for p in patterns] == ['linux', 'linux']
+
 
 class TestValidatePatternFile:
     """Tests for _validate_pattern_file."""
@@ -173,6 +217,24 @@ class TestValidatePatternFile:
             }
             _validate_pattern_file(data, 'test.yaml')  # Should not raise
 
+    def test_invalid_os_scope_rejected(self):
+        data = {
+            'category': 'x',
+            'os': 'darwin',
+            'patterns': [{'name': 'n', 'severity': 'critical', 'description': 'd', 'regex': ['r']}],
+        }
+        with pytest.raises(ValueError, match="'os' must be one of"):
+            _validate_pattern_file(data, 'test.yaml')
+
+    def test_all_valid_os_scopes_accepted(self):
+        for os_scope in ['linux', 'windows', 'any']:
+            data = {
+                'category': 'x',
+                'os': os_scope,
+                'patterns': [{'name': 'n', 'severity': 'critical', 'description': 'd', 'regex': ['r']}],
+            }
+            _validate_pattern_file(data, 'test.yaml')  # Should not raise
+
 
 class TestInvalidYamlLoading:
     """Tests that invalid YAML files produce clear errors during loading."""
@@ -219,6 +281,22 @@ patterns:
 """
         _write_yaml(tmp_path, 'bad.yaml', bad_yaml)
         with pytest.raises(ValueError, match="invalid severity 'fatal'"):
+            _load_patterns_from_yaml(tmp_path)
+
+    def test_invalid_os_scope_in_yaml(self, tmp_path):
+        bad_yaml = """\
+category: bad
+os: solaris
+
+patterns:
+  - name: bad_os
+    severity: critical
+    description: "Bad os scope"
+    regex:
+      - 'test'
+"""
+        _write_yaml(tmp_path, 'bad.yaml', bad_yaml)
+        with pytest.raises(ValueError, match="'os' must be one of"):
             _load_patterns_from_yaml(tmp_path)
 
 

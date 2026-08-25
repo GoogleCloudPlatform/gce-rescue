@@ -4,8 +4,8 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-absl-py = ">=1.2.0"
-google-api-python-client = ">=2.197.0"
+absl-py = ">=2.5.0"
+google-api-python-client = ">=2.198.0"
 google-auth = ">=2.15.0"
 pyyaml = ">=6.0"
 pylint = "*"

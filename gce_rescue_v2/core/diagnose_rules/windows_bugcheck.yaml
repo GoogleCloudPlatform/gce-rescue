@@ -1,0 +1,108 @@
+# Windows kernel STOP errors (bugchecks / BSOD) visible on the GCE serial
+# console.
+#
+# SCOPE: os: windows — these patterns run ONLY when diagnose has detected a
+# Windows VM (or when OS detection is degraded to 'unknown'). They are
+# skipped entirely on Linux buffers, so their tokens can never cross-fire on
+# a Linux boot.
+#
+# EVIDENCE STATUS: every pattern here is KNOWLEDGE-BASED and NOT yet
+# live-triggered. These BSOD/STOP strings emit ONLY via EMS (Emergency
+# Management Services / SAC) on serial PORT 2 — the port diagnose now reads
+# for Windows VMs — NEVER on port 1 (which carries only firmware BdsDxe
+# title lines and GCEGuestAgent logs). The Windows Server 2022 UEFI captures
+# we have show the graphical Boot Manager text screen (Status: 0xc000000e)
+# surfaced on port 2, but no kernel STOP screen has been reproduced live yet.
+# A wedged kernel may also manifest as the "silent broken" heuristic (BdsDxe
+# lines, then no GCEGuestAgent output). Each pattern is therefore still
+# marked "# NOT corpus-verified - validate live" so a reviewer / E2E run
+# knows to confirm the exact serial wording before trusting it. They are
+# reachable now that port 2 is read, and a match is unambiguous when it
+# appears.
+#
+# ANCHORING: every regex is bound to a Windows-DISTINCTIVE token — an
+# ALL_CAPS bugcheck name (e.g. INACCESSIBLE_BOOT_DEVICE) or a full 8-digit
+# STOP code preceded by the literal word STOP or "***". None of these strings
+# occur in a healthy Windows GCE boot (which prints "Windows Boot Manager",
+# GCEGuestAgent lines and the words error/failed/Offline), in any Linux serial
+# line, or in our own rescue-mode script output (GCE-RESCUE-COMPLETE,
+# rescue_admin, windows-startup-script-ps1).
+category: windows_bugcheck
+os: windows
+# Windows boot repair (bcdedit / bootrec / Startup Repair) is a FUTURE branch;
+# this category is DETECT-ONLY for now. No auto_repair script exists, so the
+# flag stays false and detect_only is true. fix_guidance below is the manual
+# recovery path via the rescue flow.
+auto_repair: false
+detect_only: true
+fix_guidance: "A kernel STOP (bugcheck/BSOD) is a runtime crash, not an on-disk config error. First reset the VM once (gcloud compute instances reset VM_NAME --zone=ZONE) — a transient bugcheck often clears. If it recurs, rescue the disk (gce-rescue rescue VM_NAME --zone=ZONE), attach the original disk to the rescue VM, then inspect from Windows: roll back the last driver/update (DISM /Image:D:\\ /Cleanup-Image /RevertPendingActions), review C:\\Windows\\Minidump and the SYSTEM registry hive for a bad boot-start driver, or restore the disk from a snapshot taken before the change"
+
+patterns:
+  - name: windows_bugcheck_inaccessible_boot_device
+    severity: critical
+    description: "Windows STOP 0x7B INACCESSIBLE_BOOT_DEVICE (boot storage driver/controller change)"
+    # NOT corpus-verified - validate live
+    regex:
+      # ALL_CAPS bugcheck name is unique to Windows kernel output.
+      - 'INACCESSIBLE_BOOT_DEVICE'
+      # STOP-code form. The word STOP (word-bounded) + full 8-digit code
+      # cannot match a bare Linux hex address or our rescue-script logs.
+      - '\bSTOP:?\s*0x0000007B\b'
+    fixes:
+      - "The boot volume's storage driver is missing or disabled - most common after a disk controller change, a bad storage-driver update, or a P2V/restore"
+      - "Rescue the disk and, from the rescue VM, revert the last servicing operation: DISM /Image:D:\\ /Cleanup-Image /RevertPendingActions"
+      - "Check the SYSTEM hive for a boot-start storage driver that was set to disabled (Start=4); if a recent update caused it, restore from a pre-update snapshot"
+
+  - name: windows_bugcheck_unmountable_boot_volume
+    severity: critical
+    description: "Windows STOP 0xED UNMOUNTABLE_BOOT_VOLUME (boot filesystem corrupt or unreadable)"
+    # NOT corpus-verified - validate live
+    regex:
+      - 'UNMOUNTABLE_BOOT_VOLUME'
+      - '\bSTOP:?\s*0x000000ED\b'
+    fixes:
+      - "The boot filesystem is corrupt or the disk cannot be read - the on-disk NTFS metadata is damaged"
+      - "Rescue the disk, attach it to the rescue VM, and repair the filesystem from Windows: chkdsk D: /f (D: is the attached original volume)"
+      - "If chkdsk cannot repair it, restore the disk from a snapshot"
+
+  - name: windows_bugcheck_critical_process_died
+    severity: critical
+    description: "Windows STOP 0xEF CRITICAL_PROCESS_DIED (a required system process terminated)"
+    # NOT corpus-verified - validate live
+    regex:
+      - 'CRITICAL_PROCESS_DIED'
+      - '\bSTOP:?\s*0x000000EF\b'
+    fixes:
+      - "A critical system process (e.g. csrss.exe, wininit.exe) exited - usually corrupt system files, a bad update, or malware"
+      - "Reset the VM once; if it recurs, rescue the disk and revert pending updates: DISM /Image:D:\\ /Cleanup-Image /RevertPendingActions"
+      - "From the rescue VM, run SFC against the offline image: sfc /scannow /offbootdir=D:\\ /offwindir=D:\\Windows"
+
+  - name: windows_bugcheck_system_thread_exception
+    severity: critical
+    description: "Windows STOP 0x7E SYSTEM_THREAD_EXCEPTION_NOT_HANDLED (unhandled driver exception at boot)"
+    # NOT corpus-verified - validate live
+    regex:
+      - 'SYSTEM_THREAD_EXCEPTION_NOT_HANDLED'
+      # 0x0000007E is the base code; 0x1000007E is the same bugcheck with the
+      # high 'customer' bit set. Both are full 8-digit codes bound to STOP.
+      - '\bSTOP:?\s*0x[01]000007E\b'
+    fixes:
+      - "A driver threw an exception the kernel could not handle - the STOP line usually names the offending .sys file"
+      - "Reset once (may be transient); if it recurs, rescue the disk and disable or roll back the driver named in the crash from the rescue VM"
+      - "Review C:\\Windows\\Minidump on the attached disk to identify the faulting driver, then restore from a snapshot if it followed a driver update"
+
+  - name: windows_bugcheck_generic
+    severity: critical
+    description: "Windows kernel STOP error (BSOD) reported on the serial console"
+    # NOT corpus-verified - validate live
+    regex:
+      # Classic bugcheck line: "*** STOP: 0x000000XX (...)". The triple
+      # asterisk + STOP + 8-digit code is unmistakably a Windows BSOD and
+      # cannot appear in Linux output or our rescue-mode logs.
+      - '\*\*\* STOP:?\s*0x[0-9A-Fa-f]{8}'
+      # BSOD prose banner (verbatim Windows wording).
+      - 'A problem has been detected and Windows has been shut down to prevent damage'
+    fixes:
+      - "The kernel hit an unrecovered STOP error - identify the specific bugcheck code/name on the STOP line for the exact cause"
+      - "Reset the VM once to rule out a transient fault (gcloud compute instances reset VM_NAME --zone=ZONE)"
+      - "If it recurs, rescue the disk and inspect C:\\Windows\\Minidump from the rescue VM, or restore from a snapshot taken before the last change"

@@ -11,6 +11,7 @@
 # detect-only categories, so this finding can never suppress or demote
 # anything.
 category: oom
+os: linux
 fix_guidance: "Identify the killed process in the serial output, then reduce its memory usage, add swap, or resize the VM: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
 auto_repair: false
 # detect_only: there is nothing on the rescued disk to edit - OOM is a

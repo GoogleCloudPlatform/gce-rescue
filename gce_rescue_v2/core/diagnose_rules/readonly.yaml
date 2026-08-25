@@ -11,6 +11,7 @@
 # readonly_remount) - the engine dedupes per (category, description), so
 # a separate category is what lets both findings surface.
 category: readonly
+os: linux
 fix_guidance: "From rescue mode, run fsck on the unmounted disk: sudo umount /mnt/sysroot && sudo fsck -y /dev/sdb1; then check the disk's status in the GCP Console before restoring"
 # auto_repair stays false until startup_scripts/fixes/readonly_fix.sh lands
 # (RepairOrchestrator.validate() requires the script for every auto_repair

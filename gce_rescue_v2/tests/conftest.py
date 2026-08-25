@@ -13,10 +13,16 @@ from unittest.mock import Mock, MagicMock
 from gce_rescue_v2.core.config import RescueConfig
 
 @pytest.fixture(autouse=True, scope='session')
-def change_to_tmpdir():
-    """Change to TEST_TMPDIR if running under the Bazel sandbox."""
-    if 'TEST_TMPDIR' in os.environ:
-        os.chdir(os.environ['TEST_TMPDIR'])
+def change_to_tmpdir(tmp_path_factory):
+    """Run the suite from a temp directory so CLI log files never land in the repo.
+
+    Uses TEST_TMPDIR under the Bazel sandbox, otherwise a pytest-managed temp dir.
+    """
+    target = os.environ.get('TEST_TMPDIR') or str(tmp_path_factory.mktemp('cwd'))
+    original = os.getcwd()
+    os.chdir(target)
+    yield
+    os.chdir(original)
 
 @pytest.fixture
 def mock_compute():

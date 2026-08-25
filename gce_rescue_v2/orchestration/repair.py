@@ -127,6 +127,10 @@ class RepairOrchestrator:
         self.session_id = session_id
         self.mode = mode
 
+        # OS type detected during validate(); 'unknown' until then.
+        # Used to OS-scope post-repair boot verification (issue #124).
+        self._os_type = 'unknown'
+
         # Progress tracking
         self._spinner_thread = None
         self._spinner_stop = False
@@ -212,6 +216,11 @@ class RepairOrchestrator:
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
         os_type = detect_os_type(vm_info)
+        # Keep the detected OS for post-repair boot verification, so the
+        # diagnosis engine only scores OS-appropriate patterns (issue #124:
+        # Windows boots were scored against Linux-only patterns and always
+        # verified as healthy).
+        self._os_type = os_type
         if os_type == 'windows' and not self.config.fix_script:
             self._log_error("Automated repair is only supported for Linux VMs.")
             print("", file=sys.stderr)
@@ -1220,6 +1229,23 @@ class RepairOrchestrator:
             ).execute()
             serial_output = serial_response.get('contents', '')
 
+            # Windows boot-manager / EMS errors surface on serial port 2, not
+            # the default port 1. Merge port 2 for Windows so post-repair
+            # verification sees the same buffer diagnose analyzed.
+            if self._os_type == 'windows':
+                try:
+                    port2_response = compute.instances().getSerialPortOutput(
+                        project=self.project, zone=self.zone,
+                        instance=self.vm_name, port=2
+                    ).execute()
+                    port2_output = port2_response.get('contents', '')
+                    if port2_output:
+                        serial_output = f"{serial_output}\n{port2_output}"
+                except Exception as e:
+                    self._log_debug(
+                        f"Could not fetch serial port 2 for boot verify: {e}"
+                    )
+
             if not serial_output or len(serial_output.strip()) < 50:
                 sys.stdout.write("\r" + " " * 60 + "\r")
                 sys.stdout.flush()
@@ -1230,7 +1256,8 @@ class RepairOrchestrator:
                 serial_output=serial_output,
                 vm_name=self.vm_name,
                 zone=self.zone,
-                vm_status='RUNNING'
+                vm_status='RUNNING',
+                os_type=self._os_type
             )
 
             sys.stdout.write("\r" + " " * 60 + "\r")
