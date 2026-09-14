@@ -6,7 +6,7 @@ name = "pypi"
 [packages]
 absl-py = ">=2.5.0"
 google-api-python-client = ">=2.200.0"
-google-auth = ">=2.15.0"
+google-auth = ">=2.58.0"
 pyyaml = ">=6.0"
 pylint = "*"
 bumpversion = "*"
