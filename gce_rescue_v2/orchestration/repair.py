@@ -53,12 +53,14 @@ REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
 #   1. filesystem — fsck first, so later fixes edit files on a clean
 #      (mountable) filesystem; its pre-mount block must also run before the
 #      base script's mount attempt.
-#   2. fstab — mount-config edits on the now-clean filesystem.
-#   3. initramfs — rebuild the initrd after config changes.
-#   4. grub — last, because GRUB config regeneration must see the rebuilt
+#   2. disk_full — expand partition/filesystem and reclaim space before
+#      later fixes (initramfs, grub) write new files to the boot disk.
+#   3. fstab — mount-config edits on the now-clean filesystem.
+#   4. initramfs — rebuild the initrd after config changes.
+#   5. grub — last, because GRUB config regeneration must see the rebuilt
 #      initrd to reference the correct images.
 # Categories not listed here keep their diagnosis order, after the known ones.
-FIX_EXECUTION_ORDER = ['filesystem', 'fstab', 'initramfs', 'grub']
+FIX_EXECUTION_ORDER = ['filesystem', 'disk_full', 'fstab', 'initramfs', 'grub']
 
 # Minimum verification timeouts (seconds) per fix category. The OS default
 # (300s Linux) only covers the disk mount; a forced fsck, a tool install, or
@@ -446,6 +448,8 @@ class RepairOrchestrator:
             )
 
             categories = fixable_categories or []
+            if 'disk_full' in categories and self.config.resize_disk_gb:
+                rescue_config.resize_disk_gb = self.config.resize_disk_gb
             # fsck rewrites the original disk in place; if the snapshot step
             # fails there is no rollback, so its failure must abort the
             # rescue instead of being logged and skipped.

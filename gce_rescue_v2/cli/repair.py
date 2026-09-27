@@ -7,8 +7,8 @@ import uuid
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List, TextIO
-from ..core.config import build_user_agent
+from typing import Optional, Dict, Any, List, TextIO, Tuple
+from ..core.config import build_user_agent, DEFAULT_DISK_RESIZE_INCREMENT_GB
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
 from ..utils.logger import setup_logging
 from ..orchestration.checkpoint import CheckpointManager
@@ -23,9 +23,92 @@ from .checkpoint_ui import _handle_checkpoint_rollback
 FIX_LABELS = {
     'fstab': 'Fix fstab',
     'filesystem': 'Fix filesystem',
+    'disk_full': 'Fix disk full',
     'initramfs': 'Rebuild initramfs',
     'grub': 'Fix GRUB',
 }
+
+
+def _get_boot_disk_size_gb(
+    compute: Any, vm: Optional[Dict[str, Any]], project: str, zone: str
+) -> Tuple[Optional[str], Optional[int]]:
+    """Return (boot_disk_name, current_size_gb) if resolvable, else (None, None)."""
+    if not isinstance(vm, dict):
+        return None, None
+    for disk in vm.get('disks', []):
+        if isinstance(disk, dict) and disk.get('boot'):
+            source = disk.get('source', '')
+            disk_name = source.split('/')[-1] if source else None
+            if not disk_name:
+                return None, None
+            try:
+                disk_info = compute.disks().get(
+                    project=project, zone=zone, disk=disk_name
+                ).execute()
+                if isinstance(disk_info, dict) and 'sizeGb' in disk_info:
+                    return disk_name, int(disk_info['sizeGb'])
+            except Exception:
+                pass
+            return disk_name, None
+    return None, None
+
+
+def _prompt_disk_resize_gb(
+    disk_name: Optional[str], current_size_gb: Optional[int]
+) -> Tuple[Optional[int], int]:
+    """Prompt the user for boot disk resize increment in GB.
+
+    Returns:
+        Tuple of (resize_gb_or_None_on_abort, lines_printed_to_terminal).
+    """
+    default_gb = DEFAULT_DISK_RESIZE_INCREMENT_GB
+    lines_printed = 0
+    print("")
+    lines_printed += 1
+    if disk_name and current_size_gb is not None:
+        print(f"  Boot disk [{disk_name}] ({current_size_gb} GB) is full.")
+    else:
+        print("  Boot disk is full.")
+    lines_printed += 1
+
+    prompt = (
+        f"  Increase boot disk size? "
+        f"Enter GB to add (e.g. 10 or 10GB), 'y' for +{default_gb} GB, "
+        f"or 'n' to skip [default: {default_gb}]: "
+    )
+    while True:
+        try:
+            raw = input(prompt).strip().lower()
+            lines_printed += 1
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return None, lines_printed
+
+        if raw in ('', 'y', 'yes'):
+            return default_gb, lines_printed
+        if raw in ('n', 'no', '0'):
+            return 0, lines_printed
+
+        cleaned = (
+            raw.lstrip('+')
+            .removesuffix('gib')
+            .removesuffix('gb')
+            .removesuffix('g')
+            .strip()
+        )
+        try:
+            parsed = int(cleaned)
+            if parsed > 0:
+                return parsed, lines_printed
+        except ValueError:
+            pass
+
+        print(
+            f"  Please enter a positive number in GB (e.g. 10 or 10GB), "
+            f"'y' (for +{default_gb} GB), or 'n' (skip resize)."
+        )
+        lines_printed += 1
+
 
 
 def _show_boot_verification(boot_verified: Optional[bool],
@@ -649,11 +732,21 @@ def handle_repair(args: argparse.Namespace) -> int:
         )
         return 0
 
+    boot_disk_name, current_size_gb = (None, None)
+    if 'disk_full' in fixable:
+        boot_disk_name, current_size_gb = _get_boot_disk_size_gb(
+            compute, vm, project, args.zone
+        )
+        if args.quiet and config.resize_disk_gb is None:
+            config.resize_disk_gb = DEFAULT_DISK_RESIZE_INCREMENT_GB
+            if hasattr(orchestrator, 'config'):
+                orchestrator.config.resize_disk_gb = config.resize_disk_gb
+
     # Repair path: show compact summary + plan, get confirmation, then clear
     if not args.quiet:
         # Build the confirmation block as a list so we can clear exactly as many
         # lines as we printed, without a manual running tally.
-        block = [f"Repair: {args.instance_name} ({args.zone})", ""]
+        intro_block = [f"Repair: {args.instance_name} ({args.zone})", ""]
 
         # Compact issue summary grouped by category
         category_counts: Dict[str, int] = Counter(
@@ -674,25 +767,80 @@ def handle_repair(args: argparse.Namespace) -> int:
                     sev_parts.append(f"{severity_counts[cat][sev]} {sev}")
             sev_str = ', '.join(sev_parts)
             issue_word = 'issue' if count == 1 else 'issues'
-            block.append(f"  Found {count} {cat} {issue_word} ({sev_str})")
+            intro_block.append(
+                f"  Found {count} {cat} {issue_word} ({sev_str})"
+            )
 
         # Unfixable warnings
         if unfixable:
             for cat in unfixable:
-                block.append(
+                intro_block.append(
                     f"  {warning_prefix()} [{cat.upper()}] requires manual repair"
                 )
 
-        block += ["  Run 'diagnose' for details.", "", "  Repair plan:"]
+        intro_block.append("  Run 'diagnose' for details.")
+
+        total_printed_lines = 0
+        if 'disk_full' in fixable and config.resize_disk_gb is None:
+            for line in intro_block:
+                print(line)
+            total_printed_lines += len(intro_block)
+            chosen_gb, prompt_lines = _prompt_disk_resize_gb(
+                boot_disk_name, current_size_gb
+            )
+            total_printed_lines += prompt_lines
+            if chosen_gb is None:
+                return 0
+            if chosen_gb == 0:
+                fixable = [c for c in fixable if c != 'disk_full']
+                if not fixable:
+                    print("")
+                    print("  Skipped boot disk resize.")
+                    print(
+                        "  Use rescue mode to inspect and free disk space manually:"
+                    )
+                    print(
+                        f"    $ gce-rescue rescue {args.instance_name} "
+                        f"--zone={args.zone} --project={project}"
+                    )
+                    return 0
+            config.resize_disk_gb = chosen_gb
+            if hasattr(orchestrator, 'config'):
+                orchestrator.config.resize_disk_gb = chosen_gb
+            plan_block: List[str] = ["", "  Repair plan:"]
+        else:
+            plan_block = intro_block + ["", "  Repair plan:"]
+
         step = 1
         if snapshot_enabled:
-            block.append(f"    {step}. Create backup snapshot of boot disk")
+            plan_block.append(f"    {step}. Create backup snapshot of boot disk")
             step += 1
-        block.append(f"    {step}. Enter rescue mode (stop VM, swap boot disk)")
+        plan_block.append(
+            f"    {step}. Enter rescue mode (stop VM, swap boot disk)"
+        )
         step += 1
         # Build fix descriptions with extracted identifiers
+        resize_gb = (
+            config.resize_disk_gb
+            if config.resize_disk_gb is not None
+            else DEFAULT_DISK_RESIZE_INCREMENT_GB
+        )
+        if current_size_gb is not None:
+            new_size_gb = current_size_gb + resize_gb
+            disk_full_desc = (
+                f"Resize boot disk (+{resize_gb} GB -> {new_size_gb} GB), "
+                f"expand filesystem, and list largest directories"
+            )
+        else:
+            disk_full_desc = (
+                f"Resize boot disk (+{resize_gb} GB), "
+                f"expand filesystem, and list largest directories"
+            )
+
+
         fix_descriptions = {
             'filesystem': 'Repair filesystem errors (fsck before mount)',
+            'disk_full': disk_full_desc,
             'fstab': 'Fix /etc/fstab (comment out invalid entries)',
             'initramfs': 'Rebuild the initramfs for the installed kernel',
             'grub': 'Reinstall GRUB and regenerate its configuration',
@@ -713,16 +861,21 @@ def handle_repair(args: argparse.Namespace) -> int:
                 )
         for cat in fixable:
             desc = fix_descriptions.get(cat, f'Fix {cat}')
-            block.append(f"    {step}. {desc}")
+            plan_block.append(f"    {step}. {desc}")
             step += 1
-        block.append(f"    {step}. Restore original boot disk and start VM")
+        plan_block.append(
+            f"    {step}. Restore original boot disk and start VM"
+        )
         if local_ssds:
-            block.append(f"  {warning_prefix()} Data on Local SSDs"
-                         f" ({', '.join(local_ssds)}) will be permanently lost.")
-        block.append("")
+            plan_block.append(
+                f"  {warning_prefix()} Data on Local SSDs"
+                f" ({', '.join(local_ssds)}) will be permanently lost."
+            )
+        plan_block.append("")
 
-        for line in block:
+        for line in plan_block:
             print(line)
+        total_printed_lines += len(plan_block)
 
         # Confirmation
         try:
@@ -736,7 +889,7 @@ def handle_repair(args: argparse.Namespace) -> int:
             return 0
 
         # Clear diagnosis + plan + confirmation (+1 for the prompt line)
-        clear_lines(len(block) + 1)
+        clear_lines(total_printed_lines + 1)
 
     # Print concise repair header
     print(f"Repairing instance [{args.instance_name}]:")

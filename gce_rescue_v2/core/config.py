@@ -66,6 +66,9 @@ def build_user_agent(
 OS_TYPE_LINUX = 'linux'
 OS_TYPE_WINDOWS = 'windows'
 
+# Default boot disk size increment (GiB) when repairing a full boot disk
+DEFAULT_DISK_RESIZE_INCREMENT_GB = 5
+
 
 @dataclass
 class RescueConfig:
@@ -85,6 +88,12 @@ class RescueConfig:
     # Rescue disk settings
     rescue_disk_size_gb: int = 10
     rescue_disk_type: str = 'pd-balanced'
+
+    # Boot disk resize increment (in GiB) for disk_full auto-repair.
+    # None = not yet decided (CLI prompts interactively or defaults to 5 GiB);
+    # 0 = skip GCE disk resize (reclaim space in-guest only);
+    # >0 = increase original boot disk capacity by this many GiB.
+    resize_disk_gb: Optional[int] = None
 
     # Custom rescue image (overrides all auto-selection when set)
     # Accepts full image URL: projects/PROJECT/global/images/IMAGE

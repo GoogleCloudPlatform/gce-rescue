@@ -310,8 +310,9 @@ EXAMPLES
     Repair in automation (no prompts):
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
-SUPPORTED FIXES
+    SUPPORTED FIXES
     - filesystem: Repairs corrupted filesystems (fsck) before mounting
+    - disk_full: Resizes full boot disk (optional) and cleans temp/cache/log files
     - fstab: Comments out invalid UUID, device, or label entries
     - initramfs: Rebuilds the initramfs for the newest installed kernel
     - grub: Reinstalls GRUB and regenerates its configuration
@@ -396,6 +397,17 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
     if ivalue <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive integer, got {ivalue}")
+    return ivalue
+
+
+def _non_negative_int(value: str) -> int:
+    """argparse type: a non-negative integer (0 or positive, for --resize-disk-gb)."""
+    try:
+        ivalue = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or a positive integer, got {ivalue}")
     return ivalue
 
 
@@ -514,6 +526,20 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         )
     )
 
+    disk_group = parser.add_argument_group('DISK RESIZE FLAGS')
+    disk_group.add_argument(
+        '--resize-disk-gb',
+        metavar='GB',
+        dest='resize_disk_gb',
+        type=_positive_int,
+        default=None,
+        help=(
+            'Amount of space in GiB to add to the boot disk when repairing'
+            ' a disk_full boot error (default: 5 GiB).'
+        )
+    )
+
+
     _add_verification_timeout_arg(parser)
 
 
@@ -600,6 +626,10 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # the orchestrator stays I/O-free. Invalid paths fail fast here.
     if getattr(args, 'fix_script', None):
         config.fix_script = read_fix_script(args.fix_script)
+
+    # Boot disk resize increment for disk_full auto-repair
+    if getattr(args, 'resize_disk_gb', None) is not None:
+        config.resize_disk_gb = args.resize_disk_gb
 
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):

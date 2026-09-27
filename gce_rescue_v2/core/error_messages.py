@@ -252,6 +252,22 @@ DISK_DELETE_FAILED = ErrorSuggestion(
     ]
 )
 
+DISK_RESIZE_RATE_LIMITED = ErrorSuggestion(
+    message="Boot disk cannot be resized right now (GCE rate limit / cooldown)",
+    causes=[
+        "Hyperdisk capacity can only be increased once every 4 hours",
+        "Disk was already resized recently",
+    ],
+    suggestions=[
+        "If the disk was already resized earlier, run repair and enter 'n' at the resize prompt to expand the partition/filesystem onto the existing unallocated space",
+        "Or use 'gce-rescue rescue' to mount the boot disk and free space manually without resizing",
+    ],
+    commands=[
+        "gce-rescue rescue {vm_name} --zone={zone}",
+        "gcloud compute disks describe {disk_name} --zone={zone} --format='table(name,sizeGb,type)'",
+    ]
+)
+
 # =============================================================================
 # Snapshot Errors
 # =============================================================================
@@ -420,6 +436,10 @@ def get_error_suggestion(error_msg: str, operation: str = None) -> Optional[Erro
     # Authentication errors
     if 'credential' in error_lower or 'token' in error_lower:
         return CREDENTIALS_INVALID
+
+    # Disk resize cooldown / rate limit (check before generic 'limit' quota check)
+    if 'cannot be resized' in error_lower or 'rate limit' in error_lower:
+        return DISK_RESIZE_RATE_LIMITED
 
     # Not found errors
     if 'not found' in error_lower or '404' in error_lower:

@@ -33,7 +33,8 @@ from ..operations import (
     SetMetadataOperation,
     StartVMOperation,
     CreateSnapshotOperation,
-    VerifyStartupOperation
+    VerifyStartupOperation,
+    ResizeDiskOperation
 )
 from .state import StateTracker
 from .rollback import RollbackHandler
@@ -935,6 +936,31 @@ class RescueOrchestrator:
                         self._log_debug(f"Checking snapshot... ({elapsed:.0f}s)")
 
                     time.sleep(5)
+
+            # Resize original boot disk if requested (e.g. disk_full repair)
+            # Runs after the safety snapshot is ready and before attaching the
+            # original disk as secondary to the rescue VM, so the rescue VM
+            # immediately sees the expanded block device capacity.
+            if (getattr(self.config, 'resize_disk_gb', None)
+                    and self.config.resize_disk_gb > 0
+                    and not self._should_skip_step(8)):
+                self._log_debug(
+                    f"Resizing original boot disk {self.original_disk_name} "
+                    f"(+{self.config.resize_disk_gb}GB)..."
+                )
+                resize_disk = ResizeDiskOperation(
+                    self.compute, self.project, self.zone, self.logger
+                )
+                resize_res = resize_disk.execute(
+                    disk_name=self.original_disk_name,
+                    add_gb=self.config.resize_disk_gb,
+                    timeout=self.config.operation_timeout,
+                    tracking_label=self._ua('disk-resize-orig')
+                )
+                if not resize_res.success:
+                    self._finish_progress(False, error=resize_res.error)
+                    self._rollback()
+                    return False
 
             # Step 8: Re-attach original disk as secondary
             if not self._should_skip_step(8):

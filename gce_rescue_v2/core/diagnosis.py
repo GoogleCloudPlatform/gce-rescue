@@ -503,6 +503,52 @@ def analyze_serial_output(
                 if e.category in SURVIVES_BOOT_SUCCESS_CATEGORIES
             ]
 
+    # Reboot / disk-resize boundary check for disk_full:
+    # disk_full has survives_boot_success=True because a VM can finish booting
+    # and fill its disk later during the SAME boot. However, if the VM was
+    # subsequently rebooted in-guest (or its root filesystem was expanded) and
+    # no disk_full error occurred after that new boot / resize boundary, the
+    # earlier disk_full match is stale from a previous boot iteration.
+    if vm_status == 'RUNNING' and any(
+        e.category == 'disk_full' for e in detected_errors
+    ):
+        _DISK_FULL_RESET_MARKERS = [
+            r'Command line: BOOT_IMAGE=',
+            r'Linux version \d+\.\d+',
+            r'BdsDxe: starting Boot',
+            r'gce-disk-expand: Done',
+            r'systemd-growfs\[\d+\]: Successfully resized',
+            r'EXT[2-4]-fs \([^)]+\): resized filesystem to',
+            r'GCE-REPAIR-LINE:\[FIXED\] disk_full:',
+        ]
+        last_reset_pos = -1
+        for marker in _DISK_FULL_RESET_MARKERS:
+            for match in re.finditer(marker, serial_output, re.IGNORECASE):
+                last_reset_pos = max(last_reset_pos, match.end())
+
+        if last_reset_pos > 0:
+            last_disk_full_pos = -1
+            for err in all_detected:
+                if err.category != 'disk_full':
+                    continue
+                for match in re.finditer(
+                    re.escape(err.detected_pattern),
+                    serial_output,
+                    re.IGNORECASE,
+                ):
+                    last_disk_full_pos = max(last_disk_full_pos, match.end())
+
+            if last_reset_pos > last_disk_full_pos:
+                logger.debug(
+                    f"Clearing stale disk_full finding from previous boot "
+                    f"(reset/resize marker at pos {last_reset_pos}, "
+                    f"last disk_full error at pos {last_disk_full_pos})"
+                )
+                detected_errors = [
+                    e for e in detected_errors if e.category != 'disk_full'
+                ]
+
+
     # Determine diagnosis status and recommendations
     if detected_errors:
         diagnosis_status = "boot_errors_detected"
