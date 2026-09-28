@@ -23,6 +23,7 @@ class ResizeDiskOperation(BaseOperation):
     def execute(self, disk_name: str, add_gb: int = 5,
                 new_size_gb: int = None,
                 expected_previous_size_gb: int = None,
+                vm_name: str = None,
                 timeout: int = 300,
                 tracking_label: str = None) -> OperationResult:
         """
@@ -36,6 +37,7 @@ class ResizeDiskOperation(BaseOperation):
             expected_previous_size_gb (int, optional): Original disk size from a
                 checkpoint. If the disk is already larger than this size, the
                 resize already succeeded before interruption and is skipped.
+            vm_name (str, optional): VM name for formatting error suggestions.
             timeout (int): Maximum seconds to wait for the resize operation.
             tracking_label (str, optional): Tracking User-Agent string.
 
@@ -116,7 +118,7 @@ class ResizeDiskOperation(BaseOperation):
                 suggestion = get_error_suggestion(op_error, operation='resize_disk')
                 if suggestion:
                     error_detail = suggestion.format(
-                        vm_name=None, zone=self.zone,
+                        vm_name=vm_name, zone=self.zone,
                         project=self.project, disk_name=disk_name
                     )
                 else:
@@ -153,7 +155,7 @@ class ResizeDiskOperation(BaseOperation):
             suggestion = get_error_suggestion(error_msg, operation='resize_disk')
             if suggestion:
                 error_detail = suggestion.format(
-                    vm_name=None, zone=self.zone,
+                    vm_name=vm_name, zone=self.zone,
                     project=self.project, disk_name=disk_name
                 )
             else:

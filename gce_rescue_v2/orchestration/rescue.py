@@ -963,6 +963,7 @@ class RescueOrchestrator:
                     disk_name=self.original_disk_name,
                     add_gb=self.config.resize_disk_gb,
                     expected_previous_size_gb=self.original_disk_size_gb,
+                    vm_name=self.vm_name,
                     timeout=self.config.operation_timeout,
                     tracking_label=self._ua('disk-resize-orig')
                 )

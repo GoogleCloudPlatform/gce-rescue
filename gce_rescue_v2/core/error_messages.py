@@ -259,8 +259,8 @@ DISK_RESIZE_RATE_LIMITED = ErrorSuggestion(
         "Disk was already resized recently",
     ],
     suggestions=[
-        "If the disk was already resized earlier, run repair and enter 'n' at the resize prompt to expand the partition/filesystem onto the existing unallocated space",
-        "Or use 'gce-rescue rescue' to mount the boot disk and free space manually without resizing",
+        "Use 'gce-rescue rescue' to mount the boot disk and free space or expand the partition/filesystem manually without resizing",
+        "Or wait for the disk resize cooldown window to expire and re-run 'gce-rescue repair'",
     ],
     commands=[
         "gce-rescue rescue {vm_name} --zone={zone}",

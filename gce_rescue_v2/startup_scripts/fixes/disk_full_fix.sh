@@ -143,10 +143,17 @@ if [ "${DISK_FULL_FS_EXPANDED:-false}" = "true" ]; then
     repair_line "[FIXED] disk_full: Expanded root partition and filesystem on ${DISK_FULL_EXPANDED_DEV:-boot disk} (size: ${new_size:-expanded}, available: ${avail_after:-unknown})"
 elif [ "${DISK_FULL_PART_EXPANDED:-false}" = "true" ]; then
     mounted_fs=$(findmnt -n -o FSTYPE "$SYSROOT" 2>/dev/null)
-    if [ "$mounted_fs" = "xfs" ] && command -v xfs_growfs >/dev/null 2>&1; then
+    if [ "$mounted_fs" = "xfs" ]; then
         log "Expanding XFS filesystem at $SYSROOT..."
-        xfs_growfs "$SYSROOT" 2>&1 | tee -a "$LOGFILE"
-        if [ ${PIPESTATUS[0]} -eq 0 ]; then
+        xfs_rc=1
+        if command -v xfs_growfs >/dev/null 2>&1; then
+            xfs_growfs "$SYSROOT" 2>&1 | tee -a "$LOGFILE"
+            xfs_rc=${PIPESTATUS[0]}
+        elif [ -x "$SYSROOT/usr/sbin/xfs_growfs" ] || [ -x "$SYSROOT/sbin/xfs_growfs" ]; then
+            chroot "$SYSROOT" xfs_growfs / 2>&1 | tee -a "$LOGFILE"
+            xfs_rc=${PIPESTATUS[0]}
+        fi
+        if [ $xfs_rc -eq 0 ]; then
             new_size=$(df -h "$SYSROOT" 2>/dev/null | tail -1 | awk '{print $2}')
             avail_after=$(df -h "$SYSROOT" 2>/dev/null | tail -1 | awk '{print $4}')
             fixes=$((fixes + 1))
