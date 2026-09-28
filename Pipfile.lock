@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "2e47444c802a26d178b01317ec022d6adff77980469ca1a915acecb4664ecbc2"
+            "sha256": "3779b6adcefd7567c36037f245265a5042415db32a4f8e0ecb6fa7a0698c968c"
         },
         "pipfile-spec": 6,
         "requires": {},
@@ -426,12 +426,12 @@
         },
         "google-auth": {
             "hashes": [
-                "sha256:ab439dee60a6856412bc058f13a68eb6a59c5b81526bb89cfdcf89ce9c0a48c9",
-                "sha256:eb47b230fc6707eed4aee1c9cef55ec05bc1785eecba74ff8b572d531e921b1e"
+                "sha256:1480461d8b2347e679af758f4003700ea79a59b603c9134e18bfa95e8004ee70",
+                "sha256:66a63572d0ab629554768544df04018d79178c0bd7439ba31683ac576b79024d"
             ],
             "index": "pypi",
             "markers": "python_version >= '3.10'",
-            "version": "==2.57.1"
+            "version": "==2.58.1"
         },
         "google-auth-httplib2": {
             "hashes": [
@@ -534,11 +534,11 @@
         },
         "platformdirs": {
             "hashes": [
-                "sha256:4f41487eeeeeb07f3a6625e61d9bc0ae6809f92d3386dbd74392fbb76108104d",
-                "sha256:8a02cb259042c79d1cd0450facc2fe6dc9d303ae7901afbe33bf8ea0b188cef6"
+                "sha256:38da801a4af303033cbffccb39030db22bf0473e6414309b02acebeee7ca8bf1",
+                "sha256:7f251621befae78b2cb74616f9fc99d3fa3db0afba5035987731f8dcd430337d"
             ],
             "markers": "python_version >= '3.10'",
-            "version": "==4.11.7"
+            "version": "==4.12.1"
         },
         "proto-plus": {
             "hashes": [
@@ -588,12 +588,12 @@
         },
         "pylint": {
             "hashes": [
-                "sha256:1c1b2128bde5ff5e966801413080b6384d42a5782718d528c906dbb6beab94ed",
-                "sha256:3341c08c0aabaa4adc71516de0969f3ba5c692b56c75af4dcb4d242823fbe363"
+                "sha256:6f1305780229ae720e89b8aff2b3ff857cbb268fbab98c8b586960267667ad34",
+                "sha256:c4ba5bbaf1e70ecf05f08cd7d6091ea04824b79a2b2d9f5b10dc25fc34cb1124"
             ],
             "index": "pypi",
             "markers": "python_full_version >= '3.10.0'",
-            "version": "==4.0.8"
+            "version": "==4.0.9"
         },
         "pyparsing": {
             "hashes": [
