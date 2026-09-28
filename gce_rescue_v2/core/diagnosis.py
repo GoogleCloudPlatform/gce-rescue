@@ -78,6 +78,19 @@ class DiagnosisResult:
 # Severity ordering for sorted display (lower = higher priority)
 SEVERITY_ORDER = {'critical': 0, 'error': 1, 'warning': 2}
 
+# Serial console markers indicating a fresh boot or root filesystem expansion.
+# Any disk_full log line that appeared prior to the latest of these markers is
+# treated as stale from a previous boot iteration.
+_DISK_FULL_RESET_MARKERS = (
+    r'Command line: BOOT_IMAGE=',
+    r'Linux version \d+\.\d+',
+    r'BdsDxe: starting Boot',
+    r'gce-disk-expand: Done',
+    r'systemd-growfs\[\d+\]: Successfully resized',
+    r'EXT[2-4]-fs \([^)]+\): resized filesystem to',
+    r'GCE-REPAIR-LINE:\[FIXED\] disk_full:',
+)
+
 
 def _validate_pattern_file(data: dict, filename: str) -> None:
     """Validate YAML structure and regex syntax at load time.
@@ -512,15 +525,6 @@ def analyze_serial_output(
     if vm_status == 'RUNNING' and any(
         e.category == 'disk_full' for e in detected_errors
     ):
-        _DISK_FULL_RESET_MARKERS = [
-            r'Command line: BOOT_IMAGE=',
-            r'Linux version \d+\.\d+',
-            r'BdsDxe: starting Boot',
-            r'gce-disk-expand: Done',
-            r'systemd-growfs\[\d+\]: Successfully resized',
-            r'EXT[2-4]-fs \([^)]+\): resized filesystem to',
-            r'GCE-REPAIR-LINE:\[FIXED\] disk_full:',
-        ]
         last_reset_pos = -1
         for marker in _DISK_FULL_RESET_MARKERS:
             for match in re.finditer(marker, serial_output, re.IGNORECASE):

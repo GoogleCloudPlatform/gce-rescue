@@ -21,7 +21,9 @@ class ResizeDiskOperation(BaseOperation):
         return "Resize Disk"
 
     def execute(self, disk_name: str, add_gb: int = 5,
-                new_size_gb: int = None, timeout: int = 300,
+                new_size_gb: int = None,
+                expected_previous_size_gb: int = None,
+                timeout: int = 300,
                 tracking_label: str = None) -> OperationResult:
         """
         Resize a persistent disk by adding `add_gb` GiB (or to `new_size_gb`).
@@ -31,6 +33,9 @@ class ResizeDiskOperation(BaseOperation):
             add_gb (int): Number of GiB to add to the current disk size.
             new_size_gb (int, optional): Explicit target size in GiB. If omitted,
                 computed as `current_size_gb + add_gb`.
+            expected_previous_size_gb (int, optional): Original disk size from a
+                checkpoint. If the disk is already larger than this size, the
+                resize already succeeded before interruption and is skipped.
             timeout (int): Maximum seconds to wait for the resize operation.
             tracking_label (str, optional): Tracking User-Agent string.
 
@@ -53,6 +58,26 @@ class ResizeDiskOperation(BaseOperation):
                 disk=disk_name
             ).execute()
             current_size_gb = int(disk_info.get('sizeGb', 0))
+
+            if (expected_previous_size_gb is not None
+                    and current_size_gb > int(expected_previous_size_gb)):
+                msg = (
+                    f"Skipping resize: {disk_name} is already "
+                    f"{current_size_gb}GB (was {expected_previous_size_gb}GB "
+                    f"at checkpoint start)"
+                )
+                self._log_debug(f"  {msg}")
+                return OperationResult(
+                    operation_name=self.name,
+                    success=True,
+                    message=msg,
+                    rollback_data={
+                        'disk_name': disk_name,
+                        'previous_size_gb': int(expected_previous_size_gb),
+                        'new_size_gb': current_size_gb,
+                    }
+                )
+
             target_size_gb = (
                 int(new_size_gb)
                 if new_size_gb is not None

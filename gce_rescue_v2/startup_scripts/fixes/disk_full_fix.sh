@@ -16,6 +16,8 @@ DISK_FULL_EXPANDED_DEV=""
 
 udevadm settle 2>/dev/null || sleep 2
 
+# Picks the first ext2/3/4 or XFS partition on the target disk (same heuristic
+# used by rescue_mount.sh; assumes the root filesystem is on that partition).
 disk_p_pre=$(lsblk -rf /dev/disk/by-id/google-${disk} 2>/dev/null | grep -iE 'ext[2-4]|xfs' | head -1)
 if [ -n "$disk_p_pre" ]; then
     part_dev_name=$(echo "$disk_p_pre" | awk '{print $1}')
@@ -32,7 +34,8 @@ if [ -n "$disk_p_pre" ]; then
 
         if [ -b "$parent_disk" ] && [ -n "$part_num" ]; then
             log "[REPAIR] Expanding partition $real_part ($parent_disk partition $part_num)..."
-            if command -v sgdisk >/dev/null 2>&1; then
+            pttype=$(blkid -p -s PTTYPE -o value "$parent_disk" 2>/dev/null)
+            if [ "$pttype" = "gpt" ] && command -v sgdisk >/dev/null 2>&1; then
                 log "[REPAIR] Moving backup GPT header to end of $parent_disk with sgdisk -e..."
                 sgdisk -e "$parent_disk" 2>&1 | tee -a "$LOGFILE" || true
                 partprobe "$parent_disk" 2>/dev/null || true
@@ -111,7 +114,8 @@ if [ "${DISK_FULL_PART_EXPANDED:-false}" = "false" ]; then
         fi
         part_num=$(echo "$real_part" | grep -oE '[0-9]+$')
         if [ -b "$parent_disk" ] && [ -n "$part_num" ]; then
-            if command -v sgdisk >/dev/null 2>&1; then
+            pttype=$(blkid -p -s PTTYPE -o value "$parent_disk" 2>/dev/null)
+            if [ "$pttype" = "gpt" ] && command -v sgdisk >/dev/null 2>&1; then
                 sgdisk -e "$parent_disk" 2>&1 | tee -a "$LOGFILE" || true
             fi
             if command -v growpart >/dev/null 2>&1 && growpart "$parent_disk" "$part_num" 2>&1 | tee -a "$LOGFILE"; then

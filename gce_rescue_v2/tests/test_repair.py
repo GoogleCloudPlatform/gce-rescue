@@ -2528,3 +2528,125 @@ class TestDiskFullRepair:
         )
         assert res2.diagnosis_status == 'boot_errors_detected'
         assert any(e.category == 'disk_full' for e in res2.boot_errors)
+
+    def test_resize_disk_operation_idempotent_on_checkpoint_resume(self):
+        """ResizeDiskOperation skips resize if disk is already larger than expected_previous_size_gb."""
+        from gce_rescue_v2.operations.resize_disk import ResizeDiskOperation
+
+        compute = MagicMock()
+        compute.disks.return_value.get.return_value.execute.return_value = {
+            'sizeGb': '15'
+        }
+        op = ResizeDiskOperation(compute, 'proj', 'zone-a', _make_logger())
+        result = op.execute(
+            disk_name='boot-disk', add_gb=5, expected_previous_size_gb=10
+        )
+        assert result.success is True
+        assert result.rollback_data['previous_size_gb'] == 10
+        assert result.rollback_data['new_size_gb'] == 15
+        compute.disks.return_value.resize.assert_not_called()
+
+    def test_disk_full_fix_script_gates_sgdisk_on_gpt(self):
+        """disk_full_fix.sh checks PTTYPE=gpt via blkid before calling sgdisk -e."""
+        compute = _make_compute()
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        script = orch._get_fix_script('disk_full')
+        assert script is not None
+        assert 'blkid -p -s PTTYPE -o value "$parent_disk"' in script
+        assert '[ "$pttype" = "gpt" ] && command -v sgdisk' in script
+
+    def test_resize_disk_gb_zero_accepted_and_skips_disk_full(self):
+        """--resize-disk-gb=0 parses cleanly and excludes disk_full from fixable categories."""
+        from gce_rescue_v2.cli import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args([
+            'repair', 'vm-1', '--zone=us-central1-a', '--resize-disk-gb=0'
+        ])
+        assert args.resize_disk_gb == 0
+
+        compute = _make_compute()
+        cfg = RescueConfig(resize_disk_gb=0)
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', config=cfg, logger=_make_logger()
+        )
+        diagnosis = {
+            'boot_errors': [{'category': 'disk_full', 'severity': 'critical'}]
+        }
+        assert orch.get_fixable_categories(diagnosis) == []
+
+    def test_quiet_mode_does_not_resize_without_explicit_flag(self, capsys):
+        """--quiet without --resize-disk-gb skips disk_full instead of resizing silently."""
+        import argparse
+        from gce_rescue_v2.cli.repair import handle_repair
+
+        args = argparse.Namespace(
+            instance_name='vm-1',
+            zone='us-central1-a',
+            project='proj',
+            verbosity='info',
+            format='disable',
+            quiet=True,
+            force=False,
+            snapshot=True,
+            rescue_image=None,
+            fix_script=None,
+            resize_disk_gb=None,
+            verification_timeout=None,
+        )
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/proj/zones/us-central1-a/disks/boot-disk',
+                'deviceName': 'boot-disk',
+                'diskSizeGb': '10',
+                'licenses': ['projects/debian-cloud/global/licenses/debian-12'],
+            }],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info)
+        compute.disks.return_value.get.return_value.execute.return_value = {
+            'sizeGb': '10'
+        }
+
+        fake_orch = MagicMock()
+        fake_orch.config = RescueConfig()
+        fake_orch.validate.return_value = True
+        fake_orch.diagnose.return_value = {
+            'vm_name': 'vm-1',
+            'zone': 'us-central1-a',
+            'status': 'RUNNING',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [{
+                'category': 'disk_full',
+                'severity': 'critical',
+                'description': 'Boot disk has no free space',
+                'detected_pattern': 'No space left on device',
+                'suggested_fixes': [],
+            }],
+        }
+        fake_orch.get_fixable_categories.return_value = ['disk_full']
+        fake_orch.get_unfixable_categories.return_value = []
+        fake_orch._extract_fstab_targets.return_value = []
+
+        fake_auth = MagicMock()
+        fake_auth.get_client.return_value = (compute, 'proj')
+
+        with patch('gce_rescue_v2.core.auth.AuthManager',
+                   return_value=fake_auth), \
+             patch('gce_rescue_v2.cli.repair._create_tracked_client',
+                   return_value=compute), \
+             patch('gce_rescue_v2.cli.preflight.check_image_org_policy',
+                   return_value=None), \
+             patch('gce_rescue_v2.orchestration.repair.RepairOrchestrator',
+                   return_value=fake_orch):
+            rc = handle_repair(args)
+
+        assert rc == 0
+        fake_orch.execute.assert_not_called()
+        out = capsys.readouterr().out
+        assert 'requires explicit --resize-disk-gb' in out
+

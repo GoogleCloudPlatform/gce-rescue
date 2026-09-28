@@ -11,6 +11,7 @@ If something fails later, we use this data to undo the operation.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+import re
 import time
 import json
 
@@ -97,7 +98,6 @@ def extract_error_message(exception: Exception) -> str:
         pass
 
     # 3. Extract quoted message from '<HttpError ... returned "MESSAGE". Details: ...>'
-    import re
     returned_match = re.search(r'returned "([^"]+)"', error_str)
     if returned_match:
         return returned_match.group(1)

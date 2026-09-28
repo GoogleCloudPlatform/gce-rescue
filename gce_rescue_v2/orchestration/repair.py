@@ -329,6 +329,12 @@ class RepairOrchestrator:
                 "filesystem findings reference only non-boot devices; "
                 "excluded from rescue-based repair"
             )
+        if ('disk_full' in categories
+                and getattr(self.config, 'resize_disk_gb', None) == 0):
+            categories.remove('disk_full')
+            self._log_debug(
+                "disk_full excluded from repair because resize_disk_gb=0"
+            )
         # Stable sort: known categories in execution order, unknowns after
         # them in their original (diagnosis) order.
         categories.sort(

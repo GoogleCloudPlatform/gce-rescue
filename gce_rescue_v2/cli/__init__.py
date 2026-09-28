@@ -312,7 +312,7 @@ EXAMPLES
 
     SUPPORTED FIXES
     - filesystem: Repairs corrupted filesystems (fsck) before mounting
-    - disk_full: Resizes full boot disk (optional) and cleans temp/cache/log files
+    - disk_full: Resizes full boot disk, expands root filesystem, and reports largest directories
     - fstab: Comments out invalid UUID, device, or label entries
     - initramfs: Rebuilds the initramfs for the newest installed kernel
     - grub: Reinstalls GRUB and regenerates its configuration
@@ -531,11 +531,11 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         '--resize-disk-gb',
         metavar='GB',
         dest='resize_disk_gb',
-        type=_positive_int,
+        type=_non_negative_int,
         default=None,
         help=(
             'Amount of space in GiB to add to the boot disk when repairing'
-            ' a disk_full boot error (default: 5 GiB).'
+            ' a disk_full boot error (default: 5 GiB, 0 to skip resize).'
         )
     )
 

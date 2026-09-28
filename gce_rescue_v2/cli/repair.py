@@ -737,10 +737,45 @@ def handle_repair(args: argparse.Namespace) -> int:
         boot_disk_name, current_size_gb = _get_boot_disk_size_gb(
             compute, vm, project, args.zone
         )
-        if args.quiet and config.resize_disk_gb is None:
-            config.resize_disk_gb = DEFAULT_DISK_RESIZE_INCREMENT_GB
+        if config.resize_disk_gb == 0:
             if hasattr(orchestrator, 'config'):
-                orchestrator.config.resize_disk_gb = config.resize_disk_gb
+                orchestrator.config.resize_disk_gb = 0
+            fixable = [c for c in fixable if c != 'disk_full']
+            if not fixable:
+                print(f"Repair: {args.instance_name} ({args.zone})")
+                print("")
+                print("  Skipped boot disk resize (--resize-disk-gb=0).")
+                print(
+                    "  Use rescue mode to inspect and free disk space manually:"
+                )
+                print(
+                    f"    $ gce-rescue rescue {args.instance_name} "
+                    f"--zone={args.zone} --project={project}"
+                )
+                return 0
+        elif args.quiet and config.resize_disk_gb is None:
+            config.resize_disk_gb = 0
+            if hasattr(orchestrator, 'config'):
+                orchestrator.config.resize_disk_gb = 0
+            fixable = [c for c in fixable if c != 'disk_full']
+            skip_msg = (
+                "Skipping [DISK_FULL] repair: resizing a boot disk is "
+                "permanent and requires explicit --resize-disk-gb=<GB> "
+                "when using --quiet."
+            )
+            if not fixable:
+                print(f"Repair: {args.instance_name} ({args.zone})")
+                print("")
+                print(f"  {skip_msg}")
+                print("")
+                print("  Re-run with an explicit size to resize automatically:")
+                print(
+                    f"    $ gce-rescue repair {args.instance_name} "
+                    f"--zone={args.zone} --project={project} "
+                    f"--quiet --resize-disk-gb={DEFAULT_DISK_RESIZE_INCREMENT_GB}"
+                )
+                return 0
+            print(f"  {warning_prefix()} {skip_msg}")
 
     # Repair path: show compact summary + plan, get confirmation, then clear
     if not args.quiet:
@@ -791,6 +826,9 @@ def handle_repair(args: argparse.Namespace) -> int:
             total_printed_lines += prompt_lines
             if chosen_gb is None:
                 return 0
+            config.resize_disk_gb = chosen_gb
+            if hasattr(orchestrator, 'config'):
+                orchestrator.config.resize_disk_gb = chosen_gb
             if chosen_gb == 0:
                 fixable = [c for c in fixable if c != 'disk_full']
                 if not fixable:
@@ -804,9 +842,6 @@ def handle_repair(args: argparse.Namespace) -> int:
                         f"--zone={args.zone} --project={project}"
                     )
                     return 0
-            config.resize_disk_gb = chosen_gb
-            if hasattr(orchestrator, 'config'):
-                orchestrator.config.resize_disk_gb = chosen_gb
             plan_block: List[str] = ["", "  Repair plan:"]
         else:
             plan_block = intro_block + ["", "  Repair plan:"]
