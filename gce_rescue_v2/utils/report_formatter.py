@@ -226,16 +226,18 @@ class DiagnosisReportFormatter:
         # Check if auto-repair is available AND can identify targets
         auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
 
-        # Auto-repair needs extractable identifiers to target specific entries.
-        # If no error has an extractable identifier, repair would bail out.
+        # Auto-repair for fstab needs extractable identifiers to target specific
+        # entries; disk_full does not require an fstab identifier.
         if auto_fixable:
             has_targets = any(
-                _extract_identifier(err.get('detected_pattern', ''))
+                err['category'] == 'disk_full'
+                or _extract_identifier(err.get('detected_pattern', ''))
                 for err in errors
                 if err['category'] in SUPPORTED_FIX_CATEGORIES
             )
             if not has_targets:
                 auto_fixable = []
+
 
         # Lead with auto-repair when available
         if auto_fixable:

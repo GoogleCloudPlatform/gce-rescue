@@ -253,9 +253,9 @@ class TestFixExecutionOrdering:
         )
 
     def test_execution_order_constant(self):
-        """filesystem first, grub last (grub must see the rebuilt initrd)."""
+        """filesystem first, disk_full before fstab, grub last."""
         assert FIX_EXECUTION_ORDER == [
-            'filesystem', 'fstab', 'initramfs', 'grub'
+            'filesystem', 'disk_full', 'fstab', 'initramfs', 'grub'
         ]
 
     def test_categories_sorted_into_execution_order(self):
@@ -1527,7 +1527,7 @@ class TestSupportedCategories:
 
     def test_supported_set_is_exactly_the_shipped_scripts(self):
         """The full auto-repairable set — update when a new fix script lands."""
-        assert SUPPORTED_FIX_CATEGORIES == {'fstab', 'grub'}
+        assert SUPPORTED_FIX_CATEGORIES == {'fstab', 'grub', 'disk_full'}
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""
@@ -2387,3 +2387,266 @@ class TestCustomFixScript:
         with patch('gce_rescue_v2.validators.ValidationRunner') as runner_cls:
             runner_cls.return_value.run_all.return_value.all_passed.return_value = True
             assert orch.validate() is True
+
+
+# ---------------------------------------------------------------------------
+# TestDiskFullRepair
+# ---------------------------------------------------------------------------
+
+class TestDiskFullRepair:
+    """Tests for disk_full auto-repair: ResizeDiskOperation, fix script, and CLI prompt."""
+
+    def test_resize_disk_operation_by_increment(self):
+        """ResizeDiskOperation queries current sizeGb and calls disks().resize()."""
+        from gce_rescue_v2.operations.resize_disk import ResizeDiskOperation
+
+        compute = MagicMock()
+        compute.disks.return_value.get.return_value.execute.side_effect = [
+            {'sizeGb': '10'},
+            {'sizeGb': '15'},
+        ]
+        compute.disks.return_value.resize.return_value.execute.return_value = {
+            'name': 'op-123', 'status': 'DONE'
+        }
+
+        op = ResizeDiskOperation(compute, 'proj', 'zone-a', _make_logger())
+        op._wait_for_operation = lambda *a, **kw: True
+
+        result = op.execute(disk_name='boot-disk', add_gb=5)
+        assert result.success is True
+        assert result.rollback_data['previous_size_gb'] == 10
+        assert result.rollback_data['new_size_gb'] == 15
+        compute.disks.return_value.resize.assert_called_once_with(
+            project='proj',
+            zone='zone-a',
+            disk='boot-disk',
+            body={'sizeGb': '15'},
+        )
+
+    def test_resize_disk_operation_rejects_non_increasing_target(self):
+        """ResizeDiskOperation fails if target size is not greater than current size."""
+        from gce_rescue_v2.operations.resize_disk import ResizeDiskOperation
+
+        compute = MagicMock()
+        compute.disks.return_value.get.return_value.execute.return_value = {
+            'sizeGb': '20'
+        }
+        op = ResizeDiskOperation(compute, 'proj', 'zone-a', _make_logger())
+        result = op.execute(disk_name='boot-disk', new_size_gb=15)
+        assert result.success is False
+        assert 'must be greater than current size' in result.message
+
+    def test_resize_disk_rollback_returns_true(self):
+        """GCE disks cannot be shrunk; rollback logs warning and returns True."""
+        from gce_rescue_v2.operations.resize_disk import ResizeDiskOperation
+
+        compute = MagicMock()
+        op = ResizeDiskOperation(compute, 'proj', 'zone-a', _make_logger())
+        assert op.rollback({
+            'disk_name': 'boot-disk',
+            'previous_size_gb': 10,
+            'new_size_gb': 15,
+        }) is True
+
+    def test_generate_repair_script_includes_disk_full_premount_and_postmount(self):
+        """_generate_repair_script('disk_full') includes pre-mount and post-mount sections."""
+        compute = _make_compute()
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        orch._create_tracked_client = lambda label: compute
+        diagnosis = {
+            'boot_errors': [{'category': 'disk_full', 'severity': 'error'}]
+        }
+        script = orch._generate_repair_script(diagnosis)
+        assert script is not None
+        assert 'growpart' in script
+        assert 'resize2fs' in script
+        assert 'xfs_growfs' in script
+
+        mount_idx = script.index('mount "$dev_path" /mnt/sysroot')
+        growpart_idx = script.index('growpart')
+        xfs_idx = script.index('xfs_growfs')
+        assert growpart_idx < mount_idx < xfs_idx
+
+
+
+
+    def test_prompt_disk_resize_gb_defaults_and_custom_values(self, monkeypatch):
+        """_prompt_disk_resize_gb handles default (''), 'y', '12', '10GB', and 'n'."""
+        from gce_rescue_v2.cli.repair import _prompt_disk_resize_gb
+
+        monkeypatch.setattr('builtins.input', lambda _: '')
+        gb, _ = _prompt_disk_resize_gb('vm-1', 10)
+        assert gb == 5
+
+        monkeypatch.setattr('builtins.input', lambda _: '12')
+        gb, _ = _prompt_disk_resize_gb('vm-1', 10)
+        assert gb == 12
+
+        monkeypatch.setattr('builtins.input', lambda _: '10GB')
+        gb, _ = _prompt_disk_resize_gb('vm-1', 10)
+        assert gb == 10
+
+        monkeypatch.setattr('builtins.input', lambda _: 'n')
+        gb, _ = _prompt_disk_resize_gb('vm-1', 10)
+        assert gb == 0
+
+    def test_stale_disk_full_cleared_after_reboot_or_resize(self):
+        """disk_full from an earlier boot is cleared if a new boot/resize follows without error."""
+        from gce_rescue_v2.core.diagnosis import analyze_serial_output
+
+        serial_resolved = (
+            "[  298.949432] systemd-journald[282]: Failed to open system journal: No space left on device\n"
+            "BdsDxe: starting Boot0001\n"
+            "[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-6.12.107 root=PARTUUID=1234 ro\n"
+            "gce-disk-expand: Done\n"
+            "systemd-growfs[334]: Successfully resized \"/\" to 14.8G bytes.\n"
+            "Startup finished in 4.2s (kernel) + 8.1s (userspace) = 12.3s.\n"
+        )
+        res = analyze_serial_output(
+            serial_output=serial_resolved,
+            vm_name='vm-1',
+            zone='us-central1-c',
+            vm_status='RUNNING',
+            os_type='linux',
+        )
+        assert res.diagnosis_status == 'healthy'
+        assert res.boot_errors == []
+
+        serial_still_full = (
+            "BdsDxe: starting Boot0001\n"
+            "[    0.000000] Command line: BOOT_IMAGE=/boot/vmlinuz-6.12.107 root=PARTUUID=1234 ro\n"
+            "[  298.949432] systemd-journald[282]: Failed to open system journal: No space left on device\n"
+        )
+        res2 = analyze_serial_output(
+            serial_output=serial_still_full,
+            vm_name='vm-1',
+            zone='us-central1-c',
+            vm_status='RUNNING',
+            os_type='linux',
+        )
+        assert res2.diagnosis_status == 'boot_errors_detected'
+        assert any(e.category == 'disk_full' for e in res2.boot_errors)
+
+    def test_resize_disk_operation_idempotent_on_checkpoint_resume(self):
+        """ResizeDiskOperation skips resize if disk is already larger than expected_previous_size_gb."""
+        from gce_rescue_v2.operations.resize_disk import ResizeDiskOperation
+
+        compute = MagicMock()
+        compute.disks.return_value.get.return_value.execute.return_value = {
+            'sizeGb': '15'
+        }
+        op = ResizeDiskOperation(compute, 'proj', 'zone-a', _make_logger())
+        result = op.execute(
+            disk_name='boot-disk', add_gb=5, expected_previous_size_gb=10
+        )
+        assert result.success is True
+        assert result.rollback_data['previous_size_gb'] == 10
+        assert result.rollback_data['new_size_gb'] == 15
+        compute.disks.return_value.resize.assert_not_called()
+
+    def test_disk_full_fix_script_gates_sgdisk_on_gpt(self):
+        """disk_full_fix.sh checks PTTYPE=gpt via blkid before calling sgdisk -e."""
+        compute = _make_compute()
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        script = orch._get_fix_script('disk_full')
+        assert script is not None
+        assert 'blkid -p -s PTTYPE -o value "$parent_disk"' in script
+        assert '[ "$pttype" = "gpt" ] && command -v sgdisk' in script
+
+    def test_resize_disk_gb_zero_accepted_and_skips_disk_full(self):
+        """--resize-disk-gb=0 parses cleanly and excludes disk_full from fixable categories."""
+        from gce_rescue_v2.cli import create_parser
+
+        parser = create_parser()
+        args = parser.parse_args([
+            'repair', 'vm-1', '--zone=us-central1-a', '--resize-disk-gb=0'
+        ])
+        assert args.resize_disk_gb == 0
+
+        compute = _make_compute()
+        cfg = RescueConfig(resize_disk_gb=0)
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'vm-1', config=cfg, logger=_make_logger()
+        )
+        diagnosis = {
+            'boot_errors': [{'category': 'disk_full', 'severity': 'critical'}]
+        }
+        assert orch.get_fixable_categories(diagnosis) == []
+
+    def test_quiet_mode_does_not_resize_without_explicit_flag(self, capsys):
+        """--quiet without --resize-disk-gb skips disk_full instead of resizing silently."""
+        import argparse
+        from gce_rescue_v2.cli.repair import handle_repair
+
+        args = argparse.Namespace(
+            instance_name='vm-1',
+            zone='us-central1-a',
+            project='proj',
+            verbosity='info',
+            format='disable',
+            quiet=True,
+            force=False,
+            snapshot=True,
+            rescue_image=None,
+            fix_script=None,
+            resize_disk_gb=None,
+            verification_timeout=None,
+        )
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/proj/zones/us-central1-a/disks/boot-disk',
+                'deviceName': 'boot-disk',
+                'diskSizeGb': '10',
+                'licenses': ['projects/debian-cloud/global/licenses/debian-12'],
+            }],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info)
+        compute.disks.return_value.get.return_value.execute.return_value = {
+            'sizeGb': '10'
+        }
+
+        fake_orch = MagicMock()
+        fake_orch.config = RescueConfig()
+        fake_orch.validate.return_value = True
+        fake_orch.diagnose.return_value = {
+            'vm_name': 'vm-1',
+            'zone': 'us-central1-a',
+            'status': 'RUNNING',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [{
+                'category': 'disk_full',
+                'severity': 'critical',
+                'description': 'Boot disk has no free space',
+                'detected_pattern': 'No space left on device',
+                'suggested_fixes': [],
+            }],
+        }
+        fake_orch.get_fixable_categories.return_value = ['disk_full']
+        fake_orch.get_unfixable_categories.return_value = []
+        fake_orch._extract_fstab_targets.return_value = []
+
+        fake_auth = MagicMock()
+        fake_auth.get_client.return_value = (compute, 'proj')
+
+        with patch('gce_rescue_v2.core.auth.AuthManager',
+                   return_value=fake_auth), \
+             patch('gce_rescue_v2.cli.repair._create_tracked_client',
+                   return_value=compute), \
+             patch('gce_rescue_v2.cli.preflight.check_image_org_policy',
+                   return_value=None), \
+             patch('gce_rescue_v2.orchestration.repair.RepairOrchestrator',
+                   return_value=fake_orch):
+            rc = handle_repair(args)
+
+        assert rc == 0
+        fake_orch.execute.assert_not_called()
+        out = capsys.readouterr().out
+        assert 'requires explicit --resize-disk-gb' in out
+

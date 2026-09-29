@@ -252,9 +252,9 @@ class TestShippedFixInfo:
     def test_disk_full_fix_guidance_loaded(self):
         assert 'disk_full' in CATEGORY_FIX_GUIDANCE
 
-    def test_disk_full_is_not_auto_repairable(self):
-        """disk_full stays auto_repair: false until disk_full_fix.sh lands."""
-        assert 'disk_full' not in SUPPORTED_FIX_CATEGORIES
+    def test_disk_full_is_auto_repairable(self):
+        """disk_full is auto-repairable via startup_scripts/fixes/disk_full_fix.sh."""
+        assert 'disk_full' in SUPPORTED_FIX_CATEGORIES
 
     def test_disk_full_patterns_have_fixes(self):
         """Every disk_full pattern should have at least one fix suggestion."""
