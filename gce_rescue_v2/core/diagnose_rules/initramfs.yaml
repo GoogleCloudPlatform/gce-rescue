@@ -1,12 +1,14 @@
 category: initramfs
 os: linux
-fix_guidance: "chroot into /mnt/sysroot and rebuild the initramfs: dracut -f (RHEL-family) or update-initramfs -u -k VERSION (Debian-family), then regenerate the GRUB config"
-# auto_repair MUST stay false until startup_scripts/fixes/initramfs_fix.sh
-# lands. RepairOrchestrator.validate() checks that every category in
-# SUPPORTED_FIX_CATEGORIES has a fix script, so flipping this to true
-# without the script makes `repair` fail preflight for ALL categories
-# (including fstab). Flip to true in the same commit that adds the script.
-auto_repair: false
+fix_guidance: "chroot into /mnt/sysroot and rebuild the initramfs of the failing kernel: dracut -f /boot/initramfs-VERSION.img VERSION (RHEL-family), dracut -f /boot/initrd-VERSION VERSION (SLES) or update-initramfs -u -k VERSION (Debian-family), then regenerate the GRUB config. If the rebuild fails, boot the previous kernel"
+# Automated repair: startup_scripts/fixes/initramfs_fix.sh rebuilds the
+# initramfs of the failing kernel only (the version comes from the serial
+# console via DetectedError.kernel_version -> GCE_FAILING_KERNEL), fixes a
+# missing BLS initrd line, regenerates GRUB, and falls back to the previous
+# installed kernel when the rebuild fails. Only findings listed in
+# fix_catalog.INITRAMFS_REBUILD_PATTERNS make the repair available; the
+# others get manual guidance.
+auto_repair: true
 
 # Distro dialects covered here:
 #   dracut (RHEL/Rocky/Alma/CentOS/SLES): dracut-initqueue warnings,
@@ -135,6 +137,22 @@ patterns:
       - "Check the kernel/mount error just above this line in the serial output (bad UUID, corrupt filesystem, unknown filesystem type)"
       - "Verify the root filesystem from rescue mode: sudo blkid, then fsck -y /dev/sdX (ext4) or xfs_repair /dev/sdX (XFS) on the unmounted disk"
       - "If root= points at the wrong UUID, fix the BLS entries: sudo chroot /mnt/sysroot, then grubby --update-kernel=ALL --args=root=UUID=NEW_UUID"
+
+  # Detect-only (not in INITRAMFS_REBUILD_PATTERNS). Seen live on Rocky 9
+  # after 'omit_dracutmodules+=" systemd-udevd udev-rules "' in
+  # /etc/dracut.conf.d: the initrd's own targets fail their assertions and
+  # the emergency shell cannot start. A plain rebuild honours the same
+  # config and reproduces the broken image, so the user must fix the
+  # config first (initramfs_fix.sh also reports such omit settings).
+  - name: initramfs_initrd_assert_failed
+    severity: critical
+    description: "initrd systemd units failed their assertions (initramfs is incomplete or misbuilt)"
+    regex:
+      - 'Assertion failed for Initrd (?:Root File System|File Systems|Default Target)'
+    fixes:
+      - "Check the dracut configuration for removed modules or drivers from rescue mode: grep -rE 'omit_dracutmodules|omit_drivers|hostonly' /mnt/sysroot/etc/dracut.conf /mnt/sysroot/etc/dracut.conf.d/"
+      - "Remove the offending setting, then rebuild the initramfs of the failing kernel: sudo chroot /mnt/sysroot dracut -f /boot/initramfs-VERSION.img VERSION"
+      - "Alternatively, boot the previous kernel from the GRUB menu if its initramfs was built before the configuration change"
 
   - name: initramfs_nvme_device_rename
     severity: critical

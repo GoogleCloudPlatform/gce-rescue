@@ -346,7 +346,7 @@ class TestShippedPatterns:
 
     def test_initramfs_patterns_present(self):
         initramfs_patterns = [p for p in BOOT_ERROR_PATTERNS if p.category == 'initramfs']
-        assert len(initramfs_patterns) == 8
+        assert len(initramfs_patterns) == 9
 
     def test_initramfs_patterns_have_inline_fixes(self):
         """All initramfs patterns should have inline fixes from merged YAML."""

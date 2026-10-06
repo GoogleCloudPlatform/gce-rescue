@@ -157,6 +157,11 @@ class DiagnosisReportFormatter:
         if identifier:
             lines.append(f"{indent}Identifier: {bold(identifier)}")
 
+        # Kernel that failed to boot (initramfs findings)
+        kernel_version = error.get('kernel_version')
+        if kernel_version:
+            lines.append(f"{indent}Kernel:     {bold(kernel_version)}")
+
         # Serial console log lines
         if context:
             lines.append(f"{indent}Serial console:")
@@ -201,6 +206,7 @@ class DiagnosisReportFormatter:
         from ..core.fix_catalog import (
             SUPPORTED_FIX_CATEGORIES,
             DETECT_ONLY_CATEGORIES,
+            INITRAMFS_REBUILD_PATTERNS,
         )
         disk_categories = [
             c for c in categories if c not in DETECT_ONLY_CATEGORIES
@@ -227,11 +233,14 @@ class DiagnosisReportFormatter:
         auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
 
         # Auto-repair for fstab needs extractable identifiers to target specific
-        # entries; disk_full does not require an fstab identifier.
+        # entries; disk_full does not require an fstab identifier, and
+        # initramfs only needs a finding that a rebuild can fix.
         if auto_fixable:
             has_targets = any(
-                err['category'] == 'disk_full'
-                or _extract_identifier(err.get('detected_pattern', ''))
+                (err.get('name') in INITRAMFS_REBUILD_PATTERNS)
+                if err['category'] == 'initramfs'
+                else (err['category'] == 'disk_full'
+                      or _extract_identifier(err.get('detected_pattern', '')))
                 for err in errors
                 if err['category'] in SUPPORTED_FIX_CATEGORIES
             )

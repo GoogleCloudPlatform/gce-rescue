@@ -32,7 +32,10 @@ import google_auth_httplib2
 import httplib2
 
 from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
-from ..core.fix_catalog import SUPPORTED_FIX_CATEGORIES
+from ..core.diagnosis import initramfs_kernel_versions, is_safe_root_device
+from ..core.fix_catalog import (
+    INITRAMFS_REBUILD_PATTERNS, SUPPORTED_FIX_CATEGORIES,
+)
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
 # Composition helpers shared with the rescue orchestrator (re-exported here
@@ -73,6 +76,12 @@ REPAIR_VERIFICATION_FLOOR = {
     'initramfs': 900,    # rebuild + possible tool install
     'grub': 900,         # grub-install + config regeneration in chroot
 }
+
+# Post-restore boot check after an initramfs repair: dracut waits about 180 s
+# for the root device before it gives up, so a rebuilt initramfs that still
+# lacks the disk driver looks "healthy" for the first three minutes. The
+# wait ends early as soon as the boot reaches userspace.
+INITRAMFS_BOOT_WAIT_SECONDS = 270
 
 # Line the base mount script logs at startup-script start. Serial output can
 # span several boots of the same VM within one rescue session; only markers
@@ -306,6 +315,74 @@ class RepairOrchestrator:
                 return True
         return not saw_any
 
+    def _initramfs_rebuild_applicable(self, diagnosis: Dict[str, Any]) -> bool:
+        """Whether an initramfs rebuild can address the initramfs findings.
+
+        True when at least one initramfs finding is in
+        INITRAMFS_REBUILD_PATTERNS (missing, corrupt or driver-less image).
+        Findings outside that set (root= names a device that does not
+        exist, /sysroot itself fails to mount, emergency shell without the
+        warning naming the cause) cannot be changed by a rebuild.
+
+        False as well when the root filesystem sits on device-mapper (an
+        lvm or crypt finding, or root=/dev/mapper/...): the rescue flow
+        mounts plain partitions only, so initramfs_fix.sh could only report
+        "not a Linux root filesystem" after a full stop/rescue/restore cycle.
+        """
+        errors = diagnosis.get('boot_errors', [])
+        names = [
+            err.get('name', '')
+            for err in errors
+            if err.get('category') == 'initramfs'
+        ]
+        if not names:
+            return True
+        if any(err.get('category') in ('lvm', 'crypt') for err in errors):
+            return False
+        if any(str(err.get('root_device') or '').startswith(
+                   ('/dev/mapper/', '/dev/dm-'))
+               for err in errors if err.get('category') == 'initramfs'):
+            return False
+        return any(n in INITRAMFS_REBUILD_PATTERNS for n in names)
+
+    # GRUB 'file not found' for an initramfs image (initrd.img-*, initrd-*,
+    # initramfs-*.img), with or without the /boot prefix. GRUB wraps long
+    # lines on the serial console, so a line break may follow 'file' and
+    # split the file name once (see grub.yaml).
+    _GRUB_INITRD_NOT_FOUND_RE = re.compile(
+        r"file\s*.?(?:/boot)?/init(?:rd|ramfs)[^/\s]*(?:\n[^/\s]+)? not found")
+
+    def _grub_covered_by_initramfs(self, diagnosis: Dict[str, Any]) -> bool:
+        """Whether every grub finding is just a missing initramfs image.
+
+        GRUB prints "error: file `/boot/initrd.img-X' not found" before the
+        kernel panics without its initramfs. That is a symptom of the
+        initramfs problem, not GRUB damage: the initramfs repair rebuilds
+        the image and regenerates the GRUB config, so reinstalling GRUB
+        (grub_fix.sh) is unnecessary.
+        """
+        grub_errors = [
+            err for err in diagnosis.get('boot_errors', [])
+            if err.get('category') == 'grub'
+        ]
+        return bool(grub_errors) and all(
+            err.get('name') == 'grub_kernel_not_found'
+            and self._GRUB_INITRD_NOT_FOUND_RE.search(
+                err.get('detected_pattern', '') or '')
+            for err in grub_errors
+        )
+
+    def _grub_initrd_only(self, diagnosis: Dict[str, Any]) -> bool:
+        """Whether the grub findings are handed to the initramfs repair.
+
+        True when the initramfs repair is available and every grub finding
+        only reports a missing initramfs image. The GRUB line then proves
+        the image is missing, so the rebuild runs even when the initramfs
+        findings next to it are symptom-only (or there are none).
+        """
+        return ('initramfs' in SUPPORTED_FIX_CATEGORIES
+                and self._grub_covered_by_initramfs(diagnosis))
+
     def get_fixable_categories(self, diagnosis: Dict[str, Any]) -> List[str]:
         """Return list of categories from diagnosis that have fix scripts.
 
@@ -313,7 +390,9 @@ class RepairOrchestrator:
         initramfs, grub) so fix scripts always compose in dependency order;
         unknown categories keep their diagnosis order after the known ones.
         filesystem is excluded when its findings only name non-boot devices
-        (see _filesystem_errors_on_boot_disk).
+        (see _filesystem_errors_on_boot_disk); initramfs is excluded when a
+        rebuild cannot fix any of its findings (see
+        _initramfs_rebuild_applicable).
         """
         categories = []
         seen = set()
@@ -329,11 +408,44 @@ class RepairOrchestrator:
                 "filesystem findings reference only non-boot devices; "
                 "excluded from rescue-based repair"
             )
+        # GRUB 'file .../initramfs-<ver>.img not found' alone is a rebuild
+        # case: on BLS systems (RHEL 9 family) GRUB refuses the entry and no
+        # kernel runs, so there is no initramfs finding at all. The
+        # initramfs repair rebuilds the image and regenerates the GRUB
+        # config, so GRUB is not reinstalled.
+        grub_initrd_only = ('grub' in categories
+                            and self._grub_initrd_only(diagnosis))
+        if ('initramfs' in categories and not grub_initrd_only
+                and not self._initramfs_rebuild_applicable(diagnosis)):
+            categories.remove('initramfs')
+            self._log_debug(
+                "initramfs findings cannot be fixed by an initramfs "
+                "rebuild; excluded from automated repair"
+            )
+        if grub_initrd_only:
+            categories.remove('grub')
+            if 'initramfs' not in categories:
+                categories.append('initramfs')
+            self._log_debug(
+                "grub findings only report a missing initramfs image; "
+                "the initramfs repair rebuilds it and regenerates the "
+                "GRUB config, so GRUB is not reinstalled"
+            )
         if ('disk_full' in categories
                 and getattr(self.config, 'resize_disk_gb', None) == 0):
             categories.remove('disk_full')
             self._log_debug(
                 "disk_full excluded from repair because resize_disk_gb=0"
+            )
+        if ('fstab' in categories and 'initramfs' in categories
+                and not self._extract_fstab_targets(diagnosis)):
+            # fstab_fix.sh only comments out entries named in the findings;
+            # with none it does nothing, so it must not block the initramfs
+            # repair (seen live: a shutdown-time 'mount: ...' line on SLES).
+            categories.remove('fstab')
+            self._log_debug(
+                "fstab findings name no fstab entry; excluded so the other "
+                "repairs can run"
             )
         # Stable sort: known categories in execution order, unknowns after
         # them in their original (diagnosis) order.
@@ -349,6 +461,8 @@ class RepairOrchestrator:
         Includes filesystem when its findings only name non-boot devices:
         the category has a fix script, but rescuing the boot disk cannot
         repair a secondary disk, so the user gets manual guidance instead.
+        Likewise includes initramfs when a rebuild cannot fix any of its
+        findings.
         """
         categories = []
         seen = set()
@@ -362,6 +476,12 @@ class RepairOrchestrator:
                         for e in diagnosis.get('boot_errors', []))
                 and not self._filesystem_errors_on_boot_disk(diagnosis)):
             categories.append('filesystem')
+        if ('initramfs' not in categories
+                and any(e.get('category') == 'initramfs'
+                        for e in diagnosis.get('boot_errors', []))
+                and not self._grub_initrd_only(diagnosis)
+                and not self._initramfs_rebuild_applicable(diagnosis)):
+            categories.append('initramfs')
         return categories
 
     def execute(self, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
@@ -628,7 +748,7 @@ class RepairOrchestrator:
             self._finish_progress(True)
 
             # Post-restore boot verification
-            boot_check = self._verify_boot_after_repair()
+            boot_check = self._verify_boot_after_repair(categories)
             repair_results['snapshot_name'] = snapshot_name
             repair_results['duration_seconds'] = time.time() - start_time
             repair_results['boot_verified'] = boot_check.get('verified')
@@ -1027,7 +1147,70 @@ class RepairOrchestrator:
         # Extract repair targets from diagnosis for targeted fixing
         targets = self._extract_fstab_targets(diagnosis)
 
-        return compose_startup_script(base_script, fix_scripts, targets)
+        # initramfs repair targets the kernel that failed to boot; None
+        # keeps GCE_FAILING_KERNEL out of scripts that do not need it.
+        failing_kernel = None
+        root_device = None
+        if 'initramfs' in fixable:
+            failing_kernel = self._extract_failing_kernel(diagnosis)
+            root_device = self._extract_root_device(diagnosis)
+
+        return compose_startup_script(base_script, fix_scripts, targets,
+                                      failing_kernel=failing_kernel,
+                                      root_device=root_device)
+
+    def _extract_failing_kernel(self, diagnosis: Dict[str, Any]) -> str:
+        """Return the version of the kernel that failed to boot, or ''.
+
+        Taken from the kernel_version recorded on initramfs findings and on
+        GRUB 'initramfs image not found' findings (see
+        initramfs_kernel_versions). If the findings disagree (they came from
+        different boots in the serial buffer) or none carries a version,
+        returns '' and the fix script targets the newest installed kernel
+        instead. Values that fail is_safe_kernel_version() are ignored (the
+        value is injected into a shell script).
+        """
+        versions = initramfs_kernel_versions(diagnosis.get('boot_errors', []))
+        if len(versions) == 1:
+            self._log_debug(f"Failing kernel from diagnosis: {versions[0]}")
+            return versions[0]
+        if versions:
+            self._log_debug(
+                f"initramfs findings name different kernels {versions}; "
+                f"the fix script will target the newest installed kernel"
+            )
+        else:
+            self._log_debug(
+                "No failing kernel version in diagnosis; the fix script "
+                "will target the newest installed kernel"
+            )
+        return ''
+
+    def _extract_root_device(self, diagnosis: Dict[str, Any]) -> str:
+        """Return the root= device of the boot that failed, or ''.
+
+        Taken from the root_device recorded on initramfs findings, with the
+        same rules as _extract_failing_kernel: one unique value is used,
+        disagreeing or missing values give '' (the fix script then skips
+        its root-device check). Values failing is_safe_root_device() are
+        ignored (the value is injected into a shell script).
+        """
+        devices = []
+        for err in diagnosis.get('boot_errors', []):
+            if err.get('category') != 'initramfs':
+                continue
+            device = err.get('root_device') or ''
+            if is_safe_root_device(device) and device not in devices:
+                devices.append(device)
+        if len(devices) == 1:
+            self._log_debug(f"Root device from diagnosis: {devices[0]}")
+            return devices[0]
+        if devices:
+            self._log_debug(
+                f"initramfs findings name different root devices {devices}; "
+                f"the fix script will not check the root device"
+            )
+        return ''
 
     def _get_fix_script(self, category: str) -> str:
         """Load fix script template for a category.
@@ -1209,29 +1392,36 @@ class RepairOrchestrator:
             return serial_output[idx:]
         return serial_output
 
-    def _verify_boot_after_repair(self) -> Dict[str, Any]:
+    def _verify_boot_after_repair(
+            self, categories: Optional[List[str]] = None) -> Dict[str, Any]:
         """Check if the VM boots successfully after repair.
 
         Waits for the VM to generate new serial console output after restore,
-        then analyzes it for boot errors.
+        then analyzes it for boot errors. The wait ends early once the latest
+        boot reaches userspace (see latest_boot_completed). After an
+        initramfs repair the budget is longer: an initramfs that still lacks
+        the disk driver only fails after dracut's device-wait timeout
+        (about three minutes), which a fixed 45 s wait would call healthy.
+
+        Args:
+            categories: Fix categories that were applied (None for custom
+                fix scripts).
 
         Returns:
             Dict with: verified (bool/None), errors (list of error descriptions)
         """
-        from ..core.diagnosis import analyze_serial_output
+        from ..core.diagnosis import analyze_serial_output, latest_boot_completed
 
         BOOT_WAIT_SECONDS = 45
+        POLL_SECONDS = 15
+        deadline = BOOT_WAIT_SECONDS
+        if categories and 'initramfs' in categories:
+            deadline = INITRAMFS_BOOT_WAIT_SECONDS
         self._log_debug(
-            f"Waiting {BOOT_WAIT_SECONDS}s for VM to boot before verification"
+            f"Waiting up to {deadline}s for VM to boot before verification"
         )
-        for remaining in range(BOOT_WAIT_SECONDS, 0, -1):
-            sys.stdout.write(
-                f"\rVerifying boot (waiting {remaining}s for serial output)..."
-            )
-            sys.stdout.flush()
-            time.sleep(1)
 
-        try:
+        def _fetch_serial():
             compute = self._create_tracked_client(self._ua('boot-verify'))
             serial_response = compute.instances().getSerialPortOutput(
                 project=self.project, zone=self.zone,
@@ -1255,6 +1445,34 @@ class RepairOrchestrator:
                     self._log_debug(
                         f"Could not fetch serial port 2 for boot verify: {e}"
                     )
+            return serial_output
+
+        try:
+            serial_output = ''
+            waited = 0
+            while True:
+                step = min(POLL_SECONDS, deadline - waited)
+                for i in range(step):
+                    sys.stdout.write(
+                        f"\rVerifying boot (waiting {deadline - waited - i}s "
+                        f"for serial output)..."
+                    )
+                    sys.stdout.flush()
+                    time.sleep(1)
+                waited += step
+                # The first look happens at the classic 45 s mark so short
+                # waits behave as before; later looks only end the wait early
+                # when the boot has visibly completed.
+                if waited >= deadline:
+                    serial_output = _fetch_serial()
+                    break
+                if waited >= BOOT_WAIT_SECONDS:
+                    serial_output = _fetch_serial()
+                    if latest_boot_completed(serial_output):
+                        self._log_debug(
+                            f"Boot completed after {waited}s; verifying now"
+                        )
+                        break
 
             if not serial_output or len(serial_output.strip()) < 50:
                 sys.stdout.write("\r" + " " * 60 + "\r")
