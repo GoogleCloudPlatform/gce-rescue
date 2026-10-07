@@ -270,9 +270,10 @@ Write-Log "Password: $rescuePassword"
 Write-Log "=========================================="
 Write-Log ""
 Write-Log "Common repair tasks:"
-Write-Log "  - Edit files: notepad D:\Windows\System32\config\SOFTWARE"
-Write-Log "  - Registry: Load hive from D:\Windows\System32\config\ in regedit"
-Write-Log "  - Boot repair: bcdboot D:\Windows /s C:"
+Write-Log "  * Replace D: if your OS partition was mounted at another letter)"
+Write-Log "  - Edit files: notepad.exe D:\Windows\System32\drivers\etc\hosts"
+Write-Log "  - Registry: Load hive from D:\Windows\System32\config\ in Regedit"
+Write-Log "  - Boot repair: bcdboot.exe D:\Windows /s S:"
 Write-Log ""
 
 # Create desktop shortcut with instructions (optional - may fail if running as SYSTEM)

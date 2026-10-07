@@ -470,9 +470,11 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         help=(
             'Path to a custom fix script to run against the affected (broken)'
             ' disk after it is mounted in rescue mode. The disk is mounted at'
-            ' /mnt/sysroot (Linux, bash script) or D:\\ (Windows, PowerShell'
-            ' script). The script runs after the mount completes; the VM'
-            ' stays in rescue mode for inspection.'
+            ' /mnt/sysroot on Linux (bash script); on Windows (PowerShell '
+            ' script) partitions greater than 1 GB receive the first available'
+            ' drive letter starting from D: onward (locate the target volume'
+            ' via Get-Volume rather than assuming D:). The script runs after'
+            ' the mount completes; the VM stays in rescue mode for inspection.'
         )
     )
 
@@ -520,9 +522,12 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         help=(
             'Path to a custom fix script to run against the affected (broken)'
             ' disk after it is mounted in rescue mode. The disk is mounted at'
-            ' /mnt/sysroot (Linux, bash script) or D:\\ (Windows, PowerShell'
-            ' script). Skips diagnosis and applies your script instead of an'
-            ' auto-generated fix, then restores the VM and verifies boot.'
+            ' /mnt/sysroot (Linux, bash script); on Windows (PowerShell'
+            ' script) partitions greater than 1 GB receive the first available'
+            ' drive letter starting from D: onward (locate the target volume'
+            ' via Get-Volume rather than assuming D:). Skips diagnosis and'
+            ' applies your script instead of an auto-generated fix, then'
+            ' restores the VM and verifies boot.'
         )
     )
 

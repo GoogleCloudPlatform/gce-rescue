@@ -35,7 +35,7 @@ os: windows
 # recovery path via the rescue flow.
 auto_repair: false
 detect_only: true
-fix_guidance: "A kernel STOP (bugcheck/BSOD) is a runtime crash, not an on-disk config error. First reset the VM once (gcloud compute instances reset VM_NAME --zone=ZONE) — a transient bugcheck often clears. If it recurs, rescue the disk (gce-rescue rescue VM_NAME --zone=ZONE), attach the original disk to the rescue VM, then inspect from Windows: roll back the last driver/update (DISM /Image:D:\\ /Cleanup-Image /RevertPendingActions), review C:\\Windows\\Minidump and the SYSTEM registry hive for a bad boot-start driver, or restore the disk from a snapshot taken before the change"
+fix_guidance: "A kernel STOP (bugcheck/BSOD) is a runtime crash, not an on-disk config error. First reset the VM once (gcloud compute instances reset VM_NAME --zone=ZONE) - a transient bugcheck often clears. If it recurs, rescue the disk (gce-rescue rescue VM_NAME --zone=ZONE), attach the original disk to the rescue VM, then inspect from Windows (where D: is the attached original OS partition; use Get-Volume if multiple partitions were mounted): roll back the last driver/update (dism.exe /Image:D:\\ /Cleanup-Image /RevertPendingActions), review C:\\Windows\\Minidump and the SYSTEM registry hive for a bad boot-start driver, or restore the disk from a snapshot taken before the change."
 
 patterns:
   - name: windows_bugcheck_inaccessible_boot_device
