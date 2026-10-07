@@ -53,6 +53,17 @@ class DetectedError:
     suggested_fixes: List[str]
     context_lines: List[str] = field(default_factory=list)  # Lines around the error
     matched_line_index: int = -1  # Index of the matched line within context_lines
+    # Version of the kernel whose boot produced this finding (e.g.
+    # '5.14.0-427.13.1.el9_4.x86_64'). Only populated for categories in
+    # KERNEL_VERSION_CATEGORIES and for GRUB 'initramfs image not found'
+    # findings (taken from the image file name); '' when unknown. Always passes
+    # is_safe_kernel_version() - it is injected into the repair script.
+    kernel_version: str = ''
+    # root= value of the kernel command line of the boot that produced this
+    # finding (e.g. 'UUID=1234-...', '/dev/sda1'). Only populated for
+    # categories in KERNEL_VERSION_CATEGORIES; '' when unknown. Always
+    # passes is_safe_root_device() - it is injected into the repair script.
+    root_device: str = ''
 
     def format_fixes(self, vm_name: str, zone: str) -> List[str]:
         """Format suggested fixes with actual VM name and zone."""
@@ -210,6 +221,221 @@ SURVIVES_BOOT_SUCCESS_CATEGORIES = frozenset(
 DETECT_ONLY_CATEGORIES = frozenset(
     p.category for p in BOOT_ERROR_PATTERNS if p.detect_only)
 
+# Categories whose findings record the version of the kernel that failed to
+# boot. initramfs repair rebuilds the initramfs of exactly that kernel.
+KERNEL_VERSION_CATEGORIES = frozenset({'initramfs'})
+
+# Lines a Linux (or Windows) boot prints only once userspace is up. Used to
+# tell a finished boot from one that is still in progress or hung.
+BOOT_SUCCESS_MARKERS = [
+    r'Startup finished in',
+    r'Reached target .*multi-user\.target',
+    r'Started .*OpenBSD Secure Shell server',
+    r'Started .*Google Compute Engine Startup Scripts',
+    # Windows: GCEInstanceSetup emits this line only after a Windows boot
+    # completes and the instance is ready. Without a Windows-side marker,
+    # the ordering-based suppression in analyze_serial_output could never
+    # clear stale or transient Windows findings (e.g. a bugcheck or
+    # update-loop screen from an earlier boot) that linger in the
+    # accumulating serial buffer after the VM has since booted cleanly.
+    r'Instance setup finished',
+]
+
+
+def latest_boot_completed(serial_output: str) -> bool:
+    """Whether the most recent boot in serial_output reached userspace.
+
+    Only markers printed after the last 'Linux version' banner count, so a
+    successful boot earlier in the buffer cannot vouch for a boot that is
+    still hanging (for example in the dracut device-wait loop). Without a
+    banner the whole buffer is searched.
+    """
+    if not serial_output:
+        return False
+    start = 0
+    for match in _LINUX_VERSION_RE.finditer(serial_output):
+        start = match.start()
+    tail = serial_output[start:]
+    return any(re.search(marker, tail, re.IGNORECASE)
+               for marker in BOOT_SUCCESS_MARKERS)
+
+# A kernel release string as printed by the kernel and used in /boot file
+# names, e.g. 6.1.0-18-cloud-amd64, 5.14.0-427.13.1.el9_4.x86_64,
+# 5.14.21-150500.55.39-default, 6.8.0-1015-gcp. The value is injected into
+# a shell script, so only this conservative ASCII set is accepted: no '/',
+# whitespace, quotes, '$', '`' or '\'.
+_SAFE_KERNEL_VERSION_RE = re.compile(r"[0-9][A-Za-z0-9_.+~-]{0,127}")
+_KVER = r'([0-9][A-Za-z0-9_.+~-]{0,127})'
+
+# Start of a boot: '[    0.000000] Linux version 6.1.0-18-cloud-amd64 (...'
+_LINUX_VERSION_RE = re.compile(r'\bLinux version ' + _KVER + r'(?=\s)')
+# Kernel command line: 'BOOT_IMAGE=(hd0,gpt2)/vmlinuz-5.14.0-427.el9.x86_64'
+_BOOT_IMAGE_RE = re.compile(r'\bBOOT_IMAGE=\S*?vmlinuz-' + _KVER + r'(?=\s|$)')
+# Panic trace header printed after the panic line:
+# 'CPU: 0 PID: 1 Comm: swapper/0 Not tainted 6.1.0-18-cloud-amd64 #1 ...'
+# 'CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Tainted: G   W   6.12.0 #1 ...'
+_PANIC_COMM_RE = re.compile(
+    r'\bComm: \S+ (?:Not tainted|Tainted:[A-Z ]*?)\s+' + _KVER + r'\s+#'
+)
+
+
+def is_safe_kernel_version(value: str) -> bool:
+    """Whether value is a well-formed kernel release string (shell-safe)."""
+    return (isinstance(value, str)
+            and _SAFE_KERNEL_VERSION_RE.fullmatch(value) is not None)
+
+
+# GRUB finding naming a missing initramfs image. The image file name carries
+# the kernel version: initramfs-<ver>.img (RHEL family), initrd.img-<ver>
+# (Debian family), initrd-<ver> (SUSE).
+GRUB_INITRD_NOT_FOUND_PATTERN = 'grub_kernel_not_found'
+_GRUB_INITRD_FILE_RE = re.compile(
+    r'/(?:initramfs-' + _KVER + r'\.img|initrd\.img-' + _KVER
+    + r'|initrd-' + _KVER + r')[\'"]?\s+not found'
+)
+
+
+def extract_grub_initrd_kernel_version(detected_pattern: str) -> str:
+    """Return the kernel version named by a GRUB 'initrd not found' line.
+
+    GRUB wraps long lines on the serial console, so line breaks inside the
+    matched text are removed first. The version comes from the file name,
+    not from a 'Linux version' banner: GRUB failed before any kernel ran,
+    so the last banner belongs to an earlier boot, possibly of another
+    kernel.
+
+    Returns:
+        The kernel version, or '' when the line names no initramfs image
+        (e.g. a missing vmlinuz) or the version fails is_safe_kernel_version().
+    """
+    if not detected_pattern:
+        return ''
+    text = re.sub(r'[\r\n]+', '', detected_pattern)
+    match = _GRUB_INITRD_FILE_RE.search(text)
+    if not match:
+        return ''
+    candidate = next((g for g in match.groups() if g), '')
+    return candidate if is_safe_kernel_version(candidate) else ''
+
+
+def initramfs_kernel_versions(boot_errors) -> list:
+    """Distinct kernel versions named by findings the initramfs repair acts on.
+
+    Those are initramfs findings and GRUB 'initramfs image not found'
+    findings. Values failing is_safe_kernel_version() are skipped. Works on
+    the diagnosis dicts (boot_errors list of dicts) used by the CLI and the
+    orchestrator. Order of first appearance is kept.
+    """
+    versions = []
+    for err in boot_errors or []:
+        if (err.get('category') != 'initramfs'
+                and err.get('name') != GRUB_INITRD_NOT_FOUND_PATTERN):
+            continue
+        version = err.get('kernel_version') or ''
+        if is_safe_kernel_version(version) and version not in versions:
+            versions.append(version)
+    return versions
+
+
+def extract_kernel_version(serial_output: str, match_pos: int) -> str:
+    """Return the version of the kernel whose boot printed the match.
+
+    Serial buffers accumulate several boots, so the version must come from
+    the boot that produced the finding at match_pos, in this order:
+      1. The last 'Linux version X' banner before match_pos (the banner
+         opens every boot, so this is the boot that failed) - unless the
+         same boot's 'BOOT_IMAGE=.../vmlinuz-Y' names another version. Y
+         then wins: it names the boot entry (vmlinuz-Y + its initramfs)
+         that GRUB loaded, and X shows that /boot/vmlinuz-Y holds another
+         kernel's binary (the repair script detects that and falls back).
+      2. The last 'BOOT_IMAGE=.../vmlinuz-X' before match_pos (the banner
+         may have rotated out of the buffer).
+      3. The first panic 'Comm: ... Not tainted X #' line after match_pos,
+         if it is printed before the next boot's banner.
+
+    Args:
+        serial_output: Serial output (ANSI codes already stripped).
+        match_pos: Character offset of the finding in serial_output.
+
+    Returns:
+        The kernel version, or '' when none is found or the candidate fails
+        is_safe_kernel_version().
+    """
+    if not serial_output or match_pos is None or match_pos < 0:
+        return ''
+    before = serial_output[:match_pos]
+
+    candidate = ''
+    banners = list(_LINUX_VERSION_RE.finditer(before))
+    if banners:
+        candidate = banners[-1].group(1)
+        # BOOT_IMAGE of the same boot: after the banner, before the match.
+        # A rescue entry (vmlinuz-0-rescue-<machine-id>) is a copy of some
+        # kernel and names no release, so the banner is kept for it.
+        same_boot = list(_BOOT_IMAGE_RE.finditer(before, banners[-1].end()))
+        if (same_boot and is_safe_kernel_version(same_boot[-1].group(1))
+                and not same_boot[-1].group(1).startswith('0-rescue-')):
+            candidate = same_boot[-1].group(1)
+    else:
+        images = list(_BOOT_IMAGE_RE.finditer(before))
+        if images:
+            candidate = images[-1].group(1)
+        else:
+            after = serial_output[match_pos:]
+            next_boot = _LINUX_VERSION_RE.search(after)
+            if next_boot:
+                after = after[:next_boot.start()]
+            comm = _PANIC_COMM_RE.search(after)
+            if comm:
+                candidate = comm.group(1)
+
+    return candidate if is_safe_kernel_version(candidate) else ''
+
+
+# root= value as it appears on a kernel command line: UUID=..., LABEL=...,
+# PARTUUID=..., /dev/sda1, /dev/mapper/vg-root, /dev/disk/by-uuid/... The
+# value is injected into a shell script, so only this ASCII set is
+# accepted: no whitespace, quotes, '$', '`', '\' or ';'.
+_SAFE_ROOT_DEVICE_RE = re.compile(r"[A-Za-z0-9_.:/=+-]{1,200}")
+# '[    0.000000] Kernel command line: BOOT_IMAGE=/vmlinuz-... root=UUID=... ro'
+_CMDLINE_RE = re.compile(r'\bKernel command line: ([^\n]*)')
+# The kernel and both initramfs flavours honour the LAST root= argument.
+_ROOT_ARG_RE = re.compile(r'(?:^|\s)root=(\S+)')
+
+
+def is_safe_root_device(value: str) -> bool:
+    """Whether value is a plain root= device string (shell-safe)."""
+    return (isinstance(value, str)
+            and _SAFE_ROOT_DEVICE_RE.fullmatch(value) is not None)
+
+
+def extract_root_device(serial_output: str, match_pos: int) -> str:
+    """Return the root= argument of the boot that printed the match.
+
+    Uses the last 'Kernel command line:' line before match_pos, but only
+    when no 'Linux version' banner sits between that line and the match
+    (otherwise the command line belongs to an earlier boot). When root=
+    appears several times the last one wins, as in the kernel.
+
+    Returns:
+        The root= value, or '' when none is found or the candidate fails
+        is_safe_root_device().
+    """
+    if not serial_output or match_pos is None or match_pos < 0:
+        return ''
+    before = serial_output[:match_pos]
+    cmdlines = list(_CMDLINE_RE.finditer(before))
+    if not cmdlines:
+        return ''
+    cmdline = cmdlines[-1]
+    if _LINUX_VERSION_RE.search(before, cmdline.end()):
+        return ''
+    roots = _ROOT_ARG_RE.findall(cmdline.group(1))
+    if not roots:
+        return ''
+    candidate = roots[-1].strip('"\'')
+    return candidate if is_safe_root_device(candidate) else ''
+
 
 def _extract_context_lines(
     serial_output: str, match_text: str, context_lines: int = 3,
@@ -360,6 +586,22 @@ def analyze_serial_output(
                         # Use inline fixes from the pattern definition
                         fixes = list(pattern_def.fixes)
 
+                        kernel_version = ''
+                        root_device = ''
+                        if pattern_def.category in KERNEL_VERSION_CATEGORIES:
+                            kernel_version = extract_kernel_version(
+                                serial_output, match.start()
+                            )
+                            root_device = extract_root_device(
+                                serial_output, match.start()
+                            )
+                        elif pattern_def.name == GRUB_INITRD_NOT_FOUND_PATTERN:
+                            # '' for a missing vmlinuz. No root_device: no
+                            # kernel ran, so no command line belongs to it.
+                            kernel_version = extract_grub_initrd_kernel_version(
+                                match.group(0)
+                            )
+
                         detected_errors.append(DetectedError(
                             name=pattern_def.name,
                             category=pattern_def.category,
@@ -368,7 +610,9 @@ def analyze_serial_output(
                             detected_pattern=match.group(0),
                             suggested_fixes=fixes,
                             context_lines=context,
-                            matched_line_index=match_idx
+                            matched_line_index=match_idx,
+                            kernel_version=kernel_version,
+                            root_device=root_device
                         ))
                     break  # Move to next pattern_def after first match
             except re.error as e:
@@ -447,19 +691,7 @@ def analyze_serial_output(
     # Key: we check ordering — the boot success marker must appear AFTER
     # the last detected error. If errors appear after the last "Startup
     # finished", the VM failed on the most recent boot.
-    _BOOT_SUCCESS_MARKERS = [
-        r'Startup finished in',
-        r'Reached target .*multi-user\.target',
-        r'Started .*OpenBSD Secure Shell server',
-        r'Started .*Google Compute Engine Startup Scripts',
-        # Windows: GCEInstanceSetup emits this line only after a Windows boot
-        # completes and the instance is ready. Without a Windows-side marker,
-        # the ordering-based suppression below could never clear stale or
-        # transient Windows findings (e.g. a bugcheck or update-loop screen
-        # from an earlier boot) that linger in the accumulating serial buffer
-        # after the VM has since booted cleanly.
-        r'Instance setup finished',
-    ]
+    _BOOT_SUCCESS_MARKERS = BOOT_SUCCESS_MARKERS
     # Categories flagged 'survives_boot_success' in their YAML (e.g. ssh,
     # filesystem) describe failures that do not block boot — sshd dies but
     # boot completes, or a corrupt nofail secondary disk lets the VM boot

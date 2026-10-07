@@ -264,8 +264,10 @@ class TestFixExecutionOrdering:
         diagnosis = {
             'boot_errors': [
                 {'category': 'grub', 'severity': 'critical'},
-                {'category': 'initramfs', 'severity': 'critical'},
-                {'category': 'fstab', 'severity': 'critical'},
+                {'category': 'initramfs', 'severity': 'critical',
+                 'name': 'initramfs_no_root_fs'},
+                {'category': 'fstab', 'severity': 'critical',
+                 'detected_pattern': 'UUID=1234-abcd does not exist'},
                 {'category': 'filesystem', 'severity': 'critical'},
             ]
         }
@@ -870,7 +872,7 @@ class TestCategoryOutcomes:
             compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
         )
         orch._create_tracked_client = lambda label: compute
-        orch._verify_boot_after_repair = lambda: {
+        orch._verify_boot_after_repair = lambda categories=None: {
             'verified': True, 'errors': []
         }
 
@@ -1527,7 +1529,7 @@ class TestSupportedCategories:
 
     def test_supported_set_is_exactly_the_shipped_scripts(self):
         """The full auto-repairable set — update when a new fix script lands."""
-        assert SUPPORTED_FIX_CATEGORIES == {'fstab', 'grub', 'disk_full'}
+        assert SUPPORTED_FIX_CATEGORIES == {'fstab', 'grub', 'disk_full', 'initramfs'}
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""
@@ -1683,7 +1685,7 @@ class TestRepairResumeMethod:
         orch._progress_started = False
         orch._find_rescue_snapshot = lambda: snapshot_name
         orch._create_tracked_client = lambda label: compute
-        orch._verify_boot_after_repair = lambda: {'verified': None, 'errors': []}
+        orch._verify_boot_after_repair = lambda categories=None: {'verified': None, 'errors': []}
         # Completion confirmed: these tests exercise the restore path, not
         # the fix_in_progress guard (covered by TestResumeSafetyGuard).
         orch._rescue_fixes_completed = lambda: True
@@ -1887,7 +1889,7 @@ class TestResumeSafetyGuard:
         orch._create_tracked_client = lambda label: compute
         orch._find_rescue_snapshot = lambda: 'pre-rescue-boot-123'
         orch._rescue_fixes_completed = lambda: confirmed
-        orch._verify_boot_after_repair = lambda: {
+        orch._verify_boot_after_repair = lambda categories=None: {
             'verified': None, 'errors': []
         }
 
