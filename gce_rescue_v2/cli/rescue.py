@@ -227,7 +227,11 @@ def handle_rescue(args: argparse.Namespace) -> int:
         logger.info(f"Rescue mode enabled for instance [{vm_name}].")
         logger.info("")
 
-        mount_path = "D:\\" if orchestrator.os_type == OS_TYPE_WINDOWS else "/mnt/sysroot"
+        mount_path = (
+            "D:\\ (or next available drive letter)"
+            if orchestrator.os_type == OS_TYPE_WINDOWS
+            else "/mnt/sysroot"
+        )
         logger.info(f"Affected disk mounted at: {mount_path}")
         if config.fix_script and orchestrator.verification_succeeded:
             logger.info(f"Custom fix script completed: {args.fix_script}")
@@ -287,7 +291,9 @@ def handle_rescue(args: argparse.Namespace) -> int:
                 f"   Password: {orchestrator.windows_rescue_password}"
             )  # Intentional: user needs temporary rescue password for RDP access
             logger.info("")
-            logger.info("2. Fix the issue (affected boot disk is mounted at D:\\).")
+            logger.info(
+                "2. Fix the issue (affected boot disk partitions are"
+                " mounted starting from D:\\ onward.")
             logger.info("")
             logger.info("3. Restore original configuration:")
             logger.info(f"   $ gce-rescue restore {vm_name}"
