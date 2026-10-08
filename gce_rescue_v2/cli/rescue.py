@@ -291,8 +291,9 @@ def handle_rescue(args: argparse.Namespace) -> int:
                 f"   Password: {orchestrator.windows_rescue_password}"
             )  # Intentional: user needs temporary rescue password for RDP access
             logger.info("")
-            logger.info("2. Fix the issue (affected boot disk partitions are")
-            logger.info(" mounted starting from D:\\ onward.")
+            logger.info(
+                "2. Fix the issue (affected boot disk partitions are"
+                " mounted starting from D:\\ onward.")
             logger.info("")
             logger.info("3. Restore original configuration:")
             logger.info(f"   $ gce-rescue restore {vm_name}"
