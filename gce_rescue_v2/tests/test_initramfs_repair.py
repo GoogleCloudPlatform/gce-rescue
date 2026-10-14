@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -994,7 +995,8 @@ class TestScriptStatic:
     def test_script_exists(self):
         assert SCRIPT.is_file()
 
-    @pytest.mark.skipif(shutil.which('bash') is None, reason='bash required')
+    @pytest.mark.skipif(sys.platform != 'linux' or shutil.which('bash') is None,
+                        reason='needs Linux bash')
     def test_bash_syntax(self):
         subprocess.run(['bash', '-n', str(SCRIPT)], check=True)
 
@@ -1304,7 +1306,8 @@ class Result:
 
 
 pytestmark_shell = pytest.mark.skipif(
-    shutil.which('bash') is None, reason='bash required')
+    sys.platform != 'linux' or shutil.which('bash') is None,
+    reason='runs the fix script against a fake root; needs Linux bash')
 
 
 @pytestmark_shell
