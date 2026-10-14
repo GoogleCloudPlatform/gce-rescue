@@ -305,7 +305,9 @@ class DiagnoseOperation(BaseOperation):
                     'detected_pattern': err.detected_pattern,
                     'suggested_fixes': err.suggested_fixes,
                     'context_lines': err.context_lines,
-                    'matched_line_index': err.matched_line_index
+                    'matched_line_index': err.matched_line_index,
+                    'kernel_version': err.kernel_version,
+                    'root_device': err.root_device
                 }
                 for err in diagnosis.boot_errors
             ],

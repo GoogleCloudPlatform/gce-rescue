@@ -223,9 +223,9 @@ class TestShippedFixInfo:
         """kernel is detect-only (auto_repair: false) — no fix script exists."""
         assert 'kernel' not in SUPPORTED_FIX_CATEGORIES
 
-    def test_initramfs_is_not_auto_repairable(self):
-        """initramfs ships with auto_repair: false until initramfs_fix.sh lands."""
-        assert 'initramfs' not in SUPPORTED_FIX_CATEGORIES
+    def test_initramfs_is_auto_repairable(self):
+        """initramfs ships with auto_repair: true (initramfs_fix.sh exists)."""
+        assert 'initramfs' in SUPPORTED_FIX_CATEGORIES
 
     def test_kernel_patterns_have_fixes(self):
         """Every kernel pattern should have at least one fix suggestion."""

@@ -121,6 +121,20 @@ _FIX_DATA = _load_fix_files()
 (CATEGORY_FIX_GUIDANCE, SUPPORTED_FIX_CATEGORIES, DETECT_ONLY_CATEGORIES,
  _PATTERN_FIXES) = _build_exports(_FIX_DATA)
 
+# initramfs findings that an initramfs rebuild can fix: a missing, corrupt
+# or driver-less image. The other initramfs patterns describe symptoms a
+# rebuild cannot change (root= names a device that no longer exists, the
+# root filesystem itself fails to mount, or only the emergency shell was
+# seen without the warning that names the cause), so a diagnosis made ONLY
+# of those gets manual guidance instead of an automated repair.
+INITRAMFS_REBUILD_PATTERNS = frozenset({
+    'initramfs_no_root_fs',
+    'initramfs_load_failure',
+    'initramfs_dracut_timeout',
+    'initramfs_dracut_fatal',
+    'initramfs_busybox_shell',
+})
+
 
 def get_fixes_for_pattern(category: str, pattern_name: str) -> List[str]:
     """Look up suggested fixes for a specific pattern.
