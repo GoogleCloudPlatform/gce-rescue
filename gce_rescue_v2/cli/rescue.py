@@ -293,7 +293,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
             logger.info("")
             logger.info(
                 "2. Fix the issue (affected boot disk partitions are"
-                " mounted starting from D:\\ onward.")
+                " mounted starting from D:\\ onward).")
             logger.info("")
             logger.info("3. Restore original configuration:")
             logger.info(f"   $ gce-rescue restore {vm_name}"

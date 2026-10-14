@@ -470,7 +470,7 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         help=(
             'Path to a custom fix script to run against the affected (broken)'
             ' disk after it is mounted in rescue mode. The disk is mounted at'
-            ' /mnt/sysroot on Linux (bash script); on Windows (PowerShell '
+            ' /mnt/sysroot on Linux (bash script); on Windows (PowerShell'
             ' script) partitions greater than 1 GB receive the first available'
             ' drive letter starting from D: onward (locate the target volume'
             ' via Get-Volume rather than assuming D:). The script runs after'
