@@ -310,15 +310,17 @@ EXAMPLES
     Repair in automation (no prompts):
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
-    SUPPORTED FIXES
-    - filesystem: Repairs corrupted filesystems (fsck) before mounting
-    - disk_full: Resizes full boot disk, expands root filesystem, and reports largest directories
+SUPPORTED FIXES
     - fstab: Comments out invalid UUID, device, or label entries
-    - initramfs: Rebuilds the initramfs for the newest installed kernel
     - grub: Reinstalls GRUB and regenerates its configuration
+    - initramfs: Rebuilds the initramfs of the kernel that failed to boot
+      (boots the previous kernel if the rebuild fails)
+    - disk_full: Resizes the boot disk, expands the root filesystem, and
+      reports the largest directories (no files are deleted)
 
 NOTES
-    This command is Linux-only. For Windows VMs, use 'rescue' for manual fix.
+    Diagnosis-driven repair is Linux-only. On Windows VMs, supply your own
+    PowerShell fix with --fix-script, or use 'rescue' to fix manually.
     The VM will be stopped during repair and restarted when complete.
         """
     )
