@@ -35,6 +35,7 @@ from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
 from ..core.diagnosis import initramfs_kernel_versions, is_safe_root_device
 from ..core.fix_catalog import (
     INITRAMFS_REBUILD_PATTERNS, SUPPORTED_FIX_CATEGORIES,
+    grub_findings_only_missing_initrd,
 )
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
@@ -345,32 +346,14 @@ class RepairOrchestrator:
             return False
         return any(n in INITRAMFS_REBUILD_PATTERNS for n in names)
 
-    # GRUB 'file not found' for an initramfs image (initrd.img-*, initrd-*,
-    # initramfs-*.img), with or without the /boot prefix. GRUB wraps long
-    # lines on the serial console, so a line break may follow 'file' and
-    # split the file name once (see grub.yaml).
-    _GRUB_INITRD_NOT_FOUND_RE = re.compile(
-        r"file\s*.?(?:/boot)?/init(?:rd|ramfs)[^/\s]*(?:\n[^/\s]+)? not found")
-
     def _grub_covered_by_initramfs(self, diagnosis: Dict[str, Any]) -> bool:
         """Whether every grub finding is just a missing initramfs image.
 
-        GRUB prints "error: file `/boot/initrd.img-X' not found" before the
-        kernel panics without its initramfs. That is a symptom of the
-        initramfs problem, not GRUB damage: the initramfs repair rebuilds
-        the image and regenerates the GRUB config, so reinstalling GRUB
-        (grub_fix.sh) is unnecessary.
+        See fix_catalog.grub_findings_only_missing_initrd; diagnose's report
+        uses the same check so it recommends the repair that will run.
         """
-        grub_errors = [
-            err for err in diagnosis.get('boot_errors', [])
-            if err.get('category') == 'grub'
-        ]
-        return bool(grub_errors) and all(
-            err.get('name') == 'grub_kernel_not_found'
-            and self._GRUB_INITRD_NOT_FOUND_RE.search(
-                err.get('detected_pattern', '') or '')
-            for err in grub_errors
-        )
+        return grub_findings_only_missing_initrd(
+            diagnosis.get('boot_errors', []))
 
     def _grub_initrd_only(self, diagnosis: Dict[str, Any]) -> bool:
         """Whether the grub findings are handed to the initramfs repair.

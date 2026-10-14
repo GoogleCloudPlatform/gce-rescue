@@ -9,12 +9,15 @@ Exports:
     DETECT_ONLY_CATEGORIES: Set of categories with detect_only: true
         (runtime conditions — rescue mode does not apply)
     get_fixes_for_pattern(): Look up suggested fixes by category + pattern name
+    grub_findings_only_missing_initrd(): Whether the GRUB findings are an
+        initramfs problem (repaired by rebuilding the image, not GRUB)
 """
 
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Set
 
 import logging
+import re
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -134,6 +137,29 @@ INITRAMFS_REBUILD_PATTERNS = frozenset({
     'initramfs_dracut_fatal',
     'initramfs_busybox_shell',
 })
+
+# GRUB 'file not found' for an initramfs image (initrd.img-*, initrd-*,
+# initramfs-*.img), with or without the /boot prefix. GRUB wraps long lines
+# on the serial console, so a line break may follow 'file' and split the file
+# name once (see grub.yaml).
+GRUB_INITRD_NOT_FOUND_RE = re.compile(
+    r"file\s*.?(?:/boot)?/init(?:rd|ramfs)[^/\s]*(?:\n[^/\s]+)? not found")
+
+
+def grub_findings_only_missing_initrd(boot_errors: List[Dict[str, Any]]) -> bool:
+    """Whether every grub finding only reports a missing initramfs image.
+
+    GRUB prints "error: file `/boot/initrd.img-X' not found" before the
+    kernel panics without its initramfs. That is a symptom of the initramfs
+    problem, not GRUB damage: the initramfs repair rebuilds the image and
+    regenerates the GRUB config, so GRUB is not reinstalled.
+    """
+    grub_errors = [err for err in boot_errors if err.get('category') == 'grub']
+    return bool(grub_errors) and all(
+        err.get('name') == 'grub_kernel_not_found'
+        and GRUB_INITRD_NOT_FOUND_RE.search(err.get('detected_pattern', '') or '')
+        for err in grub_errors
+    )
 
 
 def get_fixes_for_pattern(category: str, pattern_name: str) -> List[str]:
