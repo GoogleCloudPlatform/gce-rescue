@@ -207,6 +207,7 @@ class DiagnosisReportFormatter:
             SUPPORTED_FIX_CATEGORIES,
             DETECT_ONLY_CATEGORIES,
             INITRAMFS_REBUILD_PATTERNS,
+            grub_findings_only_missing_initrd,
         )
         disk_categories = [
             c for c in categories if c not in DETECT_ONLY_CATEGORIES
@@ -229,17 +230,29 @@ class DiagnosisReportFormatter:
         categories = disk_categories
         errors = disk_errors
 
+        # A GRUB "initramfs not found" finding is repaired by the initramfs
+        # rebuild, not a GRUB reinstall: show the guidance repair will follow.
+        grub_as_initramfs = (
+            'grub' in categories
+            and 'initramfs' in SUPPORTED_FIX_CATEGORIES
+            and grub_findings_only_missing_initrd(errors)
+        )
+        if grub_as_initramfs:
+            categories = [c for c in categories if c != 'grub']
+            if 'initramfs' not in categories:
+                categories.append('initramfs')
+
         # Check if auto-repair is available AND can identify targets
         auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
 
         # Auto-repair for fstab needs extractable identifiers to target specific
-        # entries; disk_full does not require an fstab identifier, and
-        # initramfs only needs a finding that a rebuild can fix.
+        # entries; disk_full and grub are repaired as a whole, and initramfs
+        # only needs a finding that a rebuild can fix.
         if auto_fixable:
-            has_targets = any(
+            has_targets = grub_as_initramfs or any(
                 (err.get('name') in INITRAMFS_REBUILD_PATTERNS)
                 if err['category'] == 'initramfs'
-                else (err['category'] == 'disk_full'
+                else (err['category'] in ('disk_full', 'grub')
                       or _extract_identifier(err.get('detected_pattern', '')))
                 for err in errors
                 if err['category'] in SUPPORTED_FIX_CATEGORIES

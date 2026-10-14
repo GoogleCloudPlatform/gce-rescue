@@ -10,6 +10,7 @@ from gce_rescue_v2.core.fix_catalog import (
     CATEGORY_FIX_GUIDANCE,
     SUPPORTED_FIX_CATEGORIES,
     get_fixes_for_pattern,
+    grub_findings_only_missing_initrd,
 )
 
 
@@ -640,3 +641,40 @@ class TestShippedFixInfo:
             assert script_path.exists(), (
                 f"Missing fix script for supported category '{cat}': {script_path}"
             )
+
+
+class TestGrubFindingsOnlyMissingInitrd:
+
+    @staticmethod
+    def _grub(pattern, name='grub_kernel_not_found'):
+        return {'category': 'grub', 'name': name, 'detected_pattern': pattern}
+
+    def test_missing_initramfs_image(self):
+        errors = [self._grub("error: file `/boot/initramfs-5.14.0.img' not found.")]
+        assert grub_findings_only_missing_initrd(errors)
+
+    def test_wrapped_serial_line(self):
+        errors = [self._grub(
+            "error: ../../grub-core/fs/fshelp.c:257:file\n"
+            "`/boot/initramfs-5.14.0-687.51.1.el9_8.x86_6\n4.img' not found")]
+        assert grub_findings_only_missing_initrd(errors)
+
+    def test_debian_initrd_without_boot_prefix(self):
+        errors = [self._grub("error: file `/initrd.img-6.1.0-18-cloud-amd64' not found.")]
+        assert grub_findings_only_missing_initrd(errors)
+
+    def test_missing_kernel_is_not_initrd(self):
+        errors = [self._grub("error: file `/boot/vmlinuz-6.1.0' not found.")]
+        assert not grub_findings_only_missing_initrd(errors)
+
+    def test_any_other_grub_finding_disqualifies(self):
+        errors = [
+            self._grub("error: file `/boot/initramfs-5.14.0.img' not found."),
+            self._grub('grub>', name='grub_normal_shell'),
+        ]
+        assert not grub_findings_only_missing_initrd(errors)
+
+    def test_no_grub_findings(self):
+        assert not grub_findings_only_missing_initrd(
+            [{'category': 'fstab', 'name': 'x', 'detected_pattern': 'y'}])
+        assert not grub_findings_only_missing_initrd([])

@@ -503,12 +503,12 @@ class TestAutoRepairSuggestion:
             'diagnosis_status': 'boot_errors_detected',
             'boot_errors': [
                 {
-                    'category': 'grub',
+                    'category': 'selinux',
                     'severity': 'critical',
-                    'description': 'GRUB missing',
-                    'detected_pattern': 'grub pattern',
-                    'suggested_fixes': ['Fix GRUB'],
-                    'context_lines': ['grub error'],
+                    'description': 'SELinux relabel failed',
+                    'detected_pattern': 'selinux pattern',
+                    'suggested_fixes': ['Relabel the filesystem'],
+                    'context_lines': ['selinux error'],
                     'matched_line_index': 0,
                 }
             ],
@@ -518,6 +518,58 @@ class TestAutoRepairSuggestion:
         assert 'Auto-repair' not in report
         assert 'Or fix manually:' not in report
         assert 'gce-rescue repair' not in report
+
+    @staticmethod
+    def _grub_diagnosis(name, detected_pattern):
+        return {
+            'vm_name': 'test-vm',
+            'zone': 'us-central1-a',
+            'status': 'RUNNING',
+            'os_type': 'linux',
+            'os_flavor': 'rocky-linux-9',
+            'architecture': 'x86_64',
+            'license_type': 'free',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [
+                {
+                    'name': name,
+                    'category': 'grub',
+                    'severity': 'critical',
+                    'description': 'GRUB failure',
+                    'detected_pattern': detected_pattern,
+                    'suggested_fixes': [],
+                    'context_lines': [detected_pattern],
+                    'matched_line_index': 0,
+                }
+            ],
+            'recommendations': [],
+        }
+
+    def test_auto_repair_shown_for_grub_without_identifier(self, formatter):
+        """GRUB findings carry no fstab identifier but are auto-repairable."""
+        report = formatter.format_report(
+            self._grub_diagnosis('grub_normal_shell', 'grub>'))
+        assert 'Auto-repair (recommended):' in report
+        assert 'Repair GRUB' in report
+
+    def test_grub_missing_initrd_shows_initramfs_guidance(self, formatter):
+        """A missing initramfs reported by GRUB is fixed by the rebuild."""
+        report = formatter.format_report(self._grub_diagnosis(
+            'grub_kernel_not_found',
+            "error: ../../grub-core/fs/fshelp.c:257:file\n"
+            "`/boot/initramfs-5.14.0-687.44.1.el9_8.x86_64.img' not found."))
+        assert 'Auto-repair (recommended):' in report
+        assert 'Rebuild initramfs' in report
+        assert 'Repair GRUB' not in report
+
+    def test_grub_missing_kernel_keeps_grub_guidance(self, formatter):
+        """A missing vmlinuz is not an initramfs problem."""
+        report = formatter.format_report(self._grub_diagnosis(
+            'grub_kernel_not_found',
+            "error: file `/boot/vmlinuz-6.1.0-18-cloud-amd64' not found."))
+        assert 'Auto-repair (recommended):' in report
+        assert 'Repair GRUB' in report
+        assert 'Rebuild initramfs' not in report
 
     def test_auto_repair_line_has_vm_name(
         self, formatter, single_error_diagnosis
