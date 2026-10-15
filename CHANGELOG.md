@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `diagnose`: GRUB findings now show "Auto-repair (recommended)"; when GRUB only reports a missing initramfs, the fix steps describe the initramfs rebuild instead of a GRUB reinstall (#183)
 - `repair --help` listed filesystem repair, which is not available yet, and said Windows VMs cannot use `repair`; it now lists the supported fixes and the Windows `--fix-script` option
 - After an initramfs repair, boot verification waits up to 270 seconds, because a missing storage driver only surfaces after the dracut root-device timeout
+- Windows: `rescue` output, `--fix-script` help and the rescue VM instructions no longer assume the original disk is mounted at `D:`; partitions get the next free drive letter from `D:` onward. The `bcdboot` boot-repair hint now assigns a letter to the original disk's EFI partition first instead of targeting the rescue VM's `C:` (#125, #185)
 
 ## [2.5.0] - 2026-08-23
 
