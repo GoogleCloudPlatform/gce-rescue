@@ -85,8 +85,12 @@ patterns:
     regex:
       # (?:/boot)? — on systems with a separate /boot partition, grub.cfg
       # references /vmlinuz-* and /initrd.img-* without the /boot prefix.
-      - '^\s*error: (?:\S+\.c:\d+:)?file .?(?:/boot)?/vmlinuz\S* not found'
-      - '^\s*error: (?:\S+\.c:\d+:)?file .?(?:/boot)?/init(?:rd|ramfs)\S* not found'
+      # GRUB wraps long lines on the serial console (seen live on Rocky 9:
+      # "error: ../../grub-core/fs/fshelp.c:257:file" / "`/boot/initramfs-
+      # ...x86_6" / "4.img' not found."), so a line break is allowed after
+      # 'file' and once inside the file name.
+      - '^\s*error: (?:\S+\.c:\d+:)?file\s*.?(?:/boot)?/vmlinuz\S*(?:\n\S+)? not found'
+      - '^\s*error: (?:\S+\.c:\d+:)?file\s*.?(?:/boot)?/init(?:rd|ramfs)\S*(?:\n\S+)? not found'
     fixes:
       - "List installed kernels on the mounted disk: ls /mnt/sysroot/boot/vmlinuz-*"
       - "Reinstall the kernel package from a chroot if the image is missing: sudo chroot /mnt/sysroot apt-get install --reinstall linux-image-amd64 (Debian-family) or dnf reinstall kernel-core (RHEL-family)"

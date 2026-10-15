@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, TextIO, Tuple
 from ..core.config import build_user_agent, DEFAULT_DISK_RESIZE_INCREMENT_GB
+from ..core.diagnosis import initramfs_kernel_versions
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
 from ..utils.logger import setup_logging
 from ..orchestration.checkpoint import CheckpointManager
@@ -894,6 +895,14 @@ def handle_repair(args: argparse.Namespace) -> int:
                 fix_descriptions['fstab'] = (
                     f'Fix /etc/fstab (comment out {target_str})'
                 )
+        if 'initramfs' in fixable:
+            kernels = initramfs_kernel_versions(boot_errors)
+            kernel_str = (bold(kernels[0]) if len(kernels) == 1
+                          else 'the newest installed kernel')
+            fix_descriptions['initramfs'] = (
+                f'Rebuild the initramfs for {kernel_str} '
+                f'(boot the previous kernel if the rebuild fails)'
+            )
         for cat in fixable:
             desc = fix_descriptions.get(cat, f'Fix {cat}')
             plan_block.append(f"    {step}. {desc}")
