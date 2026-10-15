@@ -270,9 +270,11 @@ Write-Log "Password: $rescuePassword"
 Write-Log "=========================================="
 Write-Log ""
 Write-Log "Common repair tasks:"
-Write-Log "  - Edit files: notepad D:\Windows\System32\config\SOFTWARE"
-Write-Log "  - Registry: Load hive from D:\Windows\System32\config\ in regedit"
-Write-Log "  - Boot repair: bcdboot D:\Windows /s C:"
+Write-Log "  * Replace D: if your OS partition was mounted at another letter!"
+Write-Log "  - Edit files: notepad.exe D:\Windows\System32\drivers\etc\hosts"
+Write-Log "  - Registry: Load hive from D:\Windows\System32\config\ in Regedit"
+Write-Log "  - Boot repair: first give the original disk's EFI partition a letter (diskpart: select the ~100 MB FAT32 partition, assign letter=S), then:"
+Write-Log "                 bcdboot.exe D:\Windows /s S:"
 Write-Log ""
 
 # Create desktop shortcut with instructions (optional - may fail if running as SYSTEM)
@@ -299,8 +301,8 @@ Common Tasks:
    - Make changes
    - File > Unload Hive when done
 
-4. Fix boot: Open CMD as Admin and run:
-   bcdboot D:\Windows /s C:
+4. Fix boot: Open CMD as Admin, assign a drive letter (e.g. S:) to the affected disk's ~100 MB FAT32 EFI partition via diskpart, and run:
+   bcdboot D:\Windows /s S:
 
 When done, run restore command from your local machine:
   python -m gce_rescue_v2.cli restore VM_NAME --zone ZONE
