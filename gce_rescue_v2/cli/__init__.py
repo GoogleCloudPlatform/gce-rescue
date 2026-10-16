@@ -311,13 +311,16 @@ EXAMPLES
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
 SUPPORTED FIXES
-    - filesystem: Repairs corrupted filesystems (fsck) before mounting
     - fstab: Comments out invalid UUID, device, or label entries
-    - initramfs: Rebuilds the initramfs for the newest installed kernel
     - grub: Reinstalls GRUB and regenerates its configuration
+    - initramfs: Rebuilds the initramfs of the kernel that failed to boot
+      (boots the previous kernel if the rebuild fails)
+    - disk_full: Resizes the boot disk, expands the root filesystem, and
+      reports the largest directories (no files are deleted)
 
 NOTES
-    This command is Linux-only. For Windows VMs, use 'rescue' for manual fix.
+    Diagnosis-driven repair is Linux-only. On Windows VMs, supply your own
+    PowerShell fix with --fix-script, or use 'rescue' to fix manually.
     The VM will be stopped during repair and restarted when complete.
         """
     )
@@ -399,6 +402,17 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
+def _non_negative_int(value: str) -> int:
+    """argparse type: a non-negative integer (0 or positive, for --resize-disk-gb)."""
+    try:
+        ivalue = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not an integer")
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or a positive integer, got {ivalue}")
+    return ivalue
+
+
 def _add_verification_timeout_arg(parser: argparse.ArgumentParser):
     """Add the --verification-timeout flag (shared by rescue and repair)."""
     group = parser.add_argument_group('VERIFICATION FLAGS')
@@ -458,9 +472,11 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         help=(
             'Path to a custom fix script to run against the affected (broken)'
             ' disk after it is mounted in rescue mode. The disk is mounted at'
-            ' /mnt/sysroot (Linux, bash script) or D:\\ (Windows, PowerShell'
-            ' script). The script runs after the mount completes; the VM'
-            ' stays in rescue mode for inspection.'
+            ' /mnt/sysroot on Linux (bash script); on Windows (PowerShell'
+            ' script) partitions greater than 1 GB receive the first available'
+            ' drive letter starting from D: onward (locate the target volume'
+            ' via Get-Volume rather than assuming D:). The script runs after'
+            ' the mount completes; the VM stays in rescue mode for inspection.'
         )
     )
 
@@ -508,11 +524,28 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         help=(
             'Path to a custom fix script to run against the affected (broken)'
             ' disk after it is mounted in rescue mode. The disk is mounted at'
-            ' /mnt/sysroot (Linux, bash script) or D:\\ (Windows, PowerShell'
-            ' script). Skips diagnosis and applies your script instead of an'
-            ' auto-generated fix, then restores the VM and verifies boot.'
+            ' /mnt/sysroot (Linux, bash script); on Windows (PowerShell'
+            ' script) partitions greater than 1 GB receive the first available'
+            ' drive letter starting from D: onward (locate the target volume'
+            ' via Get-Volume rather than assuming D:). Skips diagnosis and'
+            ' applies your script instead of an auto-generated fix, then'
+            ' restores the VM and verifies boot.'
         )
     )
+
+    disk_group = parser.add_argument_group('DISK RESIZE FLAGS')
+    disk_group.add_argument(
+        '--resize-disk-gb',
+        metavar='GB',
+        dest='resize_disk_gb',
+        type=_non_negative_int,
+        default=None,
+        help=(
+            'Amount of space in GiB to add to the boot disk when repairing'
+            ' a disk_full boot error (default: 5 GiB, 0 to skip resize).'
+        )
+    )
+
 
     _add_verification_timeout_arg(parser)
 
@@ -600,6 +633,10 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # the orchestrator stays I/O-free. Invalid paths fail fast here.
     if getattr(args, 'fix_script', None):
         config.fix_script = read_fix_script(args.fix_script)
+
+    # Boot disk resize increment for disk_full auto-repair
+    if getattr(args, 'resize_disk_gb', None) is not None:
+        config.resize_disk_gb = args.resize_disk_gb
 
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):

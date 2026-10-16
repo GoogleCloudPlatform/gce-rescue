@@ -11,6 +11,7 @@ If something fails later, we use this data to undo the operation.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+import re
 import time
 import json
 
@@ -39,9 +40,33 @@ def extract_error_message(exception: Exception) -> str:
         Output:
             "The resource 'disk-1' was not found"
     """
+    # 1. If the exception has raw JSON content (googleapiclient HttpError),
+    # parse it directly so long request URLs don't truncate the message.
+    raw_content = getattr(exception, 'content', None)
+    if raw_content:
+        try:
+            text = (
+                raw_content.decode('utf-8', errors='replace')
+                if isinstance(raw_content, (bytes, bytearray))
+                else str(raw_content)
+            )
+            error_data = json.loads(text)
+            if isinstance(error_data, dict) and 'error' in error_data:
+                error_info = error_data['error']
+                if isinstance(error_info, dict):
+                    if error_info.get('message'):
+                        return error_info['message']
+                    errors_list = error_info.get('errors')
+                    if isinstance(errors_list, list) and errors_list:
+                        msg = errors_list[0].get('message')
+                        if msg:
+                            return msg
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+            pass
+
     error_str = str(exception)
 
-    # Try to extract message from GCP HttpError JSON response
+    # 2. Try to extract message from GCP HttpError JSON embedded in str(exception)
     try:
         # HttpError format: <HttpError XXX ... {json}>
         # Find the JSON part (starts with '{')
@@ -72,10 +97,16 @@ def extract_error_message(exception: Exception) -> str:
     except (json.JSONDecodeError, KeyError, IndexError):
         pass
 
+    # 3. Extract quoted message from '<HttpError ... returned "MESSAGE". Details: ...>'
+    returned_match = re.search(r'returned "([^"]+)"', error_str)
+    if returned_match:
+        return returned_match.group(1)
+
     # Fallback: return original string, but truncate if too long
     if len(error_str) > 200:
         return error_str[:200] + "..."
     return error_str
+
 
 
 @dataclass

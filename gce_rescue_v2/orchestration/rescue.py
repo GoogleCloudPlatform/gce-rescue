@@ -33,7 +33,8 @@ from ..operations import (
     SetMetadataOperation,
     StartVMOperation,
     CreateSnapshotOperation,
-    VerifyStartupOperation
+    VerifyStartupOperation,
+    ResizeDiskOperation
 )
 from .state import StateTracker
 from .rollback import RollbackHandler
@@ -130,6 +131,7 @@ class RescueOrchestrator:
         self.architecture = None
         self.os_flavor = None
         self.vm_info = None
+        self.original_disk_size_gb = None
 
         # Windows rescue credentials (generated for RDP access)
         self.windows_rescue_password = None
@@ -349,6 +351,10 @@ class RescueOrchestrator:
             self.rescue_disk_name = self._resumed_context.get('rescue_disk_name')
             self.os_type = self._resumed_context.get('os_type')
             self.architecture = self._resumed_context.get('architecture')
+            self.original_disk_size_gb = self._resumed_context.get(
+                'original_disk_size_gb',
+                self._resumed_context.get('previous_size_gb')
+            )
 
         self._log_debug(f"Resume state set: continuing from step {self._resume_from_step + 1}")
 
@@ -481,7 +487,7 @@ class RescueOrchestrator:
 
     def _get_checkpoint_context(self) -> dict:
         """Get context dict for checkpoint."""
-        return {
+        ctx = {
             'vm_name': self.vm_name,
             'zone': self.zone,
             'original_disk_name': self.original_disk_name,
@@ -491,6 +497,9 @@ class RescueOrchestrator:
             'architecture': self.architecture,
             'log_file': self.log_file
         }
+        if self.original_disk_size_gb is not None:
+            ctx['original_disk_size_gb'] = self.original_disk_size_gb
+        return ctx
 
     def validate(self) -> bool:
         """
@@ -936,6 +945,37 @@ class RescueOrchestrator:
 
                     time.sleep(5)
 
+            # Resize original boot disk if requested (e.g. disk_full repair)
+            # Runs after the safety snapshot is ready and before attaching the
+            # original disk as secondary to the rescue VM, so the rescue VM
+            # immediately sees the expanded block device capacity.
+            if (getattr(self.config, 'resize_disk_gb', None)
+                    and self.config.resize_disk_gb > 0
+                    and not self._should_skip_step(8)):
+                self._log_debug(
+                    f"Resizing original boot disk {self.original_disk_name} "
+                    f"(+{self.config.resize_disk_gb}GB)..."
+                )
+                resize_disk = ResizeDiskOperation(
+                    self.compute, self.project, self.zone, self.logger
+                )
+                resize_res = resize_disk.execute(
+                    disk_name=self.original_disk_name,
+                    add_gb=self.config.resize_disk_gb,
+                    expected_previous_size_gb=self.original_disk_size_gb,
+                    vm_name=self.vm_name,
+                    timeout=self.config.operation_timeout,
+                    tracking_label=self._ua('disk-resize-orig')
+                )
+                if not resize_res.success:
+                    self._finish_progress(False, error=resize_res.error)
+                    self._rollback()
+                    return False
+                if resize_res.rollback_data:
+                    self.original_disk_size_gb = resize_res.rollback_data.get(
+                        'previous_size_gb', self.original_disk_size_gb
+                    )
+
             # Step 8: Re-attach original disk as secondary
             if not self._should_skip_step(8):
                 # Idempotency check: skip if original disk already attached
@@ -1039,8 +1079,27 @@ class RescueOrchestrator:
             if disk.get('boot'):
                 self.original_disk_name = disk['source'].split('/')[-1]
                 self.original_device_name = disk['deviceName']
+                if disk.get('diskSizeGb') is not None:
+                    try:
+                        self.original_disk_size_gb = int(disk['diskSizeGb'])
+                    except (TypeError, ValueError):
+                        pass
                 self._log_debug(f"Original disk: {self.original_disk_name}")
                 break
+
+        if (self.original_disk_size_gb is None
+                and self.original_disk_name
+                and getattr(self.config, 'resize_disk_gb', None)):
+            try:
+                disk_resource = self.compute.disks().get(
+                    project=self.project,
+                    zone=self.zone,
+                    disk=self.original_disk_name
+                ).execute()
+                if isinstance(disk_resource, dict) and disk_resource.get('sizeGb') is not None:
+                    self.original_disk_size_gb = int(disk_resource['sizeGb'])
+            except Exception:
+                pass
 
     @staticmethod
     def _alternate_windows_family(family: str) -> str:

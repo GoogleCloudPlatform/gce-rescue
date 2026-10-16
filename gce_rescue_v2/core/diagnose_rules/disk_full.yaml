@@ -5,7 +5,7 @@ os: linux
 # RUNNING + "Startup finished" suppression.
 survives_boot_success: true
 fix_guidance: "sudo du -xh /mnt/sysroot --max-depth=2 | sort -rh | head -20"
-auto_repair: false
+auto_repair: true
 
 patterns:
   - name: disk_full_no_space
@@ -20,6 +20,8 @@ patterns:
     # [ \t]*$ (not \s*$) so the match stops at end-of-line and the trailing
     # newline never leaks into detected_pattern / JSON output.
       - '^(?!.*(?:inotify|directory watch|/sys/fs/cgroup)).*No space left on device[ \t]*$'
+      - 'EXT[2-4]-fs (?:warning|error) \([^)]+\): [^\n]*no space left[^\n]*$'
+      - 'XFS \([^)]+\): [^\n]*no space left[^\n]*$'
     fixes:
       - "Free space from rescue mode: clear journals (/mnt/sysroot/var/log/journal), /mnt/sysroot/tmp and old kernels/packages"
       - "Or resize the boot disk: gcloud compute disks resize DISK_NAME --zone=ZONE --size=NEW_SIZE_GB, then reboot to auto-expand"

@@ -5,6 +5,22 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-10-16
+
+### Added
+- `repair`: automatic initramfs repair on Linux. Rebuilds the initramfs of the kernel that failed to boot (`dracut` on RHEL-family and SLES, `mkinitramfs` on Debian/Ubuntu), validates the new image before it replaces the old one, adds a missing `initrd` line to the boot entry and regenerates GRUB. If the rebuild fails, the previous installed kernel is made the default; if there is no other kernel, the repair reports FAILED and leaves the disk unchanged. Changed files are backed up to `/var/backups/gce-rescue/`; kernels and modules are never deleted. Not attempted for LVM or LUKS root filesystems (#173, #181, #182, contributed by @kirtxn)
+- `repair`: automatic repair of a full boot disk on Linux. Resizes the boot disk (prompts for the size, default +5 GB, or `--resize-disk-gb N`), then grows the root partition and ext4/XFS filesystem in rescue mode and reports the largest directories. No files are deleted. With `--quiet`, the disk is resized only when `--resize-disk-gb` is given (#177, #178, contributed by @srijan116)
+- `diagnose`: detects GRUB `file '/boot/initramfs-…' not found` when GRUB wraps the line on the serial console, as seen on RHEL 9 family VMs that stop at the GRUB menu (#182, contributed by @kirtxn)
+
+### Fixed
+- `diagnose`: GRUB findings now show "Auto-repair (recommended)"; when GRUB only reports a missing initramfs, the fix steps describe the initramfs rebuild instead of a GRUB reinstall (#183)
+- `repair --help` listed filesystem repair, which is not available yet, and said Windows VMs cannot use `repair`; it now lists the supported fixes and the Windows `--fix-script` option
+- After an initramfs repair, boot verification waits up to 270 seconds, because a missing storage driver only surfaces after the dracut root-device timeout
+- Windows: `rescue` output, `--fix-script` help and the rescue VM instructions no longer assume the original disk is mounted at `D:`; partitions get the next free drive letter from `D:` onward. The `bcdboot` boot-repair hint now assigns a letter to the original disk's EFI partition first instead of targeting the rescue VM's `C:` (#125, #185, contributed by @rubensalmeida)
+
+### Contributors
+Thanks to @kirtxn, @srijan116 and @rubensalmeida for the changes in this release. Welcome @rubensalmeida, who made their first contribution in #185.
+
 ## [2.5.0] - 2026-08-23
 
 ### Added

@@ -11,6 +11,8 @@ orchestrator (custom fix scripts via --fix-script).
 
 from typing import List, Optional, Tuple
 
+from ..core.diagnosis import is_safe_kernel_version, is_safe_root_device
+
 # Completion marker emitted by the base mount script to the serial console
 RESCUE_COMPLETE_MARKER = 'GCE-RESCUE-COMPLETE'
 
@@ -94,7 +96,9 @@ def strip_shebang(script: str) -> str:
 
 
 def compose_startup_script(base_script: str, fix_scripts: List[str],
-                           repair_targets: Optional[List[str]] = None) -> str:
+                           repair_targets: Optional[List[str]] = None,
+                           failing_kernel: Optional[str] = None,
+                           root_device: Optional[str] = None) -> str:
     """Combine the base mount script with fix script(s) into one startup script.
 
     The base script's GCE-RESCUE-COMPLETE marker is relocated to the very end
@@ -116,6 +120,15 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
             fixing. Pass a list (possibly empty) to inject the REPAIR_TARGETS
             variable for diagnosis-driven fixes; pass None for self-contained
             (custom) fix scripts that need no targets.
+        failing_kernel: Version of the kernel that failed to boot, for the
+            initramfs fix script. Pass a string (possibly empty) to inject
+            GCE_FAILING_KERNEL; values failing is_safe_kernel_version() are
+            injected as empty. None omits the variable.
+        root_device: root= argument of the failing boot's kernel command
+            line, for the initramfs fix script (it checks that the device
+            exists before rebuilding). Pass a string (possibly empty) to
+            inject GCE_BOOT_ROOT; values failing is_safe_root_device() are
+            injected as empty. None omits the variable.
 
     Returns:
         The combined startup script.
@@ -200,6 +213,24 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
         else:
             combined += '# No specific repair targets extracted from diagnosis\n'
             combined += 'REPAIR_TARGETS=""\n\n'
+
+    # Inject the failing kernel version for initramfs repair. Re-validated
+    # here (defense in depth): anything that is not a plain kernel release
+    # string becomes empty, and the fix script then targets the newest
+    # installed kernel.
+    if failing_kernel is not None:
+        if not is_safe_kernel_version(failing_kernel):
+            failing_kernel = ''
+        combined += '# Kernel that failed to boot (from diagnosis; may be empty)\n'
+        combined += f'GCE_FAILING_KERNEL="{failing_kernel}"\n\n'
+
+    # Inject the root= device of the failing boot. Re-validated here like
+    # the kernel version; empty means "unknown, skip the check".
+    if root_device is not None:
+        if not is_safe_root_device(root_device):
+            root_device = ''
+        combined += '# root= of the boot that failed (from diagnosis; may be empty)\n'
+        combined += f'GCE_BOOT_ROOT="{root_device}"\n\n'
 
     for fix_body in fix_bodies:
         combined += fix_body + '\n\n'
