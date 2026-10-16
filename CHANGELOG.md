@@ -5,7 +5,7 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.6.0] - 2026-10-14
+## [2.6.0] - 2026-10-16
 
 ### Added
 - `repair`: automatic initramfs repair on Linux. Rebuilds the initramfs of the kernel that failed to boot (`dracut` on RHEL-family and SLES, `mkinitramfs` on Debian/Ubuntu), validates the new image before it replaces the old one, adds a missing `initrd` line to the boot entry and regenerates GRUB. If the rebuild fails, the previous installed kernel is made the default; if there is no other kernel, the repair reports FAILED and leaves the disk unchanged. Changed files are backed up to `/var/backups/gce-rescue/`; kernels and modules are never deleted. Not attempted for LVM or LUKS root filesystems (#173, #181, #182, contributed by @kirtxn)
