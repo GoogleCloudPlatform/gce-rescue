@@ -8,6 +8,7 @@ Tests:
 4. Correct rescue image selection
 """
 
+import re
 from pathlib import Path
 from unittest.mock import Mock, patch
 import pytest
@@ -17,6 +18,9 @@ from gce_rescue_v2.utils.os_detection import detect_os_type, get_os_display_name
 
 _WINDOWS_MOUNT_SCRIPT = (
     Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount_windows.ps1'
+)
+_BCD_FIX_SCRIPT = (
+    Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'windows_bcd_fix.ps1'
 )
 
 
@@ -313,3 +317,109 @@ class TestWindowsGuidCollisionPrevention:
 
     def test_references_issue_126(self):
         assert '#126' in self._script()
+
+
+class TestWindowsBcdFixScript:
+    """The canned BCD-repair fix script (--fix-script) must honor the repair
+    marker protocol, rebuild the BCD from the offline install via bcdboot,
+    and be included in built wheel distributions."""
+
+    def _script(self) -> str:
+        return _BCD_FIX_SCRIPT.read_text(encoding='utf-8')
+
+    def test_script_exists(self):
+        assert _BCD_FIX_SCRIPT.exists()
+
+    def test_emits_result_and_fixed_line_markers(self):
+        text = self._script()
+        assert 'GCE-REPAIR-RESULT:' in text
+        assert 'GCE-REPAIR-LINE:[FIXED]' in text
+
+    def test_single_result_emission_block(self):
+        """SUCCESS / NO_ISSUES / FAILED are mutually exclusive branches at the
+        end - exactly one result marker fires per run."""
+        text = self._script()
+        assert 'GCE-REPAIR-RESULT:SUCCESS:$Fixes' in text
+        assert 'GCE-REPAIR-RESULT:NO_ISSUES:0' in text
+        assert 'GCE-REPAIR-RESULT:FAILED:$FixReason' in text
+        marker = text.index('Single result-emission point')
+        for match in re.finditer(r'GCE-REPAIR-RESULT:', text):
+            assert match.start() > marker
+
+    def test_never_calls_exit(self):
+        # 'exit' would abort the composed startup script before the completion
+        # marker. Ignore comment lines and quoted strings.
+        for line in self._script().splitlines():
+            code = line.split('#', 1)[0]
+            code = re.sub(r'"[^"]*"', '""', code)
+            code = re.sub(r"'[^']*'", "''", code)
+            assert not re.search(r'\bexit\b', code), f"must not call exit: {line!r}"
+
+    def test_uses_bcdboot_offline_and_checks_exit_code(self):
+        text = self._script()
+        assert 'bcdboot.exe' in text
+        assert '/f UEFI' in text
+        assert '/f BIOS' in text
+        assert '$LASTEXITCODE' in text
+
+    def test_locates_windows_by_config_hive_and_validates_filesystems(self):
+        text = self._script()
+        assert 'Windows\\System32\\config\\SYSTEM' in text
+        assert 'NTFS|ReFS' in text
+        assert 'FAT32' in text
+
+    def test_free_drive_letter_scans_d_through_z_ps51_compatible(self):
+        text = self._script()
+        assert 'function Get-FreeDriveLetter' in text
+        assert "[int][char]'D'..[int][char]'Z'" in text
+        # Windows PowerShell 5.1 rejects character range syntax 'D'..'Z'
+        assert "'D'..'Z'" not in text
+
+    def test_backs_up_existing_bcd_and_handles_missing_store(self):
+        text = self._script()
+        assert 'Test-Path $bcdPath' in text
+        assert '.gce-repair-backup' in text
+
+    def test_releases_temp_esp_letter(self):
+        assert 'Remove-PartitionAccessPath' in self._script()
+
+    def test_refuses_bitlocker_locked_volumes(self):
+        text = self._script()
+        assert 'BitLocker-locked' in text
+        assert 'manage-bde -unlock' in text
+
+    def test_bitlocker_detection_never_assumes_tools(self):
+        assert 'Get-Command manage-bde.exe' in self._script()
+
+    def test_locked_volume_heuristic_is_filesystem_based(self):
+        assert "FileSystemType -eq 'Unknown'" in self._script()
+
+    def test_documents_custom_entry_scope(self):
+        text = self._script()
+        assert 'fresh DEFAULT store' in text
+        assert 'custom BCD entries' in text
+
+    def test_uses_lf_line_endings(self):
+        assert b'\r' not in _BCD_FIX_SCRIPT.read_bytes()
+
+    def test_composes_cleanly_with_windows_mount_script(self):
+        from gce_rescue_v2.orchestration.compose import (
+            RESCUE_COMPLETE_MARKER, compose_startup_script_windows,
+        )
+        base = _WINDOWS_MOUNT_SCRIPT.read_text(encoding='utf-8')
+        fix = self._script()
+        combined = compose_startup_script_windows(base, [fix])
+        bcd_pos = combined.index('bcdboot.exe')
+        complete_pos = combined.index(f'Write-Log "{RESCUE_COMPLETE_MARKER}"')
+        assert bcd_pos < complete_pos
+
+    def test_packaged_in_wheel_configs_and_gitattributes(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        setup_py = (repo_root / 'setup.py').read_text(encoding='utf-8')
+        pyproject = (repo_root / 'gce_rescue_v2' / 'pyproject.toml').read_text(
+            encoding='utf-8'
+        )
+        gitattributes = (repo_root / '.gitattributes').read_text(encoding='utf-8')
+        assert 'startup_scripts/fixes/*.ps1' in setup_py
+        assert 'startup_scripts/fixes/*.ps1' in pyproject
+        assert '*.ps1 text eol=lf' in gitattributes
