@@ -11,15 +11,17 @@ patterns:
   - name: disk_full_no_space
     severity: critical
     description: "Boot disk has no free space (writes are failing)"
-    # Match only lines ENDING with the ENOSPC phrase, and exclude sources
-    # that return ENOSPC without the disk being full:
+    # Match only lines ENDING with the ENOSPC phrase (optionally followed by
+    # up to 3 closing quote, bracket or period characters, as logged by Go
+    # agents, journald and Python tracebacks), and exclude sources that
+    # return ENOSPC without the disk being full:
     #   - inotify watch/instance exhaustion (systemd "directory watch", tail)
     #   - cgroup limits on container hosts (kubelet/docker mkdir /sys/fs/cgroup)
     # Lines merely quoting the phrase mid-sentence no longer match either.
     regex:
     # [ \t]*$ (not \s*$) so the match stops at end-of-line and the trailing
     # newline never leaks into detected_pattern / JSON output.
-      - '^(?!.*(?:inotify|directory watch|/sys/fs/cgroup)).*No space left on device[ \t]*$'
+      - '^(?!.*(?:inotify|directory watch|/sys/fs/cgroup)).*No space left on device["''.)\]]{0,3}[ \t]*$'
       - 'EXT[2-4]-fs (?:warning|error) \([^)]+\): [^\n]*no space left[^\n]*$'
       - 'XFS \([^)]+\): [^\n]*no space left[^\n]*$'
     fixes:
