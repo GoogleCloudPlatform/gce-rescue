@@ -147,6 +147,10 @@ class RepairOrchestrator:
         # _load_base_script() refresh it). The fix script environment
         # (OS_FLAVOR, BOOT_MODE) is derived from it; None until fetched.
         self._vm_info: Optional[Dict[str, Any]] = None
+        # Fix set recorded in the User-Agent (fix/fstab+grub, fix/custom)
+        # once execute()/execute_custom() has chosen it; None before that,
+        # so validation and diagnosis calls carry no fix/ field.
+        self._fix_label: Optional[str] = None
 
         # Progress tracking
         self._spinner_thread = None
@@ -182,7 +186,7 @@ class RepairOrchestrator:
         """Build User-Agent string for the given step."""
         return build_user_agent(
             session_id=self.session_id, command='repair',
-            mode=self.mode, step=step
+            mode=self.mode, step=step, fix=self._fix_label
         )
 
     def _create_tracked_client(self, user_agent: str):
@@ -487,6 +491,9 @@ class RepairOrchestrator:
         if not fixable:
             return {'status': 'no_fix', 'fixed_count': 0, 'fix_lines': [],
                     'error': None, 'snapshot_name': None, 'duration_seconds': 0}
+        # From here on every repair API call records the fix set applied.
+        # get_fixable_categories() already returns FIX_EXECUTION_ORDER order.
+        self._fix_label = '+'.join(fixable)
 
         # Destructive-fix guard: filesystem repair runs fsck/xfs_repair on
         # the user's original disk - the pre-rescue snapshot is the ONLY
@@ -523,6 +530,7 @@ class RepairOrchestrator:
             Dict with keys: status, fixed_count, fix_lines, error,
             snapshot_name, duration_seconds
         """
+        self._fix_label = 'custom'
         return self._run_repair_flow(fix_script=self.config.fix_script)
 
     def _run_repair_flow(self, repair_script: Optional[str] = None,

@@ -506,11 +506,13 @@ class DiagnoseOperation(BaseOperation):
 
             time.sleep(poll_interval)
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """No rollback needed for read-only diagnosis operation.
 
         Args:
             rollback_data: Unused (diagnosis is read-only)
+            tracking_label: Unused (no API calls)
 
         Returns:
             Always returns True

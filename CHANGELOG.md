@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `repair`: the User-Agent now records the fix categories applied (`fix/<cat1+cat2>`, or `fix/custom` for `--fix-script`) and rollback API calls are tagged with `step/rollback-<step>`, so a session's rollback is visible in usage tracking
 - `repair`: fix scripts receive `OS_FLAVOR` and `BOOT_MODE` environment variables (#92)
 
 ## [2.6.0] - 2026-10-16

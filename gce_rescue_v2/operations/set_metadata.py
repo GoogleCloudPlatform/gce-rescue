@@ -6,6 +6,7 @@ by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
 import time
+from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, METADATA_SET_FAILED
 
@@ -210,13 +211,16 @@ class SetMetadataOperation(BaseOperation):
         # Convert back to list format
         return [{'key': k, 'value': v} for k, v in result.items()]
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Restore the original metadata captured during execution.
 
         Args:
             rollback_data (dict): Data from `execute()` including `vm_name`
                 and `original_metadata`.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded; False otherwise.
@@ -247,7 +251,8 @@ class SetMetadataOperation(BaseOperation):
                 'items': original_metadata.get('items', [])
             }
 
-            operation = self.compute.instances().setMetadata(
+            compute = self._rollback_client(tracking_label)
+            operation = compute.instances().setMetadata(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,

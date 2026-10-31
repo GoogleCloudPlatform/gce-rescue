@@ -6,6 +6,7 @@ startup script executed successfully.
 """
 
 import time
+from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 
 # Failure lines the base mount script prints right before exiting 1. Once one
@@ -221,7 +222,8 @@ class VerifyStartupOperation(BaseOperation):
             return False
         return False
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         No rollback needed for verification operation.
         This is a read-only check.

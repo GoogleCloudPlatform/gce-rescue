@@ -6,6 +6,7 @@ attaches the disk using the captured original configuration.
 """
 
 import time
+from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, DISK_DETACH_FAILED
 
@@ -138,13 +139,16 @@ class DetachDiskOperation(BaseOperation):
                 error=error_detail
             )
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Re-attach the disk that was detached by this operation.
 
         Args:
             rollback_data (dict): Data from `execute()` including `vm_name`
                 and `disk_info` (source, boot, autoDelete, deviceName, mode).
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded; False if re-attachment failed.
@@ -169,7 +173,8 @@ class DetachDiskOperation(BaseOperation):
                 'mode': disk_info['mode']
             }
 
-            operation = self.compute.instances().attachDisk(
+            compute = self._rollback_client(tracking_label)
+            operation = compute.instances().attachDisk(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,

@@ -6,6 +6,7 @@ Rollback restarts the VM only if it was originally running prior to execution.
 """
 
 import time
+from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, VM_STOP_TIMEOUT, VM_NOT_FOUND
 
@@ -168,13 +169,16 @@ class StopVMOperation(BaseOperation):
                 error=error_detail
             )
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Restart the VM if it was RUNNING before execution.
 
         Args:
             rollback_data (dict): Data from `execute()` with `vm_name` and
                 `original_status`.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded or not needed; False otherwise.
@@ -194,7 +198,8 @@ class StopVMOperation(BaseOperation):
             if original_status == 'RUNNING':
                 self._log_info(f"  Restarting VM {vm_name}...")
 
-                self.compute.instances().start(
+                compute = self._rollback_client(tracking_label)
+                compute.instances().start(
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name

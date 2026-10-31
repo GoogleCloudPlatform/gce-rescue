@@ -16,7 +16,9 @@ import time
 import json
 
 from googleapiclient import discovery
+import googleapiclient.errors
 import googleapiclient.http
+import google.auth.exceptions
 import google_auth_httplib2
 import httplib2
 
@@ -204,7 +206,8 @@ class BaseOperation(ABC):
         pass
 
     @abstractmethod
-    def rollback(self, rollback_data: Dict[str, Any]) -> bool:
+    def rollback(self, rollback_data: Dict[str, Any],
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Rollback (undo) this operation.
 
@@ -213,6 +216,9 @@ class BaseOperation(ABC):
 
         Args:
             rollback_data: Data saved during execute()
+            tracking_label: Optional User-Agent for the rollback's API
+                calls (step/rollback-<step>), like execute()'s
+                tracking_label. Without it the untracked client is used.
 
         Returns:
             True if rollback successful, False otherwise
@@ -267,6 +273,32 @@ class BaseOperation(ABC):
             'compute', 'v1', credentials=credentials,
             cache_discovery=False, requestBuilder=_request_builder
         )
+
+    def _rollback_client(self, tracking_label: Optional[str]):
+        """Return the compute client for a rollback's mutating API call.
+
+        Mirrors execute(): the tracked client when a label is given, else
+        self.compute. Building the tracked client must never stop a
+        rollback, so a failure there falls back to self.compute.
+
+        Args:
+            tracking_label: User-Agent string, or None.
+
+        Returns:
+            Compute API client.
+        """
+        if not tracking_label:
+            return self.compute
+        try:
+            return self._create_tracked_client(tracking_label)
+        except (AttributeError, TypeError, ValueError,
+                googleapiclient.errors.Error,
+                google.auth.exceptions.GoogleAuthError) as e:
+            self._log_debug(
+                f"Could not create tracked client for rollback ({e}); "
+                "using the default client"
+            )
+            return self.compute
 
     def _wait_for_status(self, check_func, target_status: str, timeout: int = 300) -> bool:
         """

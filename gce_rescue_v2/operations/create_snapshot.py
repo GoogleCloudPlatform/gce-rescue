@@ -6,6 +6,7 @@ operations. Rollback removes only snapshots created by this operation.
 """
 
 import time
+from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, SNAPSHOT_CREATE_FAILED, SNAPSHOT_TIMEOUT
 
@@ -195,7 +196,8 @@ class CreateSnapshotOperation(BaseOperation):
                 error=error_detail
             )
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Delete the snapshot created by this operation.
 
@@ -205,6 +207,8 @@ class CreateSnapshotOperation(BaseOperation):
         Args:
             rollback_data (dict): Data from `execute`, including
                 `snapshot_name` and `created_by_operation`.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded or was not required.
@@ -227,7 +231,8 @@ class CreateSnapshotOperation(BaseOperation):
         self._log_debug(f"Rolling back {self.name}: deleting {snapshot_name}")
 
         try:
-            self.compute.snapshots().delete(
+            compute = self._rollback_client(tracking_label)
+            compute.snapshots().delete(
                 project=self.project,
                 snapshot=snapshot_name
             ).execute()
