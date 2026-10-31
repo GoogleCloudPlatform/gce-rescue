@@ -13,6 +13,7 @@ import re
 from typing import List, Optional, Tuple
 
 from ..core.diagnosis import is_safe_kernel_version, is_safe_root_device
+from ..utils.os_detection import BOOT_MODE_BIOS, BOOT_MODE_UEFI, BOOT_MODE_UNKNOWN
 
 # Pattern names handed to the selinux fix script (GCE_SELINUX_FINDINGS). The
 # value is injected into a shell script, so only plain rule names pass.
@@ -20,6 +21,12 @@ _SAFE_SELINUX_FINDING_RE = re.compile(r'selinux_[a-z0-9_]{1,64}')
 
 # Completion marker emitted by the base mount script to the serial console
 RESCUE_COMPLETE_MARKER = 'GCE-RESCUE-COMPLETE'
+
+# OS flavor values come from license / disk names returned by the Compute
+# API (debian-12-bookworm, rhel-9-server, ...). Anything outside this shape
+# is replaced by 'unknown' before it is written into the shell script.
+_SAFE_OS_FLAVOR_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+_VALID_BOOT_MODES = frozenset({BOOT_MODE_UEFI, BOOT_MODE_BIOS, BOOT_MODE_UNKNOWN})
 
 # Delimiters for an optional pre-mount block inside a fix script. Code between
 # these exact marker lines is lifted out of the fix script and injected into
@@ -92,6 +99,28 @@ def extract_premount_blocks(fix_script: str) -> Tuple[List[str], str]:
     return blocks, '\n'.join(remainder_lines)
 
 
+def _fix_env_exports(os_flavor: Optional[str],
+                     boot_mode: Optional[str]) -> str:
+    """Return the shell lines exporting OS_FLAVOR / BOOT_MODE ('' if neither).
+
+    Both values originate from API responses and are written into a shell
+    script, so they are re-validated here: a flavor outside the license /
+    image name shape becomes 'unknown', as does any unexpected boot mode.
+    """
+    lines = ''
+    if os_flavor is not None:
+        if not _SAFE_OS_FLAVOR_RE.match(os_flavor):
+            os_flavor = 'unknown'
+        lines += '# OS flavor of the affected disk (from the Compute API)\n'
+        lines += f'export OS_FLAVOR="{os_flavor}"\n'
+    if boot_mode is not None:
+        if boot_mode not in _VALID_BOOT_MODES:
+            boot_mode = BOOT_MODE_UNKNOWN
+        lines += '# Firmware the affected disk boots with: uefi, bios or unknown\n'
+        lines += f'export BOOT_MODE="{boot_mode}"\n'
+    return lines
+
+
 def strip_shebang(script: str) -> str:
     """Remove a leading shebang line (already present in the base script)."""
     if script.startswith('#!'):
@@ -104,6 +133,8 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
                            repair_targets: Optional[List[str]] = None,
                            failing_kernel: Optional[str] = None,
                            root_device: Optional[str] = None,
+                           os_flavor: Optional[str] = None,
+                           boot_mode: Optional[str] = None,
                            selinux_findings: Optional[List[str]] = None) -> str:
     """Combine the base mount script with fix script(s) into one startup script.
 
@@ -118,6 +149,20 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
     (fsck) can run even when the disk would fail to mount. The remainder of
     each fix script is appended at the end as usual. Scripts without a
     pre-mount block are composed exactly as before.
+
+    Variables available to fix scripts (each is only defined when the
+    corresponding argument is not None):
+        OS_FLAVOR          OS of the affected disk from the Compute API: the
+                           boot disk's license name (debian-12-bookworm,
+                           rhel-9-server, ubuntu-2204-lts, ...), else the
+                           disk name, else 'unknown'. Exported; also visible
+                           to pre-mount blocks.
+        BOOT_MODE          Firmware the affected disk boots with: 'uefi',
+                           'bios' or 'unknown'. Exported; also visible to
+                           pre-mount blocks.
+        REPAIR_TARGETS     Newline-separated fstab identifiers from diagnosis.
+        GCE_FAILING_KERNEL Kernel release that failed to boot (may be empty).
+        GCE_BOOT_ROOT      root= of the failed boot (may be empty).
 
     Args:
         base_script: The mount script, with disk placeholder already resolved.
@@ -135,6 +180,16 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
             exists before rebuilding). Pass a string (possibly empty) to
             inject GCE_BOOT_ROOT; values failing is_safe_root_device() are
             injected as empty. None omits the variable.
+        os_flavor: OS flavor of the affected disk (detect_os_flavor()), so
+            fix scripts can pick distribution-specific tools (grub2-* vs
+            grub-*) without re-detecting it inside the chroot. Values not
+            matching a license/image name shape are injected as 'unknown'.
+            None omits the variable.
+        boot_mode: Firmware mode of the affected disk (detect_boot_mode()):
+            'uefi', 'bios' or 'unknown'. Anything else is injected as
+            'unknown'. Taken from the instance resource because
+            /sys/firmware/efi inside the rescue VM describes the rescue
+            image, not the broken disk. None omits the variable.
         selinux_findings: Names of the diagnosed selinux patterns, for the
             selinux fix script (it tells a failed relabel from a policy
             load failure). Pass a list (possibly empty) to inject
@@ -149,6 +204,8 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
             pre-mount block is present but the base script lacks the
             PREMOUNT_ANCHOR line (the block would silently never run).
     """
+    env_exports = _fix_env_exports(os_flavor, boot_mode)
+
     # Lift pre-mount blocks out of the fix scripts (order preserved)
     premount_blocks: List[str] = []
     fix_bodies: List[str] = []
@@ -186,6 +243,9 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
                 'The base script and the pre-mount hook are out of sync.'
             )
         injection = '# === GCE Repair Pre-Mount Fixes ===\n'
+        # Pre-mount blocks run before the main fix section, so they get
+        # their own copy of the fix script environment.
+        injection += env_exports
         injection += 'log "=== Running pre-mount repair fixes ==="\n'
         for block in premount_blocks:
             injection += block + '\n'
@@ -214,6 +274,13 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
         '        >> /mnt/sysroot/var/log/gce-repair-history.log 2>/dev/null || true\n'
         'fi\n\n'
     )
+
+    # Inject the affected disk's OS flavor and firmware mode so fix scripts
+    # do not have to re-detect the distribution or guess UEFI vs BIOS from
+    # inside the rescue VM. Exported so tools run from the fix (chroot,
+    # helper scripts) see them too.
+    if env_exports:
+        combined += env_exports + '\n'
 
     # Inject REPAIR_TARGETS variable for targeted fstab fixing (diagnosis mode)
     if repair_targets is not None:

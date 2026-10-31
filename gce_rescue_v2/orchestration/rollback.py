@@ -5,7 +5,7 @@ Handles rollback of operations when something fails.
 Undoes operations in reverse order with dependency checking.
 """
 
-from typing import List, Set
+from typing import Callable, List, Optional, Set
 from .state import StateTracker, OperationState
 from ..operations.base import BaseOperation
 
@@ -95,7 +95,9 @@ class RollbackHandler:
         return False
 
     def rollback(self, state_tracker: StateTracker,
-                operations_map: dict) -> bool:
+                 operations_map: dict,
+                 label_for: Optional[Callable[[str], Optional[str]]] = None
+                 ) -> bool:
         """
         Rollback all successful operations in reverse order with dependency checking.
 
@@ -103,6 +105,11 @@ class RollbackHandler:
             state_tracker: Tracker with operation states
             operations_map: Map of operation names to operation instances
                            e.g., {"Stop VM": stop_vm_operation}
+            label_for: Optional callable mapping an operation name to the
+                User-Agent for its rollback API calls (orchestrators build
+                step/rollback-<original-step>). When omitted, or when it
+                returns None, the operation rolls back with its default
+                client.
 
         Returns:
             True if all rollbacks succeeded, False if any failed
@@ -153,9 +160,16 @@ class RollbackHandler:
                 self._log_debug(f"  → {op_name}: no rollback needed")
                 continue
 
-            # Perform rollback
+            # Perform rollback (tagged for usage tracking when a label
+            # builder was supplied; operations without one keep working)
             try:
-                success = operation.rollback(op_state.rollback_data)
+                label = label_for(op_name) if label_for else None
+                if label:
+                    success = operation.rollback(
+                        op_state.rollback_data, tracking_label=label
+                    )
+                else:
+                    success = operation.rollback(op_state.rollback_data)
 
                 if success:
                     self._log_debug(f"  [OK] Rolled back: {op_name}")

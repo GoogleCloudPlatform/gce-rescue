@@ -12,9 +12,13 @@ on:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    # ubuntu-latest moved to 26.04, which has no Python 3.9 build; 24.04
+    # still covers every version we support (python_requires >=3.9).
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
+      # Report every Python version instead of cancelling the rest when one fails.
+      fail-fast: false
       matrix:
         python-version: ['3.9', '3.10', '3.11', '3.12', '3.13']
 

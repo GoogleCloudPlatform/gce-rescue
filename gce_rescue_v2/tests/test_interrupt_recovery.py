@@ -234,6 +234,39 @@ class TestReconcileRescueState:
         assert detach_op.rollback_data['disk_info']['boot'] is True
         assert 'original-boot' in detach_op.rollback_data['disk_info']['source']
 
+    def test_reconcile_detached_boot_disk_uses_recorded_attachment(self):
+        """Rollback re-attaches the boot disk with the recorded attachment (#170)."""
+        vm_info = {
+            'status': 'TERMINATED',
+            'disks': [],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = _make_compute(vm_info)
+        checkpoint = _make_checkpoint(step=1, context={
+            'vm_name': 'test-vm',
+            'zone': 'zone-a',
+            'original_disk_name': 'original-boot',
+            'original_device_name': 'persistent-disk-0',
+            'rescue_disk_name': 'rescue-disk-12345',
+            'original_boot_attachment': {
+                'deviceName': 'persistent-disk-0', 'autoDelete': False,
+                'mode': 'READ_WRITE', 'interface': 'NVME',
+            },
+        })
+        state_tracker = StateTracker()
+
+        _reconcile_rescue_state(
+            compute, 'proj', 'zone-a', 'test-vm',
+            checkpoint, state_tracker, _make_logger()
+        )
+
+        detach_op = [op for op in state_tracker.operations
+                     if op.operation_name == 'Detach Boot Disk'][0]
+        disk_info = detach_op.rollback_data['disk_info']
+        assert disk_info['deviceName'] == 'persistent-disk-0'
+        assert disk_info['autoDelete'] is False
+        assert disk_info['interface'] == 'NVME'
+
     def test_reconcile_noop_when_consistent(self):
         """When checkpoint and VM state match, no extra operations added."""
         # VM still has boot disk attached (consistent with checkpoint at step 1)
@@ -354,6 +387,39 @@ class TestReconcileRescueState:
         assert 'startup-script' in original_keys
         startup_item = [i for i in original_items if i['key'] == 'startup-script'][0]
         assert startup_item['value'] == 'original script'
+
+    def test_reconcile_metadata_drops_keys_added_by_rescue(self):
+        """Rollback metadata must not keep enable-guest-attributes that rescue added (#146)."""
+        vm_info = {
+            'status': 'TERMINATED',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/proj/zones/zone-a/disks/rescue-disk-12345',
+                'deviceName': 'rescue-disk-12345',
+            }],
+            'metadata': {
+                'items': [
+                    {'key': 'rescue-mode', 'value': '12345'},
+                    {'key': 'enable-guest-attributes', 'value': 'TRUE'},
+                    {'key': 'rescue-backup-absent-keys', 'value': 'enable-guest-attributes'},
+                    {'key': 'ssh-keys', 'value': 'user:key'},
+                ],
+                'fingerprint': 'xyz'
+            },
+        }
+        compute = _make_compute(vm_info)
+        checkpoint = _make_checkpoint(step=1)
+        state_tracker = StateTracker()
+
+        _reconcile_rescue_state(
+            compute, 'proj', 'zone-a', 'test-vm',
+            checkpoint, state_tracker, _make_logger()
+        )
+
+        meta_op = [op for op in state_tracker.operations
+                   if op.operation_name == 'Set Metadata'][0]
+        original_items = meta_op.rollback_data['original_metadata']['items']
+        assert original_items == [{'key': 'ssh-keys', 'value': 'user:key'}]
 
     def test_reconcile_skips_when_no_original_disk_in_context(self):
         """Reconciliation should skip if checkpoint has no original_disk_name."""

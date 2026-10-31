@@ -5,7 +5,11 @@ Manages instance metadata for rescue operations. Preserves existing metadata
 by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
+import json
+import logging
 import time
+from typing import Any, Dict, Iterable, List, Optional, Set
+
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, METADATA_SET_FAILED
 
@@ -22,6 +26,41 @@ RESCUE_CONFLICT_KEYS = [
     'windows-startup-script-ps1',
 ]
 
+# Keys rescue sets that are also legitimate user settings and must survive
+# restore unchanged (#146). If the key exists, its value is backed up as
+# rescue-backup-<key>; if it does not, the key is listed in
+# RESCUE_ABSENT_KEYS_KEY so restore removes it again.
+RESCUE_RESTORABLE_KEYS = [
+    'enable-guest-attributes',
+]
+
+# Comma-separated list of RESCUE_RESTORABLE_KEYS that did not exist before
+# rescue added them.
+RESCUE_ABSENT_KEYS_KEY = f'{RESCUE_BACKUP_PREFIX}absent-keys'
+
+# JSON record of the original boot disk attachment (deviceName, autoDelete,
+# mode, interface), so restore re-attaches the boot disk exactly as it was
+# instead of with rescue's secondary-disk settings (#170).
+RESCUE_BOOT_ATTACHMENT_KEY = f'{RESCUE_BACKUP_PREFIX}boot-disk-attachment'
+
+# rescue-backup-* keys that hold rescue bookkeeping rather than a backed-up
+# user key, so restore must never turn them back into a metadata key.
+RESCUE_BACKUP_RECORD_KEYS = {
+    RESCUE_ABSENT_KEYS_KEY,
+    RESCUE_BOOT_ATTACHMENT_KEY,
+}
+
+_DISK_MODES = ('READ_WRITE', 'READ_ONLY')
+
+# Keys written for the rescue session itself; removed outright on restore.
+RESCUE_SESSION_KEYS = [
+    'rescue-mode',
+    'startup-script',
+    'windows-startup-script-ps1',
+    'rescue-original-disk',
+    'rescue-os-type',
+]
+
 # All rescue-related keys (for cleanup during restore)
 RESCUE_METADATA_KEYS = [
     'rescue-mode',
@@ -31,6 +70,133 @@ RESCUE_METADATA_KEYS = [
     'windows-startup-script-ps1',
     CHECKPOINT_KEY,  # Clean up checkpoint on restore
 ]
+
+_logger = logging.getLogger(__name__)
+
+
+def parse_absent_keys(value: Optional[str]) -> Set[str]:
+    """Parse the comma-separated RESCUE_ABSENT_KEYS_KEY value into a set."""
+    if not value:
+        return set()
+    return {key.strip() for key in value.split(',') if key.strip()}
+
+
+def capture_boot_attachment(disk: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the attachment properties of a boot disk entry (instance.disks[]).
+
+    Args:
+        disk: The boot disk entry from instances().get().
+
+    Returns:
+        Dict with deviceName, autoDelete, mode and, when set, interface.
+    """
+    attachment: Dict[str, Any] = {
+        'deviceName': disk.get('deviceName'),
+        'autoDelete': bool(disk.get('autoDelete', False)),
+        'mode': disk.get('mode', 'READ_WRITE'),
+    }
+    if disk.get('interface'):
+        attachment['interface'] = disk['interface']
+    return attachment
+
+
+def encode_boot_attachment(attachment: Dict[str, Any]) -> str:
+    """Serialize a boot attachment record for RESCUE_BOOT_ATTACHMENT_KEY."""
+    return json.dumps(attachment, sort_keys=True, separators=(',', ':'))
+
+
+def decode_boot_attachment(value: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse a RESCUE_BOOT_ATTACHMENT_KEY value, keeping only valid fields.
+
+    Args:
+        value: The metadata value, or None when the key is absent.
+
+    Returns:
+        Dict with any of deviceName, autoDelete, mode, interface, or None if
+        the record is missing or unusable.
+    """
+    if not value:
+        return None
+    try:
+        raw = json.loads(value)
+    except (TypeError, ValueError) as e:
+        _logger.debug("Ignoring unreadable boot attachment record: %s", e)
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    attachment: Dict[str, Any] = {}
+    if isinstance(raw.get('deviceName'), str) and raw['deviceName']:
+        attachment['deviceName'] = raw['deviceName']
+    if isinstance(raw.get('autoDelete'), bool):
+        attachment['autoDelete'] = raw['autoDelete']
+    if raw.get('mode') in _DISK_MODES:
+        attachment['mode'] = raw['mode']
+    if isinstance(raw.get('interface'), str) and raw['interface']:
+        attachment['interface'] = raw['interface']
+    return attachment or None
+
+
+def find_boot_attachment(items: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    """Return the boot attachment record from metadata items, if present."""
+    for item in items:
+        if item.get('key') == RESCUE_BOOT_ATTACHMENT_KEY:
+            return decode_boot_attachment(item.get('value'))
+    return None
+
+
+def restore_pre_rescue_items(items: List[Dict[str, str]],
+                             strip_keys: Iterable[str] = RESCUE_SESSION_KEYS
+                             ) -> List[Dict[str, str]]:
+    """Rebuild the pre-rescue metadata items from rescue-mode metadata.
+
+    - Keys in `strip_keys` (rescue session keys) are dropped.
+    - rescue-backup-<key> is restored as <key>, replacing rescue's value.
+    - Keys listed in RESCUE_ABSENT_KEYS_KEY did not exist before rescue and
+      are dropped, unless a backup for them exists.
+    - Bookkeeping records (RESCUE_BACKUP_RECORD_KEYS) are dropped.
+    - Everything else is kept as-is.
+
+    Without bookkeeping records (VM rescued by an older version), keys such as
+    enable-guest-attributes are kept with their current value, as before.
+
+    Args:
+        items: Current metadata items ({'key': str, 'value': str}).
+        strip_keys: Rescue session keys to remove.
+
+    Returns:
+        Metadata items as they were before rescue.
+    """
+    strip = set(strip_keys)
+    backups: Dict[str, str] = {}
+    absent: Set[str] = set()
+    for item in items:
+        key = item['key']
+        if key == RESCUE_ABSENT_KEYS_KEY:
+            absent = parse_absent_keys(item.get('value'))
+        elif key.startswith(RESCUE_BACKUP_PREFIX) and key not in RESCUE_BACKUP_RECORD_KEYS:
+            backups[key[len(RESCUE_BACKUP_PREFIX):]] = item['value']
+
+    result: Dict[str, str] = {}
+    for item in items:
+        key = item['key']
+        value = item['value']
+
+        if key in strip or key in RESCUE_BACKUP_RECORD_KEYS:
+            continue
+        if key.startswith(RESCUE_BACKUP_PREFIX):
+            original_key = key[len(RESCUE_BACKUP_PREFIX):]
+            result[original_key] = value
+            _logger.debug("  Restoring '%s' as '%s'", key, original_key)
+        elif key in backups:
+            # The backup holds the pre-rescue value; rescue's value is dropped.
+            continue
+        elif key in absent:
+            _logger.debug("  Removing '%s' (added by rescue)", key)
+        else:
+            result[key] = value
+
+    return [{'key': k, 'value': v} for k, v in result.items()]
 
 
 class SetMetadataOperation(BaseOperation):
@@ -180,6 +346,15 @@ class SetMetadataOperation(BaseOperation):
         """
         # Get keys we're about to set
         new_keys = {item['key'] for item in new_items}
+        original_keys = {item['key'] for item in original_items}
+
+        # Records left by an earlier attempt of this rescue (resumed session)
+        # describe the true pre-rescue state; never overwrite them with the
+        # value that attempt itself set.
+        absent_keys: Set[str] = set()
+        for item in original_items:
+            if item['key'] == RESCUE_ABSENT_KEYS_KEY:
+                absent_keys = parse_absent_keys(item.get('value'))
 
         # Build result starting with original items
         result = {}
@@ -199,9 +374,24 @@ class SetMetadataOperation(BaseOperation):
                 backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
                 result[backup_key] = value
                 self._log_debug(f"  Backing up '{key}' as '{backup_key}'")
+            elif key in new_keys and key in RESCUE_RESTORABLE_KEYS:
+                backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
+                if key in absent_keys or backup_key in original_keys:
+                    self._log_debug(f"  '{key}' already recorded, keeping existing record")
+                else:
+                    result[backup_key] = value
+                    self._log_debug(f"  Backing up '{key}' as '{backup_key}'")
             elif key not in new_keys:
                 # Keep original key as-is (not being overwritten)
                 result[key] = value
+
+        # Record restorable keys that rescue is adding, so restore removes them
+        for key in RESCUE_RESTORABLE_KEYS:
+            if key in new_keys and key not in original_keys:
+                absent_keys.add(key)
+        if absent_keys:
+            result[RESCUE_ABSENT_KEYS_KEY] = ','.join(sorted(absent_keys))
+            self._log_debug(f"  Recording keys added by rescue: {result[RESCUE_ABSENT_KEYS_KEY]}")
 
         # Add all new items
         for item in new_items:
@@ -210,13 +400,16 @@ class SetMetadataOperation(BaseOperation):
         # Convert back to list format
         return [{'key': k, 'value': v} for k, v in result.items()]
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Restore the original metadata captured during execution.
 
         Args:
             rollback_data (dict): Data from `execute()` including `vm_name`
                 and `original_metadata`.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded; False otherwise.
@@ -247,7 +440,8 @@ class SetMetadataOperation(BaseOperation):
                 'items': original_metadata.get('items', [])
             }
 
-            operation = self.compute.instances().setMetadata(
+            compute = self._rollback_client(tracking_label)
+            operation = compute.instances().setMetadata(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,

@@ -11,13 +11,15 @@ Coordinates the rescue workflow:
 
 import time
 import uuid
+from typing import Optional
+
 from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX, build_user_agent
 from .compose import (
     compose_startup_script, compose_startup_script_windows, strip_shebang,
 )
 from ..utils.os_detection import (
     detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64,
-    get_rescue_disk_type, detect_os_flavor
+    get_rescue_disk_type, detect_os_flavor, detect_boot_mode
 )
 from ..validators import (
     ValidationRunner,
@@ -36,9 +38,28 @@ from ..operations import (
     VerifyStartupOperation,
     ResizeDiskOperation
 )
+from ..operations.set_metadata import (
+    RESCUE_BOOT_ATTACHMENT_KEY,
+    capture_boot_attachment,
+    encode_boot_attachment,
+)
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
+
+# User-Agent step of each rescue operation (the tracking_label passed to its
+# execute()), keyed by its operations_map name. Rollback calls are tagged
+# step/rollback-<step>.
+RESCUE_ROLLBACK_STEPS = {
+    "Stop VM": 'vm-stop',
+    "Detach Boot Disk": 'disk-detach-orig',
+    "Create Snapshot": 'disk-snapshot',
+    "Create Rescue Disk": 'disk-create-rescue',
+    "Attach Rescue Disk": 'disk-attach-rescue',
+    "Set Metadata": 'meta-set-rescue-keys',
+    "Start VM": 'vm-start',
+    "Attach Original Disk": 'disk-attach-orig',
+}
 
 
 class RescueOrchestrator:
@@ -79,7 +100,8 @@ class RescueOrchestrator:
     def __init__(self, compute, project: str, zone: str, vm_name: str,
                  config: RescueConfig = None, logger=None, log_file: str = None,
                  startup_script_override: str = None, suppress_progress: bool = False,
-                 progress_callback=None, session_id: str = None, mode: str = None):
+                 progress_callback=None, session_id: str = None, mode: str = None,
+                 fix_label: Optional[str] = None):
         """
         Initialize rescue orchestrator.
 
@@ -96,6 +118,8 @@ class RescueOrchestrator:
             progress_callback: Optional callback(phase_label) invoked on each step
             session_id: Analytics session UUID (12-char hex)
             mode: Execution mode ('interactive' or 'auto')
+            fix_label: Fix set of the repair run this rescue belongs to
+                (fix/ in the User-Agent); None outside repair.
         """
         self.compute = compute
         self.project = project
@@ -116,6 +140,7 @@ class RescueOrchestrator:
         self._progress_callback = progress_callback
         self.session_id = session_id
         self.mode = mode
+        self.fix_label = fix_label
 
         # State tracking
         self.state_tracker = StateTracker()
@@ -125,11 +150,17 @@ class RescueOrchestrator:
         # Store original disk info
         self.original_disk_name = None
         self.original_device_name = None
+        # Original boot attachment (deviceName, autoDelete, mode, interface),
+        # saved to metadata so restore can re-attach the disk unchanged (#170)
+        self.original_boot_attachment = None
 
         # OS and architecture detection (will be set during execution)
         self.os_type = None
         self.architecture = None
         self.os_flavor = None
+        # Firmware of the ORIGINAL boot disk (uefi/bios/unknown), read from
+        # the instance before the disk swap; exported to --fix-script runs.
+        self.boot_mode = None
         self.vm_info = None
         self.original_disk_size_gb = None
 
@@ -323,12 +354,24 @@ class RescueOrchestrator:
         except Exception:
             return self.compute
 
+    def _rollback_label(self, operation_name: str) -> str:
+        """User-Agent for rolling back one operation of this rescue.
+
+        Same fields as the forward call, with step/rollback-<step>, so a
+        session's rollback shows up in usage tracking.
+        """
+        step = RESCUE_ROLLBACK_STEPS.get(
+            operation_name, operation_name.lower().replace(' ', '-')
+        )
+        return self._ua(f'rollback-{step}')
+
     def _ua(self, step: str) -> str:
         """Build User-Agent string for the given step."""
         return build_user_agent(
             session_id=self.session_id, command='rescue',
             os_type=self.os_type, arch=self.architecture,
-            flavor=self.os_flavor, mode=self.mode, step=step
+            flavor=self.os_flavor, mode=self.mode, step=step,
+            fix=self.fix_label
         )
 
     def set_resume_state(self, checkpoint: CheckpointData):
@@ -348,6 +391,7 @@ class RescueOrchestrator:
         if self._resumed_context:
             self.original_disk_name = self._resumed_context.get('original_disk_name')
             self.original_device_name = self._resumed_context.get('original_device_name')
+            self.original_boot_attachment = self._resumed_context.get('original_boot_attachment')
             self.rescue_disk_name = self._resumed_context.get('rescue_disk_name')
             self.os_type = self._resumed_context.get('os_type')
             self.architecture = self._resumed_context.get('architecture')
@@ -499,6 +543,8 @@ class RescueOrchestrator:
         }
         if self.original_disk_size_gb is not None:
             ctx['original_disk_size_gb'] = self.original_disk_size_gb
+        if self.original_boot_attachment:
+            ctx['original_boot_attachment'] = self.original_boot_attachment
         return ctx
 
     def validate(self) -> bool:
@@ -794,7 +840,8 @@ class RescueOrchestrator:
                     # Update checkpoint to record this step as done
                     self.checkpoint_manager.update_checkpoint(
                         step=5, operation_name="Attach Rescue Disk",
-                        rollback_data={'vm_name': self.vm_name, 'disk_name': rescue_disk_name}
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': rescue_disk_name,
+                                       'device_name': rescue_disk_name}
                     )
                 else:
                     self._log_debug("Attaching rescue disk as boot...")
@@ -842,9 +889,16 @@ class RescueOrchestrator:
                     # Let the guest write a guest attribute on completion, which
                     # the orchestrator polls as a reliable alternative to the
                     # serial-console marker (serial can drop the script's final
-                    # output burst before the process exits).
+                    # output burst before the process exits). SetMetadata
+                    # records the key's pre-rescue state (value or absence)
+                    # so restore can put it back exactly (#146).
                     {'key': 'enable-guest-attributes', 'value': 'TRUE'},
                 ]
+                if self.original_boot_attachment:
+                    metadata_items.append({
+                        'key': RESCUE_BOOT_ATTACHMENT_KEY,
+                        'value': encode_boot_attachment(self.original_boot_attachment),
+                    })
                 result = set_metadata.execute(
                     vm_name=self.vm_name,
                     metadata_items=metadata_items,
@@ -984,7 +1038,8 @@ class RescueOrchestrator:
                     # Update checkpoint to record this step as done
                     self.checkpoint_manager.update_checkpoint(
                         step=8, operation_name="Attach Original Disk",
-                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name}
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name,
+                                       'device_name': self.original_disk_name}
                     )
                 else:
                     self._log_debug("Attaching original boot disk as secondary...")
@@ -1067,6 +1122,7 @@ class RescueOrchestrator:
         self.os_type = detect_os_type(self.vm_info)
         self.architecture = detect_architecture(self.vm_info)
         self.os_flavor = detect_os_flavor(self.vm_info)
+        self.boot_mode = detect_boot_mode(self.vm_info)
         self._log_debug(f"Detected OS: {get_os_display_name(self.os_type)}, Architecture: {self.architecture}")
 
         # Auto-detect rescue disk type based on machine family
@@ -1079,6 +1135,7 @@ class RescueOrchestrator:
             if disk.get('boot'):
                 self.original_disk_name = disk['source'].split('/')[-1]
                 self.original_device_name = disk['deviceName']
+                self.original_boot_attachment = capture_boot_attachment(disk)
                 if disk.get('diskSizeGb') is not None:
                     try:
                         self.original_disk_size_gb = int(disk['diskSizeGb'])
@@ -1199,10 +1256,14 @@ class RescueOrchestrator:
                             script, [self.config.fix_script]
                         )
                     else:
-                        # Bash: append with the marker relocated to the end
+                        # Bash: append with the marker relocated to the end.
+                        # Custom fixes get the same OS_FLAVOR / BOOT_MODE
+                        # context as the built-in repair scripts.
                         script = compose_startup_script(
                             script, [strip_shebang(self.config.fix_script)],
-                            repair_targets=None
+                            repair_targets=None,
+                            os_flavor=self.os_flavor or 'unknown',
+                            boot_mode=self.boot_mode or 'unknown',
                         )
                 return script
 
@@ -1331,7 +1392,10 @@ fi
         """Rollback all operations."""
         self._log_error("")
         self._log_error("Operation failed, rolling back...")
-        rollback_success = self.rollback_handler.rollback(self.state_tracker, self.operations_map)
+        rollback_success = self.rollback_handler.rollback(
+            self.state_tracker, self.operations_map,
+            label_for=self._rollback_label
+        )
 
         # Clear checkpoint after rollback regardless of success/failure.
         # Success: VM is back to original state, no checkpoint needed.
@@ -1359,4 +1423,7 @@ fi
 
     def rollback(self) -> bool:
         """Public rollback method."""
-        return self.rollback_handler.rollback(self.state_tracker, self.operations_map)
+        return self.rollback_handler.rollback(
+            self.state_tracker, self.operations_map,
+            label_for=self._rollback_label
+        )

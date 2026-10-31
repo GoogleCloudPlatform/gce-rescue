@@ -16,6 +16,11 @@ def _sanitize_ua_value(value: str) -> str:
     return value.replace(' ', '-').replace('/', '-').replace(',', '')
 
 
+# Upper bound for the fix/ value, so a long category list cannot bloat the
+# User-Agent header of every request.
+MAX_UA_FIX_LENGTH = 64
+
+
 def build_user_agent(
     session_id: str = None,
     command: str = None,
@@ -24,11 +29,12 @@ def build_user_agent(
     flavor: str = None,
     mode: str = None,
     step: str = None,
+    fix: Optional[str] = None,
 ) -> str:
     """Build gcloud-style User-Agent string for analytics tracking.
 
     Format: gce-rescue/{VERSION} session/{UUID} command/{CMD} os/{OS}
-            arch/{ARCH} flavor/{FLAVOR} mode/{MODE} step/{STEP}
+            arch/{ARCH} flavor/{FLAVOR} mode/{MODE} fix/{FIX} step/{STEP}
 
     Fields are omitted when not yet known (e.g., os/arch/flavor during
     the validation phase before OS detection has run).
@@ -41,6 +47,9 @@ def build_user_agent(
         flavor: OS flavor (debian-12, rhel-9, windows-server-2022-dc).
         mode: Execution mode (interactive, auto).
         step: Current operation step (e.g., vm-stop, disk-detach-orig).
+        fix: Fix set applied by repair: categories joined with '+'
+            (fstab+grub) or 'custom' for --fix-script. Sanitised and capped
+            at MAX_UA_FIX_LENGTH characters.
 
     Returns:
         Space-separated User-Agent string.
@@ -58,6 +67,8 @@ def build_user_agent(
         parts.append(f'flavor/{_sanitize_ua_value(flavor)}')
     if mode:
         parts.append(f'mode/{mode}')
+    if fix:
+        parts.append(f'fix/{_sanitize_ua_value(fix)[:MAX_UA_FIX_LENGTH]}')
     if step:
         parts.append(f'step/{step}')
     return ' '.join(parts)

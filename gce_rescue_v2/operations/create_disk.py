@@ -6,6 +6,7 @@ the disk that was created by this operation.
 """
 
 import time
+from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, DISK_CREATE_FAILED
 
@@ -150,12 +151,15 @@ class CreateDiskOperation(BaseOperation):
                 error=error_detail
             )
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Delete the disk created by this operation.
 
         Args:
             rollback_data (dict): Data from `execute()` containing `disk_name`.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded; False if delete failed.
@@ -170,7 +174,8 @@ class CreateDiskOperation(BaseOperation):
             self._log_debug(f"Rolling back {self.name}: deleting {disk_name}")
             self._log_info(f"  Deleting disk {disk_name}...")
 
-            self.compute.disks().delete(
+            compute = self._rollback_client(tracking_label)
+            compute.disks().delete(
                 project=self.project,
                 zone=self.zone,
                 disk=disk_name

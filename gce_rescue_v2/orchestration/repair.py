@@ -42,6 +42,7 @@ from ..core.fix_catalog import (
 )
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
+from ..utils.os_detection import detect_boot_mode, detect_os_flavor
 # Composition helpers shared with the rescue orchestrator (re-exported here
 # for backward compatibility; RESCUE_COMPLETE_MARKER is the marker used by
 # the rescue startup script).
@@ -54,6 +55,82 @@ from .restore import RestoreOrchestrator
 # Marker prefixes emitted by fix scripts to serial console
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
 REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
+
+# systemd device units on the console, e.g. 'dev-sdc.device' or
+# 'dev-disk-by\x2duuid-<uuid>.device' (escaped form, before decoding).
+_SYSTEMD_DEVICE_UNIT_RE = re.compile(r'\b(dev-[\w\\.:+-]+?)\.device\b')
+# Truncated form left in detected_pattern by the loose device-timeout rule
+# ('Timed out waiting for device dev-sdc'). Only plain kernel disk names are
+# trusted here; a truncated 'dev-disk' would match every by-* entry.
+_TIMEOUT_KERNEL_DEVICE_RE = re.compile(
+    r'Timed out waiting for device dev-'
+    r'((?:sd|vd|xvd|hd)[a-z]+\d*|nvme\d+n\d+(?:p\d+)?)\b',
+    re.IGNORECASE,
+)
+# 'Dependency failed for /datadisk.' -> /datadisk. Read from full context
+# lines only: the fstab_dependency_failed rule stores just 'for /d'.
+_DEPENDENCY_MOUNT_RE = re.compile(
+    r'Dependency failed for (/\S*?)\.?\s*$', re.IGNORECASE
+)
+# Context lines that report a device that failed to appear. 'Found device'
+# lines name healthy disks and must never produce a target.
+_FAILED_DEVICE_LINE_RE = re.compile(
+    r'start job is running for|timed out|Expecting device|Dependency failed for',
+    re.IGNORECASE,
+)
+# by-* symlink directories that map to an fstab identifier prefix.
+_BY_DIR_FSTAB_PREFIX = {
+    'by-uuid': 'UUID=',
+    'by-label': 'LABEL=',
+    'by-partuuid': 'PARTUUID=',
+}
+
+
+def _systemd_unescape(text: str) -> str:
+    """Decode systemd \\xNN escapes (e.g. '\\x2d' -> '-')."""
+    return re.sub(
+        r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), text
+    )
+
+
+def systemd_device_unit_to_fstab_target(unit: str) -> Optional[str]:
+    """Map a systemd device unit name to the identifier fstab uses.
+
+    systemd names device units after the device path with '/' turned into
+    '-' and a literal '-' escaped as '\\x2d', so the path is recovered by
+    splitting on '-' first and decoding each piece afterwards:
+
+        dev-sdc1.device                  -> /dev/sdc1
+        dev-disk-by\\x2duuid-<U>.device   -> UUID=<U>
+        dev-disk-by\\x2dlabel-<L>.device  -> LABEL=<L>
+        dev-disk-by\\x2did-<ID>.device    -> /dev/disk/by-id/<ID>
+
+    Args:
+        unit: Unit name, with or without the '.device' suffix.
+
+    Returns:
+        The fstab identifier, or None when the unit is not a block device
+        that fstab can reference unambiguously (device-mapper/LVM units, or
+        names that were already unescaped and lost their '-'/'/' boundary).
+    """
+    name = unit[:-len('.device')] if unit.endswith('.device') else unit
+    if not name.startswith('dev-'):
+        return None
+    parts = [_systemd_unescape(p) for p in name.split('-')]
+    if any(not p or '/' in p for p in parts):
+        return None
+    path = '/' + '/'.join(parts)
+
+    if len(parts) == 2:
+        # /dev/<kernel name>; /dev/mapper and /dev/disk are directories.
+        return None if parts[1] in ('mapper', 'disk') else path
+    if len(parts) == 4 and parts[1] == 'disk':
+        prefix = _BY_DIR_FSTAB_PREFIX.get(parts[2])
+        if prefix:
+            return f'{prefix}{parts[3]}'
+        if parts[2].startswith('by-'):
+            return path
+    return None
 
 # Fix scripts must run in dependency order, regardless of the order categories
 # appear in the diagnosis:
@@ -163,6 +240,14 @@ class RepairOrchestrator:
         # OS type detected during validate(); 'unknown' until then.
         # Used to OS-scope post-repair boot verification (issue #124).
         self._os_type = 'unknown'
+        # Most recent instance resource fetched from the API (validate() and
+        # _load_base_script() refresh it). The fix script environment
+        # (OS_FLAVOR, BOOT_MODE) is derived from it; None until fetched.
+        self._vm_info: Optional[Dict[str, Any]] = None
+        # Fix set recorded in the User-Agent (fix/fstab+grub, fix/custom)
+        # once execute()/execute_custom() has chosen it; None before that,
+        # so validation and diagnosis calls carry no fix/ field.
+        self._fix_label: Optional[str] = None
 
         # Progress tracking
         self._spinner_thread = None
@@ -198,7 +283,7 @@ class RepairOrchestrator:
         """Build User-Agent string for the given step."""
         return build_user_agent(
             session_id=self.session_id, command='repair',
-            mode=self.mode, step=step
+            mode=self.mode, step=step, fix=self._fix_label
         )
 
     def _create_tracked_client(self, user_agent: str):
@@ -248,6 +333,7 @@ class RepairOrchestrator:
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
+        self._vm_info = vm_info
         os_type = detect_os_type(vm_info)
         # Keep the detected OS for post-repair boot verification, so the
         # diagnosis engine only scores OS-appropriate patterns (issue #124:
@@ -528,6 +614,9 @@ class RepairOrchestrator:
         if not fixable:
             return {'status': 'no_fix', 'fixed_count': 0, 'fix_lines': [],
                     'error': None, 'snapshot_name': None, 'duration_seconds': 0}
+        # From here on every repair API call records the fix set applied.
+        # get_fixable_categories() already returns FIX_EXECUTION_ORDER order.
+        self._fix_label = '+'.join(fixable)
 
         # Destructive-fix guard: filesystem repair runs fsck/xfs_repair on
         # the user's original disk - the pre-rescue snapshot is the ONLY
@@ -564,6 +653,7 @@ class RepairOrchestrator:
             Dict with keys: status, fixed_count, fix_lines, error,
             snapshot_name, duration_seconds
         """
+        self._fix_label = 'custom'
         return self._run_repair_flow(fix_script=self.config.fix_script)
 
     def _run_repair_flow(self, repair_script: Optional[str] = None,
@@ -634,7 +724,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Rescue", RESCUE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             # Skip validation (already done)
             if not rescue.execute():
@@ -754,7 +845,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -1000,7 +1092,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -1106,12 +1199,65 @@ class RepairOrchestrator:
                         seen.add(value)
                         targets.append(value)
 
+            for value in self._extract_systemd_unit_targets(err):
+                if value not in seen:
+                    seen.add(value)
+                    targets.append(value)
+
         if not targets:
             self._log_debug(
                 "No fstab repair targets extracted from diagnosis patterns"
             )
         else:
             self._log_debug(f"Extracted fstab repair targets: {targets}")
+
+        return targets
+
+    @staticmethod
+    def _extract_systemd_unit_targets(err: Dict[str, Any]) -> List[str]:
+        """Targets named by systemd device units and failed mount points.
+
+        A device-timeout finding often carries only a truncated unit name
+        ('Timed out waiting for device dev-sdc'), while the lines around it
+        name the full unit and the mount that depended on it:
+
+            [*     ] A start job is running for dev-sdc.device (5s / 1min 30s)
+            [DEPEND] Dependency failed for /datadisk.
+
+        Those context lines are read with narrow patterns only, so a healthy
+        neighbour ('Mounted /boot/efi.', 'Found device ...') never becomes a
+        target. The root and /sysroot mounts are never returned.
+        """
+        targets: List[str] = []
+        pattern_text = err.get('detected_pattern', '') or ''
+        lines = [pattern_text] + [
+            line for line in (err.get('context_lines') or [])
+            if isinstance(line, str)
+        ]
+
+        match = _TIMEOUT_KERNEL_DEVICE_RE.search(pattern_text)
+        if match:
+            targets.append(f'/dev/{match.group(1)}')
+
+        for line in lines:
+            if not _FAILED_DEVICE_LINE_RE.search(line):
+                continue
+            for unit in _SYSTEMD_DEVICE_UNIT_RE.findall(line):
+                value = systemd_device_unit_to_fstab_target(unit)
+                if value:
+                    targets.append(value)
+
+        for line in err.get('context_lines') or []:
+            if not isinstance(line, str):
+                continue
+            match = _DEPENDENCY_MOUNT_RE.search(line)
+            if not match:
+                continue
+            mount_point = match.group(1).rstrip('/')
+            if (not mount_point or mount_point == '/sysroot'
+                    or mount_point.startswith('/sysroot/')):
+                continue
+            targets.append(mount_point)
 
         return targets
 
@@ -1137,6 +1283,7 @@ class RepairOrchestrator:
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
+        self._vm_info = vm_info
         original_disk = None
         for disk in vm_info.get('disks', []):
             if disk.get('boot'):
@@ -1185,6 +1332,16 @@ class RepairOrchestrator:
             failing_kernel = self._extract_failing_kernel(diagnosis)
             root_device = self._extract_root_device(diagnosis)
 
+        # Fix script environment: where the affected disk came from and how
+        # it boots, both taken from the instance resource fetched above so
+        # scripts need not re-detect the distribution or probe the rescue
+        # VM's firmware. Empty when no instance data is available.
+        vm_info = self._vm_info or {}
+        os_flavor = detect_os_flavor(vm_info)
+        boot_mode = detect_boot_mode(vm_info)
+        self._log_debug(
+            f"Fix script environment: OS_FLAVOR={os_flavor} BOOT_MODE={boot_mode}"
+        )
         # selinux repair tells a relabel that already ran (and did not let
         # the VM boot) from a policy load failure by the finding names.
         selinux_findings = None
@@ -1194,6 +1351,8 @@ class RepairOrchestrator:
         return compose_startup_script(base_script, fix_scripts, targets,
                                       failing_kernel=failing_kernel,
                                       root_device=root_device,
+                                      os_flavor=os_flavor,
+                                      boot_mode=boot_mode,
                                       selinux_findings=selinux_findings)
 
     def _extract_selinux_findings(self, diagnosis: Dict[str, Any]) -> List[str]:

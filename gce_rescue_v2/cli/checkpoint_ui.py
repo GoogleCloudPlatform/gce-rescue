@@ -1,6 +1,7 @@
 """Checkpoint recovery UI for interrupted operations."""
 
 import sys
+from typing import Optional, TextIO
 from ..orchestration.checkpoint import CheckpointManager, CheckpointData
 from ..utils.colors import error_prefix, warning_prefix, clear_lines
 from .output import _Spinner
@@ -75,6 +76,49 @@ def _prompt_incomplete_operation(checkpoint: CheckpointData, operation_type: str
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             return 'abort'
+
+
+def _print_quiet_checkpoint_block(checkpoint: CheckpointData, command: str,
+                                  vm_name: str, zone: str, project: str,
+                                  file: Optional[TextIO] = None) -> None:
+    """
+    Explain an incomplete operation found in --quiet mode.
+
+    Unattended runs must never resume or roll back on their own, because
+    either choice changes disks and metadata the user has not reviewed.
+    Instead this prints what was found and the commands that let the user
+    choose interactively.
+
+    Args:
+        checkpoint: Checkpoint data from the incomplete operation
+        command: The command that found it ('repair', 'rescue', ...)
+        vm_name: VM name
+        zone: GCP zone
+        project: GCP project ID
+        file: Stream to write to (stderr by default)
+    """
+    file = file or sys.stderr
+    last_step = checkpoint.get_last_completed_operation() or "None"
+    started = checkpoint.started_at[:19].replace('T', ' ')
+    flags = f"--zone={zone} --project={project}"
+
+    print(f"{error_prefix()} An incomplete {checkpoint.operation} operation was "
+          f"detected for instance [{vm_name}].", file=file)
+    print("", file=file)
+    print(f"  Started:    {started} ({checkpoint.get_age_display()})", file=file)
+    print(f"  Progress:   {checkpoint.current_step} of {checkpoint.total_steps}"
+          f" steps completed", file=file)
+    print(f"  Last step:  {last_step}", file=file)
+    print("", file=file)
+    print(f"{command} --quiet does not resume or roll back an interrupted "
+          f"operation automatically. Nothing was changed.", file=file)
+    print("", file=file)
+    print("To roll back the completed steps and retry, run without --quiet "
+          "and choose Rollback:", file=file)
+    print(f"  $ gce-rescue {command} {vm_name} {flags}", file=file)
+    print("", file=file)
+    print("To resume the interrupted rescue instead, run:", file=file)
+    print(f"  $ gce-rescue rescue {vm_name} {flags}", file=file)
 
 
 def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
@@ -205,19 +249,27 @@ def _reconcile_rescue_state(compute, project: str, zone: str, vm_name: str,
             _log(f"Original boot disk '{original_disk_name}' is detached but not in"
                  f" checkpoint - adding to rollback")
             disk_source = f"projects/{project}/zones/{zone}/disks/{original_disk_name}"
+            # Re-attach exactly as the disk was before rescue when the
+            # checkpoint recorded it (#170); older checkpoints fall back.
+            attachment = context.get('original_boot_attachment') or {}
+            disk_info = {
+                'source': disk_source,
+                'boot': True,
+                'autoDelete': attachment.get('autoDelete', True),
+                'deviceName': (attachment.get('deviceName')
+                               or context.get('original_device_name')
+                               or original_disk_name),
+                'mode': attachment.get('mode', 'READ_WRITE')
+            }
+            if attachment.get('interface'):
+                disk_info['interface'] = attachment['interface']
             state_tracker.add_operation(
                 operation_name="Detach Boot Disk",
                 success=True,
                 message="Detected via reconciliation (completed but not checkpointed)",
                 rollback_data={
                     'vm_name': vm_name,
-                    'disk_info': {
-                        'source': disk_source,
-                        'boot': True,
-                        'autoDelete': True,
-                        'deviceName': original_disk_name,
-                        'mode': 'READ_WRITE'
-                    }
+                    'disk_info': disk_info
                 },
                 step_number=2
             )
@@ -274,20 +326,8 @@ def _reconcile_rescue_state(compute, project: str, zone: str, vm_name: str,
     if has_rescue_metadata and "Set Metadata" not in checkpointed_op_names:
         _log("Rescue metadata found but not in checkpoint - adding to rollback")
         # Reconstruct pre-rescue metadata by removing rescue keys and restoring backups
-        rescue_keys = {'rescue-mode', 'startup-script', 'windows-startup-script-ps1',
-                       'rescue-original-disk', 'rescue-os-type'}
-        backup_prefix = 'rescue-backup-'
-        restored_items = []
-        for item in metadata_items:
-            if item['key'] in rescue_keys:
-                continue
-            if item['key'].startswith(backup_prefix):
-                restored_items.append({
-                    'key': item['key'][len(backup_prefix):],
-                    'value': item['value']
-                })
-            else:
-                restored_items.append(item)
+        from ..operations.set_metadata import restore_pre_rescue_items
+        restored_items = restore_pre_rescue_items(metadata_items)
         original_metadata = {
             'fingerprint': metadata_obj.get('fingerprint', ''),
             'items': restored_items
