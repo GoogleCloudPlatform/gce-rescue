@@ -5,6 +5,11 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `repair --quiet` now checks for an interrupted rescue before starting. If one is found it exits with code 1 and prints the step reached and the commands to roll back or resume, instead of starting a second rescue over the first; it never rolls back or resumes on its own (#154)
+
 ## [2.6.0] - 2026-10-16
 
 ### Added

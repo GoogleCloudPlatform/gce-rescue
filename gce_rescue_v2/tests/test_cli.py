@@ -1285,6 +1285,123 @@ class TestEffectiveVerificationTimeout:
             cli.read_fix_script(str(big))
 
 
+class TestRepairIncompleteCheckpoint:
+    """Interrupted-rescue detection in repair, including --quiet (#154)."""
+
+    @staticmethod
+    def _checkpoint():
+        from gce_rescue_v2.orchestration.checkpoint import (
+            CheckpointData, CompletedOperation,
+        )
+        return CheckpointData(
+            version=1, operation='rescue', session_id='abc123',
+            started_at='2026-10-30T09:15:42Z', updated_at='2026-10-30T09:16:10Z',
+            current_step=3, total_steps=9,
+            completed_operations=[
+                CompletedOperation("Stop VM", 1, {'vm_name': 'vm-1'}),
+                CompletedOperation("Detach Boot Disk", 2, {'disk_name': 'disk'}),
+                CompletedOperation("Create Snapshot", 3, {}),
+            ],
+            context={'original_disk_name': 'disk'},
+        )
+
+    def _setup(self, monkeypatch, checkpoint):
+        """Wire repair with a fake checkpoint manager and orchestrator."""
+        base = TestHandleRepair()
+        base._setup_repair_base(monkeypatch)
+        calls = {'detect': [], 'rollback': 0, 'diagnose': 0, 'execute': 0}
+
+        class FakeCheckpointManager:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def detect_incomplete(self, operation_type=None):
+                calls['detect'].append(operation_type)
+                return checkpoint
+
+        Fake = base._make_fake_repair_orch(boot_errors=[])
+        orig_diagnose, orig_execute = Fake.diagnose, Fake.execute
+
+        def diagnose(self):
+            calls['diagnose'] += 1
+            return orig_diagnose(self)
+
+        def execute(self, diagnosis):
+            calls['execute'] += 1
+            return orig_execute(self, diagnosis)
+
+        Fake.diagnose, Fake.execute = diagnose, execute
+
+        def fake_rollback(*args, **kwargs):
+            calls['rollback'] += 1
+            return True
+
+        from gce_rescue_v2.cli import repair as repair_mod
+        monkeypatch.setattr(repair_mod, "CheckpointManager", FakeCheckpointManager)
+        monkeypatch.setattr(repair_mod, "_handle_checkpoint_rollback", fake_rollback)
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+        return calls
+
+    def test_quiet_with_checkpoint_exits_without_changes(self, monkeypatch, capsys):
+        """--quiet reports the checkpoint and recovery commands, then exits 1."""
+        calls = self._setup(monkeypatch, self._checkpoint())
+
+        def no_input(*args):
+            raise AssertionError("--quiet must not prompt")
+
+        monkeypatch.setattr("builtins.input", no_input)
+
+        exit_code = cli.handle_repair(_parse_args("repair"))
+
+        assert exit_code == 1
+        assert calls['detect'] == ['rescue']
+        assert calls['rollback'] == 0
+        assert calls['diagnose'] == 0
+        assert calls['execute'] == 0
+        err = capsys.readouterr().err
+        assert "incomplete rescue operation" in err
+        assert "[vm-1]" in err
+        assert "2026-10-30 09:15:42" in err
+        assert "3 of 9 steps completed" in err
+        assert "Create Snapshot" in err
+        assert ("gce-rescue repair vm-1 --zone=us-central1-a "
+                "--project=test-proj") in err
+        assert ("gce-rescue rescue vm-1 --zone=us-central1-a "
+                "--project=test-proj") in err
+
+    def test_quiet_without_checkpoint_proceeds(self, monkeypatch):
+        """--quiet with no checkpoint runs detection and continues to diagnose."""
+        calls = self._setup(monkeypatch, None)
+
+        exit_code = cli.handle_repair(_parse_args("repair"))
+
+        assert exit_code == 0
+        assert calls['detect'] == ['rescue']
+        assert calls['diagnose'] == 1
+        assert calls['rollback'] == 0
+
+    @pytest.mark.parametrize('choice,expected_rollbacks', [('1', 1), ('2', 0)])
+    def test_interactive_prompt_unchanged(self, monkeypatch, capsys, choice,
+                                          expected_rollbacks):
+        """Interactive mode still offers Rollback/Abort and acts on the choice."""
+        calls = self._setup(monkeypatch, self._checkpoint())
+        monkeypatch.setattr("builtins.input", lambda *a: choice)
+        args = _parse_args("repair")
+        args.quiet = False
+
+        exit_code = cli.handle_repair(args)
+
+        assert exit_code == 0
+        assert calls['detect'] == ['rescue']
+        assert calls['rollback'] == expected_rollbacks
+        assert calls['diagnose'] == 0
+        out = capsys.readouterr().out
+        assert "[1] Rollback" in out
+        assert "[2] Abort" in out
+
+
 class TestFixScriptRepairPath:
     """--fix-script on repair: diagnosis bypass and confirmation flow."""
 
