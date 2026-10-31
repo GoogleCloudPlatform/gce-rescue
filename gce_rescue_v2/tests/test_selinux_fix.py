@@ -85,10 +85,23 @@ class TestCatalog:
 
 class TestFixableGating:
 
-    @pytest.mark.parametrize('name', [
-        'selinux_policy_load_failure', 'selinux_relabel_required'])
-    def test_each_selinux_finding_is_fixable(self, name):
-        d = {'boot_errors': [_err(name)]}
+    def test_policy_load_failure_is_fixable(self):
+        d = {'boot_errors': [_err('selinux_policy_load_failure')]}
+        orch = _orchestrator()
+        assert orch.get_fixable_categories(d) == ['selinux']
+        assert orch.get_unfixable_categories(d) == []
+
+    def test_relabel_banner_alone_is_not_repaired(self):
+        # A relabel in progress resolves itself; repairing it would stop the
+        # VM mid-relabel and set permissive mode.
+        d = {'boot_errors': [_err('selinux_relabel_required')]}
+        orch = _orchestrator()
+        assert orch.get_fixable_categories(d) == []
+        assert orch.get_unfixable_categories(d) == ['selinux']
+
+    def test_relabel_banner_with_policy_failure_is_fixable(self):
+        d = {'boot_errors': [_err('selinux_relabel_required'),
+                             _err('selinux_policy_load_failure')]}
         orch = _orchestrator()
         assert orch.get_fixable_categories(d) == ['selinux']
         assert orch.get_unfixable_categories(d) == []

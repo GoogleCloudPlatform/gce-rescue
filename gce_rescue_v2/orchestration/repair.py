@@ -434,6 +434,13 @@ class RepairOrchestrator:
                 "the initramfs repair rebuilds it and regenerates the "
                 "GRUB config, so GRUB is not reinstalled"
             )
+        if ('selinux' in categories
+                and not self._selinux_repair_applicable(diagnosis)):
+            categories.remove('selinux')
+            self._log_debug(
+                "selinux findings only show a relabel in progress, which "
+                "resolves itself; excluded from automated repair"
+            )
         if ('disk_full' in categories
                 and getattr(self.config, 'resize_disk_gb', None) == 0):
             categories.remove('disk_full')
@@ -485,7 +492,27 @@ class RepairOrchestrator:
                 and not self._grub_initrd_only(diagnosis)
                 and not self._initramfs_rebuild_applicable(diagnosis)):
             categories.append('initramfs')
+        if ('selinux' not in categories
+                and any(e.get('category') == 'selinux'
+                        for e in diagnosis.get('boot_errors', []))
+                and not self._selinux_repair_applicable(diagnosis)):
+            categories.append('selinux')
         return categories
+
+    def _selinux_repair_applicable(self, diagnosis: Dict[str, Any]) -> bool:
+        """Return True if a selinux finding needs more than waiting.
+
+        The relabel banner alone marks a normal relabel that reboots the VM
+        when done. Repairing then would stop the VM mid-relabel and, because
+        /.autorelabel already exists, switch it to permissive mode. Only a
+        finding other than the banner (the policy failed to load) is
+        repaired; a relabel loop gets the manual guidance from diagnose.
+        """
+        return any(
+            e.get('category') == 'selinux'
+            and e.get('name') != 'selinux_relabel_required'
+            for e in diagnosis.get('boot_errors', [])
+        )
 
     def execute(self, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the full repair: rescue (with fix script) -> parse results -> restore.
