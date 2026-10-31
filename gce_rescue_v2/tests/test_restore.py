@@ -394,3 +394,334 @@ def test_restore_rollback_clears_checkpoint(stub_restore, monkeypatch):
     orch = _make_orch()
     assert orch.execute() is False
     clear_mock.assert_called_once()
+
+
+# ===================================================================
+# Safety snapshot lookup (issue #85)
+# ===================================================================
+
+
+class _RecordingSnapshots:
+    """snapshots() fake that records the filter and returns canned items."""
+
+    def __init__(self, items):
+        self.items = items
+        self.filters = []
+
+    def list(self, project=None, filter=None):
+        self.filters.append(filter)
+        return _Exec({'items': self.items})
+
+
+def _make_snapshot_orch(items, vm_name="my-vm", disk_name="my-vm-boot"):
+    from unittest.mock import MagicMock
+
+    compute = FakeCompute()
+    compute._snapshots = _RecordingSnapshots(items)
+    logger = MagicMock()
+    orch = RestoreOrchestrator(
+        compute=compute, project="p", zone="z", vm_name=vm_name,
+        config=RestoreConfig(), logger=logger, suppress_progress=True,
+    )
+    orch.original_disk_name = disk_name
+    return orch, compute._snapshots, logger
+
+
+def _info_messages(logger):
+    return [str(c.args[0]) for c in logger.info.call_args_list if c.args]
+
+
+def test_snapshot_check_filters_by_original_disk_name():
+    """The snapshot filter uses the original disk name, never the VM name."""
+    orch, snaps, _ = _make_snapshot_orch(
+        [{'name': 'pre-rescue-my-vm-boot-123', 'status': 'READY',
+          'creationTimestamp': '2026-01-01T00:00:00Z'}]
+    )
+
+    orch._check_snapshot_status()
+
+    assert snaps.filters == ['name:pre-rescue-my-vm-boot-*']
+    assert all('pre-rescue-my-vm-*' not in f for f in snaps.filters)
+
+
+def test_snapshot_check_ready_snapshot_no_warning():
+    """A READY snapshot named after the disk is found; no warning is printed."""
+    orch, _, logger = _make_snapshot_orch(
+        [{'name': 'pre-rescue-my-vm-boot-123', 'status': 'READY',
+          'creationTimestamp': '2026-01-01T00:00:00Z'}]
+    )
+
+    orch._check_snapshot_status()
+
+    assert not any('No safety snapshot' in m for m in _info_messages(logger))
+    debug_messages = [str(c.args[0]) for c in logger.debug.call_args_list if c.args]
+    assert any('Safety snapshot verified: pre-rescue-my-vm-boot-123' in m
+               for m in debug_messages)
+
+
+def test_snapshot_check_warns_when_none_found():
+    """With no matching snapshot the existing warning is still shown."""
+    orch, _, logger = _make_snapshot_orch([])
+
+    orch._check_snapshot_status()
+
+    assert any('No safety snapshot' in m for m in _info_messages(logger))
+
+
+def test_snapshot_check_skipped_without_disk_name():
+    """No disk name means nothing to look up; no API call, no warning."""
+    orch, snaps, logger = _make_snapshot_orch([], disk_name=None)
+
+    orch._check_snapshot_status()
+
+    assert snaps.filters == []
+    assert not any('No safety snapshot' in m for m in _info_messages(logger))
+
+
+# ===================================================================
+# enable-guest-attributes round trip (#146)
+# ===================================================================
+
+_RESCUE_ITEMS = [
+    {"key": "startup-script", "value": "rescue script"},
+    {"key": "rescue-mode", "value": "12345"},
+    {"key": "rescue-original-disk", "value": "orig-disk"},
+    {"key": "rescue-os-type", "value": "linux"},
+    {"key": "enable-guest-attributes", "value": "TRUE"},
+]
+
+
+def _metadata_after_rescue(pre_rescue_items):
+    """Metadata as SetMetadataOperation writes it during rescue."""
+    op = SetMetadataOperation(FakeCompute(), "p", "z", None)
+    return op._merge_with_backup(pre_rescue_items, _RESCUE_ITEMS)
+
+
+def _clean_metadata(items):
+    compute = FakeCompute([{"metadata": {"fingerprint": "fp", "items": items}}])
+    orch = RestoreOrchestrator(
+        compute=compute, project="p", zone="z", vm_name="vm",
+        config=RestoreConfig(), logger=None,
+    )
+    return {item["key"]: item["value"] for item in orch._get_clean_metadata()}
+
+
+def test_guest_attributes_absent_before_rescue_absent_after_restore():
+    """Rescue adds the key; restore removes it again."""
+    during = _metadata_after_rescue([{"key": "ssh-keys", "value": "user:key"}])
+    during_map = {i["key"]: i["value"] for i in during}
+    assert during_map["enable-guest-attributes"] == "TRUE"
+    assert during_map["rescue-backup-absent-keys"] == "enable-guest-attributes"
+
+    restored = _clean_metadata(during)
+
+    assert restored == {"ssh-keys": "user:key"}
+
+
+def test_guest_attributes_false_before_rescue_false_after_restore():
+    """A user-set FALSE is backed up during rescue and put back on restore."""
+    during = _metadata_after_rescue([
+        {"key": "enable-guest-attributes", "value": "FALSE"},
+        {"key": "ssh-keys", "value": "user:key"},
+    ])
+    during_map = {i["key"]: i["value"] for i in during}
+    assert during_map["enable-guest-attributes"] == "TRUE"
+    assert during_map["rescue-backup-enable-guest-attributes"] == "FALSE"
+    assert "rescue-backup-absent-keys" not in during_map
+
+    restored = _clean_metadata(during)
+
+    assert restored == {"enable-guest-attributes": "FALSE", "ssh-keys": "user:key"}
+
+
+def test_guest_attributes_true_before_rescue_kept_after_restore():
+    """A user-set TRUE stays TRUE."""
+    during = _metadata_after_rescue([{"key": "enable-guest-attributes", "value": "TRUE"}])
+
+    restored = _clean_metadata(during)
+
+    assert restored == {"enable-guest-attributes": "TRUE"}
+
+
+def test_guest_attributes_no_record_left_unchanged():
+    """VM rescued by an older version (no record): keep today's behaviour."""
+    items = [
+        {"key": "rescue-mode", "value": "12345"},
+        {"key": "startup-script", "value": "rescue script"},
+        {"key": "rescue-original-disk", "value": "orig-disk"},
+        {"key": "enable-guest-attributes", "value": "TRUE"},
+    ]
+
+    restored = _clean_metadata(items)
+
+    assert restored == {"enable-guest-attributes": "TRUE"}
+
+
+def test_guest_attributes_record_survives_resumed_rescue():
+    """Re-running the metadata step must not record rescue's own TRUE as the original."""
+    first = _metadata_after_rescue([])
+    second = _metadata_after_rescue(first)
+    second_map = {i["key"]: i["value"] for i in second}
+    assert "rescue-backup-enable-guest-attributes" not in second_map
+    assert second_map["rescue-backup-absent-keys"] == "enable-guest-attributes"
+
+    first_false = _metadata_after_rescue([{"key": "enable-guest-attributes", "value": "FALSE"}])
+    second_false = _metadata_after_rescue(first_false)
+    assert _clean_metadata(second_false)["enable-guest-attributes"] == "FALSE"
+
+
+# ===================================================================
+# Original boot attachment on restore (#170)
+# ===================================================================
+
+_REAL_GET_DISK_INFO = RestoreOrchestrator._get_disk_info
+
+_ATTACHMENT_RECORD = (
+    '{"autoDelete":true,"deviceName":"persistent-disk-0",'
+    '"interface":"NVME","mode":"READ_WRITE"}'
+)
+
+
+def _rescued_vm(with_record=True):
+    """VM in rescue mode: original disk is secondary with rescue's settings."""
+    items = [{"key": "rescue-original-disk", "value": "my-orig-disk"}]
+    if with_record:
+        items.append({"key": "rescue-backup-boot-disk-attachment", "value": _ATTACHMENT_RECORD})
+    return {
+        "disks": [
+            {"boot": True, "source": "projects/p/zones/z/disks/rescue-disk-999",
+             "deviceName": "rescue-disk-999", "autoDelete": False},
+            {"boot": False, "source": "projects/p/zones/z/disks/my-orig-disk",
+             "deviceName": "my-orig-disk", "autoDelete": False},
+        ],
+        "metadata": {"items": items},
+    }
+
+
+def _capture_attach(monkeypatch):
+    calls = []
+
+    def _attach(self, *args, **kwargs):
+        calls.append(kwargs)
+        return OperationResult(
+            operation_name=self.name, success=True, message="OK",
+            rollback_data={"vm_name": "vm",
+                           "device_name": kwargs.get("device_name") or kwargs.get("disk_name")},
+        )
+
+    monkeypatch.setattr(AttachDiskOperation, "execute", _attach)
+    return calls
+
+
+def test_restore_get_disk_info_reads_boot_attachment():
+    """_get_disk_info loads the record written at rescue time."""
+    orch = RestoreOrchestrator(
+        compute=FakeCompute([_rescued_vm()]), project="p", zone="z", vm_name="vm",
+        config=RestoreConfig(), logger=None,
+    )
+
+    orch._get_disk_info()
+
+    assert orch.original_device_name == "my-orig-disk"  # current secondary
+    assert orch.original_boot_attachment == {
+        "deviceName": "persistent-disk-0", "autoDelete": True,
+        "mode": "READ_WRITE", "interface": "NVME",
+    }
+    assert orch._get_checkpoint_context()["original_boot_attachment"] == orch.original_boot_attachment
+
+
+def test_restore_reattaches_boot_with_original_settings(stub_restore, monkeypatch):
+    """The boot re-attach uses the pre-rescue values, not the secondary attachment."""
+    # Use the real disk-info lookup so the record is read from VM metadata.
+    monkeypatch.setattr(RestoreOrchestrator, "_get_disk_info", _REAL_GET_DISK_INFO)
+    calls = _capture_attach(monkeypatch)
+
+    orch = RestoreOrchestrator(
+        compute=FakeCompute([_rescued_vm(), {"disks": []}]), project="p", zone="z",
+        vm_name="vm", config=RestoreConfig(delete_rescue_disk=False), logger=None,
+        suppress_progress=True,
+    )
+    assert orch.execute() is True
+
+    assert len(calls) == 1
+    assert calls[0]["boot"] is True
+    assert calls[0]["disk_name"] == "my-orig-disk"
+    assert calls[0]["device_name"] == "persistent-disk-0"
+    assert calls[0]["auto_delete"] is True
+    assert calls[0]["read_only"] is False
+    assert calls[0]["interface"] == "NVME"
+
+
+def test_restore_without_record_uses_default_attach(stub_restore, monkeypatch):
+    """VM rescued by an older version: attach exactly as before (no extra args)."""
+    calls = _capture_attach(monkeypatch)
+
+    orch = _make_orch()
+    assert orch.execute() is True
+
+    assert calls[0]["boot"] is True
+    for key in ("device_name", "auto_delete", "read_only", "interface"):
+        assert key not in calls[0]
+
+
+def test_restore_boot_attach_kwargs_from_resumed_checkpoint(stub_restore):
+    """A resumed restore takes the attachment from the checkpoint context."""
+    from gce_rescue_v2.orchestration.checkpoint import CheckpointData
+
+    checkpoint = CheckpointData(
+        version=1, operation="restore", session_id="abcd1234",
+        started_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:01:00Z",
+        current_step=3, total_steps=7, completed_operations=[],
+        context={
+            "rescue_disk_name": "rescue-disk-1", "original_disk_name": "my-orig-disk",
+            "original_boot_attachment": {"deviceName": "persistent-disk-0", "autoDelete": True},
+        },
+    )
+    orch = _make_orch()
+    orch.set_resume_state(checkpoint)
+
+    assert orch._boot_attach_kwargs() == {"device_name": "persistent-disk-0", "auto_delete": True}
+
+
+def test_restore_resume_without_context_reads_record_from_metadata():
+    """Older restore checkpoint without the attachment: read it from metadata."""
+    orch = RestoreOrchestrator(
+        compute=FakeCompute([_rescued_vm()]), project="p", zone="z", vm_name="vm",
+        config=RestoreConfig(), logger=None,
+    )
+
+    orch._load_boot_attachment()
+
+    assert orch._boot_attach_kwargs()["device_name"] == "persistent-disk-0"
+
+
+def test_restore_attach_rollback_detaches_original_device_name(monkeypatch):
+    """Rolling back the boot re-attach detaches persistent-disk-0, the name used."""
+    detached = []
+
+    class _Instances(FakeInstances):
+        def detachDisk(self, project=None, zone=None, instance=None, deviceName=None):
+            detached.append(deviceName)
+            return _Exec({})
+
+    compute = FakeCompute()
+    compute._instances = _Instances([])
+    op = AttachDiskOperation(compute, "p", "z", None)
+    monkeypatch.setattr(AttachDiskOperation, "_wait_for_operation", lambda self, o, timeout=300: True)
+
+    result = op.execute(vm_name="vm", disk_name="my-orig-disk", boot=True,
+                        device_name="persistent-disk-0", auto_delete=True)
+    assert op.rollback(result.rollback_data) is True
+
+    assert detached == ["persistent-disk-0"]
+
+
+def test_restore_clean_metadata_drops_attachment_record():
+    """The bookkeeping record must not come back as a 'boot-disk-attachment' key."""
+    restored = _clean_metadata([
+        {"key": "rescue-mode", "value": "1"},
+        {"key": "rescue-backup-boot-disk-attachment", "value": _ATTACHMENT_RECORD},
+        {"key": "ssh-keys", "value": "user:key"},
+    ])
+
+    assert restored == {"ssh-keys": "user:key"}

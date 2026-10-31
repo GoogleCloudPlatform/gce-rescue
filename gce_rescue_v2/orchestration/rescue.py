@@ -38,6 +38,11 @@ from ..operations import (
     VerifyStartupOperation,
     ResizeDiskOperation
 )
+from ..operations.set_metadata import (
+    RESCUE_BOOT_ATTACHMENT_KEY,
+    capture_boot_attachment,
+    encode_boot_attachment,
+)
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
@@ -145,6 +150,9 @@ class RescueOrchestrator:
         # Store original disk info
         self.original_disk_name = None
         self.original_device_name = None
+        # Original boot attachment (deviceName, autoDelete, mode, interface),
+        # saved to metadata so restore can re-attach the disk unchanged (#170)
+        self.original_boot_attachment = None
 
         # OS and architecture detection (will be set during execution)
         self.os_type = None
@@ -383,6 +391,7 @@ class RescueOrchestrator:
         if self._resumed_context:
             self.original_disk_name = self._resumed_context.get('original_disk_name')
             self.original_device_name = self._resumed_context.get('original_device_name')
+            self.original_boot_attachment = self._resumed_context.get('original_boot_attachment')
             self.rescue_disk_name = self._resumed_context.get('rescue_disk_name')
             self.os_type = self._resumed_context.get('os_type')
             self.architecture = self._resumed_context.get('architecture')
@@ -534,6 +543,8 @@ class RescueOrchestrator:
         }
         if self.original_disk_size_gb is not None:
             ctx['original_disk_size_gb'] = self.original_disk_size_gb
+        if self.original_boot_attachment:
+            ctx['original_boot_attachment'] = self.original_boot_attachment
         return ctx
 
     def validate(self) -> bool:
@@ -829,7 +840,8 @@ class RescueOrchestrator:
                     # Update checkpoint to record this step as done
                     self.checkpoint_manager.update_checkpoint(
                         step=5, operation_name="Attach Rescue Disk",
-                        rollback_data={'vm_name': self.vm_name, 'disk_name': rescue_disk_name}
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': rescue_disk_name,
+                                       'device_name': rescue_disk_name}
                     )
                 else:
                     self._log_debug("Attaching rescue disk as boot...")
@@ -877,9 +889,16 @@ class RescueOrchestrator:
                     # Let the guest write a guest attribute on completion, which
                     # the orchestrator polls as a reliable alternative to the
                     # serial-console marker (serial can drop the script's final
-                    # output burst before the process exits).
+                    # output burst before the process exits). SetMetadata
+                    # records the key's pre-rescue state (value or absence)
+                    # so restore can put it back exactly (#146).
                     {'key': 'enable-guest-attributes', 'value': 'TRUE'},
                 ]
+                if self.original_boot_attachment:
+                    metadata_items.append({
+                        'key': RESCUE_BOOT_ATTACHMENT_KEY,
+                        'value': encode_boot_attachment(self.original_boot_attachment),
+                    })
                 result = set_metadata.execute(
                     vm_name=self.vm_name,
                     metadata_items=metadata_items,
@@ -1019,7 +1038,8 @@ class RescueOrchestrator:
                     # Update checkpoint to record this step as done
                     self.checkpoint_manager.update_checkpoint(
                         step=8, operation_name="Attach Original Disk",
-                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name}
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name,
+                                       'device_name': self.original_disk_name}
                     )
                 else:
                     self._log_debug("Attaching original boot disk as secondary...")
@@ -1115,6 +1135,7 @@ class RescueOrchestrator:
             if disk.get('boot'):
                 self.original_disk_name = disk['source'].split('/')[-1]
                 self.original_device_name = disk['deviceName']
+                self.original_boot_attachment = capture_boot_attachment(disk)
                 if disk.get('diskSizeGb') is not None:
                     try:
                         self.original_disk_size_gb = int(disk['diskSizeGb'])

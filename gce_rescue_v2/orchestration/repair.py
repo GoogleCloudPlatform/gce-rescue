@@ -53,6 +53,82 @@ from .restore import RestoreOrchestrator
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
 REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
 
+# systemd device units on the console, e.g. 'dev-sdc.device' or
+# 'dev-disk-by\x2duuid-<uuid>.device' (escaped form, before decoding).
+_SYSTEMD_DEVICE_UNIT_RE = re.compile(r'\b(dev-[\w\\.:+-]+?)\.device\b')
+# Truncated form left in detected_pattern by the loose device-timeout rule
+# ('Timed out waiting for device dev-sdc'). Only plain kernel disk names are
+# trusted here; a truncated 'dev-disk' would match every by-* entry.
+_TIMEOUT_KERNEL_DEVICE_RE = re.compile(
+    r'Timed out waiting for device dev-'
+    r'((?:sd|vd|xvd|hd)[a-z]+\d*|nvme\d+n\d+(?:p\d+)?)\b',
+    re.IGNORECASE,
+)
+# 'Dependency failed for /datadisk.' -> /datadisk. Read from full context
+# lines only: the fstab_dependency_failed rule stores just 'for /d'.
+_DEPENDENCY_MOUNT_RE = re.compile(
+    r'Dependency failed for (/\S*?)\.?\s*$', re.IGNORECASE
+)
+# Context lines that report a device that failed to appear. 'Found device'
+# lines name healthy disks and must never produce a target.
+_FAILED_DEVICE_LINE_RE = re.compile(
+    r'start job is running for|timed out|Expecting device|Dependency failed for',
+    re.IGNORECASE,
+)
+# by-* symlink directories that map to an fstab identifier prefix.
+_BY_DIR_FSTAB_PREFIX = {
+    'by-uuid': 'UUID=',
+    'by-label': 'LABEL=',
+    'by-partuuid': 'PARTUUID=',
+}
+
+
+def _systemd_unescape(text: str) -> str:
+    """Decode systemd \\xNN escapes (e.g. '\\x2d' -> '-')."""
+    return re.sub(
+        r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), text
+    )
+
+
+def systemd_device_unit_to_fstab_target(unit: str) -> Optional[str]:
+    """Map a systemd device unit name to the identifier fstab uses.
+
+    systemd names device units after the device path with '/' turned into
+    '-' and a literal '-' escaped as '\\x2d', so the path is recovered by
+    splitting on '-' first and decoding each piece afterwards:
+
+        dev-sdc1.device                  -> /dev/sdc1
+        dev-disk-by\\x2duuid-<U>.device   -> UUID=<U>
+        dev-disk-by\\x2dlabel-<L>.device  -> LABEL=<L>
+        dev-disk-by\\x2did-<ID>.device    -> /dev/disk/by-id/<ID>
+
+    Args:
+        unit: Unit name, with or without the '.device' suffix.
+
+    Returns:
+        The fstab identifier, or None when the unit is not a block device
+        that fstab can reference unambiguously (device-mapper/LVM units, or
+        names that were already unescaped and lost their '-'/'/' boundary).
+    """
+    name = unit[:-len('.device')] if unit.endswith('.device') else unit
+    if not name.startswith('dev-'):
+        return None
+    parts = [_systemd_unescape(p) for p in name.split('-')]
+    if any(not p or '/' in p for p in parts):
+        return None
+    path = '/' + '/'.join(parts)
+
+    if len(parts) == 2:
+        # /dev/<kernel name>; /dev/mapper and /dev/disk are directories.
+        return None if parts[1] in ('mapper', 'disk') else path
+    if len(parts) == 4 and parts[1] == 'disk':
+        prefix = _BY_DIR_FSTAB_PREFIX.get(parts[2])
+        if prefix:
+            return f'{prefix}{parts[3]}'
+        if parts[2].startswith('by-'):
+            return path
+    return None
+
 # Fix scripts must run in dependency order, regardless of the order categories
 # appear in the diagnosis:
 #   1. filesystem — fsck first, so later fixes edit files on a clean
@@ -1076,12 +1152,65 @@ class RepairOrchestrator:
                         seen.add(value)
                         targets.append(value)
 
+            for value in self._extract_systemd_unit_targets(err):
+                if value not in seen:
+                    seen.add(value)
+                    targets.append(value)
+
         if not targets:
             self._log_debug(
                 "No fstab repair targets extracted from diagnosis patterns"
             )
         else:
             self._log_debug(f"Extracted fstab repair targets: {targets}")
+
+        return targets
+
+    @staticmethod
+    def _extract_systemd_unit_targets(err: Dict[str, Any]) -> List[str]:
+        """Targets named by systemd device units and failed mount points.
+
+        A device-timeout finding often carries only a truncated unit name
+        ('Timed out waiting for device dev-sdc'), while the lines around it
+        name the full unit and the mount that depended on it:
+
+            [*     ] A start job is running for dev-sdc.device (5s / 1min 30s)
+            [DEPEND] Dependency failed for /datadisk.
+
+        Those context lines are read with narrow patterns only, so a healthy
+        neighbour ('Mounted /boot/efi.', 'Found device ...') never becomes a
+        target. The root and /sysroot mounts are never returned.
+        """
+        targets: List[str] = []
+        pattern_text = err.get('detected_pattern', '') or ''
+        lines = [pattern_text] + [
+            line for line in (err.get('context_lines') or [])
+            if isinstance(line, str)
+        ]
+
+        match = _TIMEOUT_KERNEL_DEVICE_RE.search(pattern_text)
+        if match:
+            targets.append(f'/dev/{match.group(1)}')
+
+        for line in lines:
+            if not _FAILED_DEVICE_LINE_RE.search(line):
+                continue
+            for unit in _SYSTEMD_DEVICE_UNIT_RE.findall(line):
+                value = systemd_device_unit_to_fstab_target(unit)
+                if value:
+                    targets.append(value)
+
+        for line in err.get('context_lines') or []:
+            if not isinstance(line, str):
+                continue
+            match = _DEPENDENCY_MOUNT_RE.search(line)
+            if not match:
+                continue
+            mount_point = match.group(1).rstrip('/')
+            if (not mount_point or mount_point == '/sysroot'
+                    or mount_point.startswith('/sysroot/')):
+                continue
+            targets.append(mount_point)
 
         return targets
 
