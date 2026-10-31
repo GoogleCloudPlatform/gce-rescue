@@ -3,8 +3,15 @@
 # NOT detect_only: unlike kernel panics or OOM, these ARE fixable from
 # rescue mode - touch /.autorelabel on the mounted root, fix the policy
 # store via chroot, or boot with selinux=0/enforcing=0 on the kernel
-# command line. auto_repair stays false until startup_scripts/fixes/
-# selinux_fix.sh lands (RepairOrchestrator.validate() requires it).
+# command line.
+#
+# Automated repair: startup_scripts/fixes/selinux_fix.sh sets
+# SELINUX=permissive when the policy named by SELINUXTYPE= is missing (the
+# user then reinstalls it), otherwise schedules a full relabel
+# (/.autorelabel). When /.autorelabel is already on the disk a relabel has
+# not helped, so it falls back to SELINUX=permissive. /etc/selinux/config
+# is backed up to /var/backups/gce-rescue/ first; the kernel command line is
+# only reported, never changed.
 #
 # No survives_boot_success (deviation from the master-plan draft, which
 # suggested true): a policy-load failure freezes boot, so it can never
@@ -15,7 +22,7 @@
 category: selinux
 os: linux
 fix_guidance: "From rescue mode, force a full relabel on next boot (sudo touch /mnt/sysroot/.autorelabel), or boot once with SELinux disabled by adding selinux=0 to the kernel command line via the GRUB menu"
-auto_repair: false
+auto_repair: true
 
 patterns:
   - name: selinux_policy_load_failure

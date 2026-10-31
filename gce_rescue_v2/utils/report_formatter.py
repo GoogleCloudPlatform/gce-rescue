@@ -246,13 +246,13 @@ class DiagnosisReportFormatter:
         auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
 
         # Auto-repair for fstab needs extractable identifiers to target specific
-        # entries; disk_full and grub are repaired as a whole, and initramfs
-        # only needs a finding that a rebuild can fix.
+        # entries; disk_full, grub and selinux are repaired as a whole, and
+        # initramfs only needs a finding that a rebuild can fix.
         if auto_fixable:
             has_targets = grub_as_initramfs or any(
                 (err.get('name') in INITRAMFS_REBUILD_PATTERNS)
                 if err['category'] == 'initramfs'
-                else (err['category'] in ('disk_full', 'grub')
+                else (err['category'] in ('disk_full', 'grub', 'selinux')
                       or _extract_identifier(err.get('detected_pattern', '')))
                 for err in errors
                 if err['category'] in SUPPORTED_FIX_CATEGORIES

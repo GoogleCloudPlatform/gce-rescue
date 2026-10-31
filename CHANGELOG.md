@@ -5,6 +5,11 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `repair`: automatic SELinux repair on Linux. Schedules a full relabel (`/.autorelabel`) when the policy is installed, and sets `SELINUX=permissive` when the configured policy is missing, so the VM boots and the policy can be reinstalled. Changed files are backed up to `/var/backups/gce-rescue/` (#174)
+
 ## [2.6.0] - 2026-10-16
 
 ### Added

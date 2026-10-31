@@ -9,6 +9,8 @@ change):
     - fstab: Comments out invalid UUID/device/label entries
     - filesystem: Repairs the filesystem (fsck) before the mount attempt
     - initramfs: Rebuilds the initramfs inside the target chroot
+    - selinux: Schedules a full relabel, or sets SELINUX=permissive when the
+      configured policy is missing
     - grub: Reinstalls/regenerates the GRUB configuration
 
 Usage:
@@ -61,10 +63,14 @@ REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
 #      later fixes (initramfs, grub) write new files to the boot disk.
 #   3. fstab — mount-config edits on the now-clean filesystem.
 #   4. initramfs — rebuild the initrd after config changes.
-#   5. grub — last, because GRUB config regeneration must see the rebuilt
+#   5. selinux — a relabel only matters once the disk mounts and the kernel
+#      boots, so it follows the disk, filesystem and initramfs fixes.
+#   6. grub — last, because GRUB config regeneration must see the rebuilt
 #      initrd to reference the correct images.
 # Categories not listed here keep their diagnosis order, after the known ones.
-FIX_EXECUTION_ORDER = ['filesystem', 'disk_full', 'fstab', 'initramfs', 'grub']
+FIX_EXECUTION_ORDER = [
+    'filesystem', 'disk_full', 'fstab', 'initramfs', 'selinux', 'grub',
+]
 
 # Minimum verification timeouts (seconds) per fix category. The OS default
 # (300s Linux) only covers the disk mount; a forced fsck, a tool install, or
@@ -83,6 +89,19 @@ REPAIR_VERIFICATION_FLOOR = {
 # lacks the disk driver looks "healthy" for the first three minutes. The
 # wait ends early as soon as the boot reaches userspace.
 INITRAMFS_BOOT_WAIT_SECONDS = 270
+
+# Post-restore boot check after an SELinux repair: a scheduled relabel
+# (/.autorelabel) runs before the boot reaches userspace, rewrites the label
+# of every file (minutes on a 10-50 GB root disk) and then reboots once, so
+# the first boot never prints a success marker. The wait ends early as soon
+# as the boot after the relabel reaches userspace.
+SELINUX_BOOT_WAIT_SECONDS = 420
+
+# Post-restore boot wait per fix category; the longest one applies.
+REPAIR_BOOT_WAIT_SECONDS = {
+    'initramfs': INITRAMFS_BOOT_WAIT_SECONDS,
+    'selinux': SELINUX_BOOT_WAIT_SECONDS,
+}
 
 # Line the base mount script logs at startup-script start. Serial output can
 # span several boots of the same VM within one rescue session; only markers
@@ -369,9 +388,10 @@ class RepairOrchestrator:
     def get_fixable_categories(self, diagnosis: Dict[str, Any]) -> List[str]:
         """Return list of categories from diagnosis that have fix scripts.
 
-        The list is sorted into FIX_EXECUTION_ORDER (filesystem, fstab,
-        initramfs, grub) so fix scripts always compose in dependency order;
-        unknown categories keep their diagnosis order after the known ones.
+        The list is sorted into FIX_EXECUTION_ORDER (filesystem, disk_full,
+        fstab, initramfs, selinux, grub) so fix scripts always compose in
+        dependency order; unknown categories keep their diagnosis order
+        after the known ones.
         filesystem is excluded when its findings only name non-boot devices
         (see _filesystem_errors_on_boot_disk); initramfs is excluded when a
         rebuild cannot fix any of its findings (see
@@ -1138,9 +1158,32 @@ class RepairOrchestrator:
             failing_kernel = self._extract_failing_kernel(diagnosis)
             root_device = self._extract_root_device(diagnosis)
 
+        # selinux repair tells a relabel that already ran (and did not let
+        # the VM boot) from a policy load failure by the finding names.
+        selinux_findings = None
+        if 'selinux' in fixable:
+            selinux_findings = self._extract_selinux_findings(diagnosis)
+
         return compose_startup_script(base_script, fix_scripts, targets,
                                       failing_kernel=failing_kernel,
-                                      root_device=root_device)
+                                      root_device=root_device,
+                                      selinux_findings=selinux_findings)
+
+    def _extract_selinux_findings(self, diagnosis: Dict[str, Any]) -> List[str]:
+        """Return the distinct selinux pattern names in the diagnosis.
+
+        compose_startup_script re-validates the names before they are
+        injected into the startup script as GCE_SELINUX_FINDINGS.
+        """
+        names: List[str] = []
+        for err in diagnosis.get('boot_errors', []):
+            if err.get('category') != 'selinux':
+                continue
+            name = err.get('name') or ''
+            if name and name not in names:
+                names.append(name)
+        self._log_debug(f"selinux findings from diagnosis: {names}")
+        return names
 
     def _extract_failing_kernel(self, diagnosis: Dict[str, Any]) -> str:
         """Return the version of the kernel that failed to boot, or ''.
@@ -1385,6 +1428,8 @@ class RepairOrchestrator:
         initramfs repair the budget is longer: an initramfs that still lacks
         the disk driver only fails after dracut's device-wait timeout
         (about three minutes), which a fixed 45 s wait would call healthy.
+        After an SELinux repair it is longer still: the scheduled relabel
+        runs, then reboots (see REPAIR_BOOT_WAIT_SECONDS).
 
         Args:
             categories: Fix categories that were applied (None for custom
@@ -1397,9 +1442,10 @@ class RepairOrchestrator:
 
         BOOT_WAIT_SECONDS = 45
         POLL_SECONDS = 15
-        deadline = BOOT_WAIT_SECONDS
-        if categories and 'initramfs' in categories:
-            deadline = INITRAMFS_BOOT_WAIT_SECONDS
+        deadline = max(
+            [BOOT_WAIT_SECONDS]
+            + [REPAIR_BOOT_WAIT_SECONDS.get(c, 0) for c in categories or []]
+        )
         self._log_debug(
             f"Waiting up to {deadline}s for VM to boot before verification"
         )

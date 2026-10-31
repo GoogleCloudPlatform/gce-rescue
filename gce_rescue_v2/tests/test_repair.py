@@ -253,9 +253,9 @@ class TestFixExecutionOrdering:
         )
 
     def test_execution_order_constant(self):
-        """filesystem first, disk_full before fstab, grub last."""
+        """filesystem first, disk_full before fstab, selinux before grub."""
         assert FIX_EXECUTION_ORDER == [
-            'filesystem', 'disk_full', 'fstab', 'initramfs', 'grub'
+            'filesystem', 'disk_full', 'fstab', 'initramfs', 'selinux', 'grub'
         ]
 
     def test_categories_sorted_into_execution_order(self):
@@ -1529,7 +1529,8 @@ class TestSupportedCategories:
 
     def test_supported_set_is_exactly_the_shipped_scripts(self):
         """The full auto-repairable set — update when a new fix script lands."""
-        assert SUPPORTED_FIX_CATEGORIES == {'fstab', 'grub', 'disk_full', 'initramfs'}
+        assert SUPPORTED_FIX_CATEGORIES == {
+            'fstab', 'grub', 'disk_full', 'initramfs', 'selinux'}
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""

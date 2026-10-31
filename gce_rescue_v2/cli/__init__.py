@@ -315,6 +315,8 @@ SUPPORTED FIXES
     - grub: Reinstalls GRUB and regenerates its configuration
     - initramfs: Rebuilds the initramfs of the kernel that failed to boot
       (boots the previous kernel if the rebuild fails)
+    - selinux: Schedules a full relabel (/.autorelabel), or sets
+      SELINUX=permissive when the configured policy is missing
     - disk_full: Resizes the boot disk, expands the root filesystem, and
       reports the largest directories (no files are deleted)
 

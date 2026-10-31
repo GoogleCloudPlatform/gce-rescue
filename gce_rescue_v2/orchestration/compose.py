@@ -9,9 +9,14 @@ Shared by the repair orchestrator (diagnosis-driven fixes) and the rescue
 orchestrator (custom fix scripts via --fix-script).
 """
 
+import re
 from typing import List, Optional, Tuple
 
 from ..core.diagnosis import is_safe_kernel_version, is_safe_root_device
+
+# Pattern names handed to the selinux fix script (GCE_SELINUX_FINDINGS). The
+# value is injected into a shell script, so only plain rule names pass.
+_SAFE_SELINUX_FINDING_RE = re.compile(r'selinux_[a-z0-9_]{1,64}')
 
 # Completion marker emitted by the base mount script to the serial console
 RESCUE_COMPLETE_MARKER = 'GCE-RESCUE-COMPLETE'
@@ -98,7 +103,8 @@ def strip_shebang(script: str) -> str:
 def compose_startup_script(base_script: str, fix_scripts: List[str],
                            repair_targets: Optional[List[str]] = None,
                            failing_kernel: Optional[str] = None,
-                           root_device: Optional[str] = None) -> str:
+                           root_device: Optional[str] = None,
+                           selinux_findings: Optional[List[str]] = None) -> str:
     """Combine the base mount script with fix script(s) into one startup script.
 
     The base script's GCE-RESCUE-COMPLETE marker is relocated to the very end
@@ -129,6 +135,11 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
             exists before rebuilding). Pass a string (possibly empty) to
             inject GCE_BOOT_ROOT; values failing is_safe_root_device() are
             injected as empty. None omits the variable.
+        selinux_findings: Names of the diagnosed selinux patterns, for the
+            selinux fix script (it tells a failed relabel from a policy
+            load failure). Pass a list (possibly empty) to inject
+            GCE_SELINUX_FINDINGS; names that are not plain selinux_* rule
+            names are dropped. None omits the variable.
 
     Returns:
         The combined startup script.
@@ -231,6 +242,18 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
             root_device = ''
         combined += '# root= of the boot that failed (from diagnosis; may be empty)\n'
         combined += f'GCE_BOOT_ROOT="{root_device}"\n\n'
+
+    # Inject the diagnosed selinux pattern names, re-validated like the
+    # values above; anything else is dropped.
+    if selinux_findings is not None:
+        names = []
+        for name in selinux_findings:
+            if (isinstance(name, str)
+                    and _SAFE_SELINUX_FINDING_RE.fullmatch(name)
+                    and name not in names):
+                names.append(name)
+        combined += '# selinux patterns found by diagnosis (may be empty)\n'
+        combined += f'GCE_SELINUX_FINDINGS="{" ".join(names)}"\n\n'
 
     for fix_body in fix_bodies:
         combined += fix_body + '\n\n'

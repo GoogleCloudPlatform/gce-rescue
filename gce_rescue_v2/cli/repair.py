@@ -26,6 +26,7 @@ FIX_LABELS = {
     'filesystem': 'Fix filesystem',
     'disk_full': 'Fix disk full',
     'initramfs': 'Rebuild initramfs',
+    'selinux': 'Fix SELinux',
     'grub': 'Fix GRUB',
 }
 
@@ -879,6 +880,8 @@ def handle_repair(args: argparse.Namespace) -> int:
             'disk_full': disk_full_desc,
             'fstab': 'Fix /etc/fstab (comment out invalid entries)',
             'initramfs': 'Rebuild the initramfs for the installed kernel',
+            'selinux': ('Schedule a full SELinux relabel (or set '
+                        'SELINUX=permissive if the policy is missing)'),
             'grub': 'Reinstall GRUB and regenerate its configuration',
         }
         if fstab_targets:
