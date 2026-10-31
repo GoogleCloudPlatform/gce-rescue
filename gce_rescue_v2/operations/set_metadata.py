@@ -5,9 +5,10 @@ Manages instance metadata for rescue operations. Preserves existing metadata
 by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
+import json
 import logging
 import time
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, METADATA_SET_FAILED
@@ -37,11 +38,19 @@ RESCUE_RESTORABLE_KEYS = [
 # rescue added them.
 RESCUE_ABSENT_KEYS_KEY = f'{RESCUE_BACKUP_PREFIX}absent-keys'
 
+# JSON record of the original boot disk attachment (deviceName, autoDelete,
+# mode, interface), so restore re-attaches the boot disk exactly as it was
+# instead of with rescue's secondary-disk settings (#170).
+RESCUE_BOOT_ATTACHMENT_KEY = f'{RESCUE_BACKUP_PREFIX}boot-disk-attachment'
+
 # rescue-backup-* keys that hold rescue bookkeeping rather than a backed-up
 # user key, so restore must never turn them back into a metadata key.
 RESCUE_BACKUP_RECORD_KEYS = {
     RESCUE_ABSENT_KEYS_KEY,
+    RESCUE_BOOT_ATTACHMENT_KEY,
 }
+
+_DISK_MODES = ('READ_WRITE', 'READ_ONLY')
 
 # Keys written for the rescue session itself; removed outright on restore.
 RESCUE_SESSION_KEYS = [
@@ -70,6 +79,70 @@ def parse_absent_keys(value: Optional[str]) -> Set[str]:
     if not value:
         return set()
     return {key.strip() for key in value.split(',') if key.strip()}
+
+
+def capture_boot_attachment(disk: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the attachment properties of a boot disk entry (instance.disks[]).
+
+    Args:
+        disk: The boot disk entry from instances().get().
+
+    Returns:
+        Dict with deviceName, autoDelete, mode and, when set, interface.
+    """
+    attachment: Dict[str, Any] = {
+        'deviceName': disk.get('deviceName'),
+        'autoDelete': bool(disk.get('autoDelete', False)),
+        'mode': disk.get('mode', 'READ_WRITE'),
+    }
+    if disk.get('interface'):
+        attachment['interface'] = disk['interface']
+    return attachment
+
+
+def encode_boot_attachment(attachment: Dict[str, Any]) -> str:
+    """Serialize a boot attachment record for RESCUE_BOOT_ATTACHMENT_KEY."""
+    return json.dumps(attachment, sort_keys=True, separators=(',', ':'))
+
+
+def decode_boot_attachment(value: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse a RESCUE_BOOT_ATTACHMENT_KEY value, keeping only valid fields.
+
+    Args:
+        value: The metadata value, or None when the key is absent.
+
+    Returns:
+        Dict with any of deviceName, autoDelete, mode, interface, or None if
+        the record is missing or unusable.
+    """
+    if not value:
+        return None
+    try:
+        raw = json.loads(value)
+    except (TypeError, ValueError) as e:
+        _logger.debug("Ignoring unreadable boot attachment record: %s", e)
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    attachment: Dict[str, Any] = {}
+    if isinstance(raw.get('deviceName'), str) and raw['deviceName']:
+        attachment['deviceName'] = raw['deviceName']
+    if isinstance(raw.get('autoDelete'), bool):
+        attachment['autoDelete'] = raw['autoDelete']
+    if raw.get('mode') in _DISK_MODES:
+        attachment['mode'] = raw['mode']
+    if isinstance(raw.get('interface'), str) and raw['interface']:
+        attachment['interface'] = raw['interface']
+    return attachment or None
+
+
+def find_boot_attachment(items: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    """Return the boot attachment record from metadata items, if present."""
+    for item in items:
+        if item.get('key') == RESCUE_BOOT_ATTACHMENT_KEY:
+            return decode_boot_attachment(item.get('value'))
+    return None
 
 
 def restore_pre_rescue_items(items: List[Dict[str, str]],

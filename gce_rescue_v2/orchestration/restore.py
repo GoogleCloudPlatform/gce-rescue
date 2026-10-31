@@ -13,6 +13,10 @@ Coordinates the restore workflow (exit rescue mode):
 """
 
 import time
+from typing import Any, Dict
+
+from googleapiclient.errors import HttpError
+
 from ..core.config import RestoreConfig, build_user_agent
 from ..utils.os_detection import detect_os_type, detect_architecture, detect_os_flavor
 from ..validators import (
@@ -29,7 +33,7 @@ from ..operations import (
     StartVMOperation,
     DeleteDiskOperation
 )
-from ..operations.set_metadata import restore_pre_rescue_items
+from ..operations.set_metadata import find_boot_attachment, restore_pre_rescue_items
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
@@ -109,6 +113,9 @@ class RestoreOrchestrator:
         self.rescue_device_name = None
         self.original_disk_name = None
         self.original_device_name = None
+        # Pre-rescue boot attachment recorded by rescue (#170); None when the
+        # VM was rescued by a version that did not record it
+        self.original_boot_attachment = None
 
         # Progress tracking for spinner with phases
         import threading
@@ -278,6 +285,7 @@ class RestoreOrchestrator:
             self.rescue_device_name = self._resumed_context.get('rescue_device_name')
             self.original_disk_name = self._resumed_context.get('original_disk_name')
             self.original_device_name = self._resumed_context.get('original_device_name')
+            self.original_boot_attachment = self._resumed_context.get('original_boot_attachment')
 
         self._log_debug(f"Resume state set: continuing from step {self._resume_from_step + 1}")
 
@@ -348,6 +356,7 @@ class RestoreOrchestrator:
             'rescue_device_name': self.rescue_device_name,
             'original_disk_name': self.original_disk_name,
             'original_device_name': self.original_device_name,
+            'original_boot_attachment': self.original_boot_attachment,
             'log_file': self.log_file
         }
 
@@ -401,6 +410,12 @@ class RestoreOrchestrator:
             # Get disk info (before progress display) if not resuming
             if not self._resume_from_step or not self.rescue_disk_name:
                 self._get_disk_info()
+
+            # Checkpoint from a version that did not carry the boot
+            # attachment: read it from rescue metadata while it still exists.
+            if (self._resume_from_step and self.original_boot_attachment is None
+                    and not self._should_skip_step(4)):
+                self._load_boot_attachment()
 
             # Check snapshot status (warn if failed or missing)
             if not self._resume_from_step:
@@ -529,9 +544,13 @@ class RestoreOrchestrator:
                 # Idempotency check: skip if original disk already attached as boot
                 if self._is_disk_boot(self.original_disk_name):
                     self._log_debug("Skipping Step 4 (Attach Original Disk) - disk already attached as boot")
+                    boot_device_name = (self.original_boot_attachment or {}).get(
+                        'deviceName', self.original_disk_name
+                    )
                     self.checkpoint_manager.update_checkpoint(
                         step=4, operation_name="Attach Original Disk",
-                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name}
+                        rollback_data={'vm_name': self.vm_name, 'disk_name': self.original_disk_name,
+                                       'device_name': boot_device_name}
                     )
                 else:
                     self._log_debug("Attaching boot disk...")
@@ -539,7 +558,8 @@ class RestoreOrchestrator:
                         vm_name=self.vm_name,
                         disk_name=self.original_disk_name,
                         boot=True,
-                        tracking_label=self._ua('disk-attach-orig')
+                        tracking_label=self._ua('disk-attach-orig'),
+                        **self._boot_attach_kwargs()
                     )
                     self.state_tracker.add_operation("Attach Original Disk", result.success, result.message, result.rollback_data, step_number=4)
                     if not result.success:
@@ -677,6 +697,9 @@ class RestoreOrchestrator:
             if item['key'] == 'rescue-original-disk':
                 self.original_disk_name = item['value']
                 break
+        self.original_boot_attachment = find_boot_attachment(metadata.get('items', []))
+        if self.original_boot_attachment:
+            self._log_debug(f"Original boot attachment: {self.original_boot_attachment}")
 
         # Validate we found the original disk name in metadata
         if not self.original_disk_name:
@@ -721,6 +744,42 @@ class RestoreOrchestrator:
             self._log_error("Check attached disks:")
             self._log_error(f"  gcloud compute instances describe {self.vm_name} --zone={self.zone} --format='value(disks)'")
             raise ValueError(f"Original disk '{self.original_disk_name}' not found on VM")
+
+    def _load_boot_attachment(self) -> None:
+        """Read the pre-rescue boot attachment record from VM metadata."""
+        try:
+            vm = self.compute.instances().get(
+                project=self.project,
+                zone=self.zone,
+                instance=self.vm_name
+            ).execute()
+        except HttpError as e:
+            self._log_debug(f"Could not read boot attachment record: {e}")
+            return
+        items = vm.get('metadata', {}).get('items', [])
+        self.original_boot_attachment = find_boot_attachment(items)
+
+    def _boot_attach_kwargs(self) -> Dict[str, Any]:
+        """AttachDiskOperation arguments that recreate the original boot attachment.
+
+        Uses the values recorded at rescue time, not the current secondary
+        attachment (whose deviceName is the disk name and autoDelete is
+        False). Without a record, returns {} so the attach behaves as before.
+        """
+        attachment = self.original_boot_attachment
+        if not attachment:
+            self._log_debug("No boot attachment record; using default attach settings")
+            return {}
+        kwargs: Dict[str, Any] = {}
+        if attachment.get('deviceName'):
+            kwargs['device_name'] = attachment['deviceName']
+        if 'autoDelete' in attachment:
+            kwargs['auto_delete'] = attachment['autoDelete']
+        if attachment.get('mode'):
+            kwargs['read_only'] = attachment['mode'] == 'READ_ONLY'
+        if attachment.get('interface'):
+            kwargs['interface'] = attachment['interface']
+        return kwargs
 
     def _get_clean_metadata(self) -> list:
         """Get metadata with rescue items removed and backed up items restored.
