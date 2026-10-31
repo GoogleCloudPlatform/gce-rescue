@@ -141,13 +141,16 @@ class AttachDiskOperation(BaseOperation):
                 error=error_detail
             )
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Detach the disk that was attached by this operation.
 
         Args:
             rollback_data (dict): Data from `execute()` including `vm_name` and
                 `device_name` to identify the attached disk.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded; False if detachment failed.
@@ -163,7 +166,8 @@ class AttachDiskOperation(BaseOperation):
             self._log_debug(f"Rolling back {self.name}: detaching disk")
             self._log_info(f"  Detaching disk...")
 
-            operation = self.compute.instances().detachDisk(
+            compute = self._rollback_client(tracking_label)
+            operation = compute.instances().detachDisk(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,

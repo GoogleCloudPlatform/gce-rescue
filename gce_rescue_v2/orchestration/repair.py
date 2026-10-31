@@ -39,6 +39,7 @@ from ..core.fix_catalog import (
 )
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
+from ..utils.os_detection import detect_boot_mode, detect_os_flavor
 # Composition helpers shared with the rescue orchestrator (re-exported here
 # for backward compatibility; RESCUE_COMPLETE_MARKER is the marker used by
 # the rescue startup script).
@@ -218,6 +219,14 @@ class RepairOrchestrator:
         # OS type detected during validate(); 'unknown' until then.
         # Used to OS-scope post-repair boot verification (issue #124).
         self._os_type = 'unknown'
+        # Most recent instance resource fetched from the API (validate() and
+        # _load_base_script() refresh it). The fix script environment
+        # (OS_FLAVOR, BOOT_MODE) is derived from it; None until fetched.
+        self._vm_info: Optional[Dict[str, Any]] = None
+        # Fix set recorded in the User-Agent (fix/fstab+grub, fix/custom)
+        # once execute()/execute_custom() has chosen it; None before that,
+        # so validation and diagnosis calls carry no fix/ field.
+        self._fix_label: Optional[str] = None
 
         # Progress tracking
         self._spinner_thread = None
@@ -253,7 +262,7 @@ class RepairOrchestrator:
         """Build User-Agent string for the given step."""
         return build_user_agent(
             session_id=self.session_id, command='repair',
-            mode=self.mode, step=step
+            mode=self.mode, step=step, fix=self._fix_label
         )
 
     def _create_tracked_client(self, user_agent: str):
@@ -303,6 +312,7 @@ class RepairOrchestrator:
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
+        self._vm_info = vm_info
         os_type = detect_os_type(vm_info)
         # Keep the detected OS for post-repair boot verification, so the
         # diagnosis engine only scores OS-appropriate patterns (issue #124:
@@ -557,6 +567,9 @@ class RepairOrchestrator:
         if not fixable:
             return {'status': 'no_fix', 'fixed_count': 0, 'fix_lines': [],
                     'error': None, 'snapshot_name': None, 'duration_seconds': 0}
+        # From here on every repair API call records the fix set applied.
+        # get_fixable_categories() already returns FIX_EXECUTION_ORDER order.
+        self._fix_label = '+'.join(fixable)
 
         # Destructive-fix guard: filesystem repair runs fsck/xfs_repair on
         # the user's original disk - the pre-rescue snapshot is the ONLY
@@ -593,6 +606,7 @@ class RepairOrchestrator:
             Dict with keys: status, fixed_count, fix_lines, error,
             snapshot_name, duration_seconds
         """
+        self._fix_label = 'custom'
         return self._run_repair_flow(fix_script=self.config.fix_script)
 
     def _run_repair_flow(self, repair_script: Optional[str] = None,
@@ -663,7 +677,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Rescue", RESCUE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             # Skip validation (already done)
             if not rescue.execute():
@@ -783,7 +798,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -1029,7 +1045,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -1219,6 +1236,7 @@ class RepairOrchestrator:
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
+        self._vm_info = vm_info
         original_disk = None
         for disk in vm_info.get('disks', []):
             if disk.get('boot'):
@@ -1267,9 +1285,22 @@ class RepairOrchestrator:
             failing_kernel = self._extract_failing_kernel(diagnosis)
             root_device = self._extract_root_device(diagnosis)
 
+        # Fix script environment: where the affected disk came from and how
+        # it boots, both taken from the instance resource fetched above so
+        # scripts need not re-detect the distribution or probe the rescue
+        # VM's firmware. Empty when no instance data is available.
+        vm_info = self._vm_info or {}
+        os_flavor = detect_os_flavor(vm_info)
+        boot_mode = detect_boot_mode(vm_info)
+        self._log_debug(
+            f"Fix script environment: OS_FLAVOR={os_flavor} BOOT_MODE={boot_mode}"
+        )
+
         return compose_startup_script(base_script, fix_scripts, targets,
                                       failing_kernel=failing_kernel,
-                                      root_device=root_device)
+                                      root_device=root_device,
+                                      os_flavor=os_flavor,
+                                      boot_mode=boot_mode)
 
     def _extract_failing_kernel(self, diagnosis: Dict[str, Any]) -> str:
         """Return the version of the kernel that failed to boot, or ''.

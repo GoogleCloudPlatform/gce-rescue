@@ -11,13 +11,15 @@ Coordinates the rescue workflow:
 
 import time
 import uuid
+from typing import Optional
+
 from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX, build_user_agent
 from .compose import (
     compose_startup_script, compose_startup_script_windows, strip_shebang,
 )
 from ..utils.os_detection import (
     detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64,
-    get_rescue_disk_type, detect_os_flavor
+    get_rescue_disk_type, detect_os_flavor, detect_boot_mode
 )
 from ..validators import (
     ValidationRunner,
@@ -44,6 +46,20 @@ from ..operations.set_metadata import (
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
+
+# User-Agent step of each rescue operation (the tracking_label passed to its
+# execute()), keyed by its operations_map name. Rollback calls are tagged
+# step/rollback-<step>.
+RESCUE_ROLLBACK_STEPS = {
+    "Stop VM": 'vm-stop',
+    "Detach Boot Disk": 'disk-detach-orig',
+    "Create Snapshot": 'disk-snapshot',
+    "Create Rescue Disk": 'disk-create-rescue',
+    "Attach Rescue Disk": 'disk-attach-rescue',
+    "Set Metadata": 'meta-set-rescue-keys',
+    "Start VM": 'vm-start',
+    "Attach Original Disk": 'disk-attach-orig',
+}
 
 
 class RescueOrchestrator:
@@ -84,7 +100,8 @@ class RescueOrchestrator:
     def __init__(self, compute, project: str, zone: str, vm_name: str,
                  config: RescueConfig = None, logger=None, log_file: str = None,
                  startup_script_override: str = None, suppress_progress: bool = False,
-                 progress_callback=None, session_id: str = None, mode: str = None):
+                 progress_callback=None, session_id: str = None, mode: str = None,
+                 fix_label: Optional[str] = None):
         """
         Initialize rescue orchestrator.
 
@@ -101,6 +118,8 @@ class RescueOrchestrator:
             progress_callback: Optional callback(phase_label) invoked on each step
             session_id: Analytics session UUID (12-char hex)
             mode: Execution mode ('interactive' or 'auto')
+            fix_label: Fix set of the repair run this rescue belongs to
+                (fix/ in the User-Agent); None outside repair.
         """
         self.compute = compute
         self.project = project
@@ -121,6 +140,7 @@ class RescueOrchestrator:
         self._progress_callback = progress_callback
         self.session_id = session_id
         self.mode = mode
+        self.fix_label = fix_label
 
         # State tracking
         self.state_tracker = StateTracker()
@@ -138,6 +158,9 @@ class RescueOrchestrator:
         self.os_type = None
         self.architecture = None
         self.os_flavor = None
+        # Firmware of the ORIGINAL boot disk (uefi/bios/unknown), read from
+        # the instance before the disk swap; exported to --fix-script runs.
+        self.boot_mode = None
         self.vm_info = None
         self.original_disk_size_gb = None
 
@@ -331,12 +354,24 @@ class RescueOrchestrator:
         except Exception:
             return self.compute
 
+    def _rollback_label(self, operation_name: str) -> str:
+        """User-Agent for rolling back one operation of this rescue.
+
+        Same fields as the forward call, with step/rollback-<step>, so a
+        session's rollback shows up in usage tracking.
+        """
+        step = RESCUE_ROLLBACK_STEPS.get(
+            operation_name, operation_name.lower().replace(' ', '-')
+        )
+        return self._ua(f'rollback-{step}')
+
     def _ua(self, step: str) -> str:
         """Build User-Agent string for the given step."""
         return build_user_agent(
             session_id=self.session_id, command='rescue',
             os_type=self.os_type, arch=self.architecture,
-            flavor=self.os_flavor, mode=self.mode, step=step
+            flavor=self.os_flavor, mode=self.mode, step=step,
+            fix=self.fix_label
         )
 
     def set_resume_state(self, checkpoint: CheckpointData):
@@ -1087,6 +1122,7 @@ class RescueOrchestrator:
         self.os_type = detect_os_type(self.vm_info)
         self.architecture = detect_architecture(self.vm_info)
         self.os_flavor = detect_os_flavor(self.vm_info)
+        self.boot_mode = detect_boot_mode(self.vm_info)
         self._log_debug(f"Detected OS: {get_os_display_name(self.os_type)}, Architecture: {self.architecture}")
 
         # Auto-detect rescue disk type based on machine family
@@ -1220,10 +1256,14 @@ class RescueOrchestrator:
                             script, [self.config.fix_script]
                         )
                     else:
-                        # Bash: append with the marker relocated to the end
+                        # Bash: append with the marker relocated to the end.
+                        # Custom fixes get the same OS_FLAVOR / BOOT_MODE
+                        # context as the built-in repair scripts.
                         script = compose_startup_script(
                             script, [strip_shebang(self.config.fix_script)],
-                            repair_targets=None
+                            repair_targets=None,
+                            os_flavor=self.os_flavor or 'unknown',
+                            boot_mode=self.boot_mode or 'unknown',
                         )
                 return script
 
@@ -1352,7 +1392,10 @@ fi
         """Rollback all operations."""
         self._log_error("")
         self._log_error("Operation failed, rolling back...")
-        rollback_success = self.rollback_handler.rollback(self.state_tracker, self.operations_map)
+        rollback_success = self.rollback_handler.rollback(
+            self.state_tracker, self.operations_map,
+            label_for=self._rollback_label
+        )
 
         # Clear checkpoint after rollback regardless of success/failure.
         # Success: VM is back to original state, no checkpoint needed.
@@ -1380,4 +1423,7 @@ fi
 
     def rollback(self) -> bool:
         """Public rollback method."""
-        return self.rollback_handler.rollback(self.state_tracker, self.operations_map)
+        return self.rollback_handler.rollback(
+            self.state_tracker, self.operations_map,
+            label_for=self._rollback_label
+        )

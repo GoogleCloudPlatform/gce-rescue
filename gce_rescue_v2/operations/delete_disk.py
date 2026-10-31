@@ -6,6 +6,7 @@ irreversible and should only be used after completing the rescue workflow.
 """
 
 import time
+from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, DISK_DELETE_FAILED
 
@@ -104,12 +105,15 @@ class DeleteDiskOperation(BaseOperation):
                 error=error_detail
             )
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Rollback is not possible for a deleted disk.
 
         Args:
             rollback_data (dict): Unused.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: Always False to indicate deletion cannot be undone.
