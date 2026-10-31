@@ -249,19 +249,27 @@ def _reconcile_rescue_state(compute, project: str, zone: str, vm_name: str,
             _log(f"Original boot disk '{original_disk_name}' is detached but not in"
                  f" checkpoint - adding to rollback")
             disk_source = f"projects/{project}/zones/{zone}/disks/{original_disk_name}"
+            # Re-attach exactly as the disk was before rescue when the
+            # checkpoint recorded it (#170); older checkpoints fall back.
+            attachment = context.get('original_boot_attachment') or {}
+            disk_info = {
+                'source': disk_source,
+                'boot': True,
+                'autoDelete': attachment.get('autoDelete', True),
+                'deviceName': (attachment.get('deviceName')
+                               or context.get('original_device_name')
+                               or original_disk_name),
+                'mode': attachment.get('mode', 'READ_WRITE')
+            }
+            if attachment.get('interface'):
+                disk_info['interface'] = attachment['interface']
             state_tracker.add_operation(
                 operation_name="Detach Boot Disk",
                 success=True,
                 message="Detected via reconciliation (completed but not checkpointed)",
                 rollback_data={
                     'vm_name': vm_name,
-                    'disk_info': {
-                        'source': disk_source,
-                        'boot': True,
-                        'autoDelete': True,
-                        'deviceName': original_disk_name,
-                        'mode': 'READ_WRITE'
-                    }
+                    'disk_info': disk_info
                 },
                 step_number=2
             )
@@ -318,20 +326,8 @@ def _reconcile_rescue_state(compute, project: str, zone: str, vm_name: str,
     if has_rescue_metadata and "Set Metadata" not in checkpointed_op_names:
         _log("Rescue metadata found but not in checkpoint - adding to rollback")
         # Reconstruct pre-rescue metadata by removing rescue keys and restoring backups
-        rescue_keys = {'rescue-mode', 'startup-script', 'windows-startup-script-ps1',
-                       'rescue-original-disk', 'rescue-os-type'}
-        backup_prefix = 'rescue-backup-'
-        restored_items = []
-        for item in metadata_items:
-            if item['key'] in rescue_keys:
-                continue
-            if item['key'].startswith(backup_prefix):
-                restored_items.append({
-                    'key': item['key'][len(backup_prefix):],
-                    'value': item['value']
-                })
-            else:
-                restored_items.append(item)
+        from ..operations.set_metadata import restore_pre_rescue_items
+        restored_items = restore_pre_rescue_items(metadata_items)
         original_metadata = {
             'fingerprint': metadata_obj.get('fingerprint', ''),
             'items': restored_items

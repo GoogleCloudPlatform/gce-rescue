@@ -69,6 +69,8 @@ class DetachDiskOperation(BaseOperation):
                         'deviceName': disk['deviceName'],
                         'mode': disk.get('mode', 'READ_WRITE')
                     }
+                    if disk.get('interface'):
+                        disk_info['interface'] = disk['interface']
                     break
 
             if not disk_info:
@@ -168,6 +170,8 @@ class DetachDiskOperation(BaseOperation):
                 'deviceName': disk_info['deviceName'],
                 'mode': disk_info['mode']
             }
+            if disk_info.get('interface'):
+                attach_body['interface'] = disk_info['interface']
 
             operation = self.compute.instances().attachDisk(
                 project=self.project,
