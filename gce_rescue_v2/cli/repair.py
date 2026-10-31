@@ -17,7 +17,9 @@ from .output import _Spinner, _format_duration
 from .preflight import (
     get_gcloud_config, _create_tracked_client, check_local_ssd_quiet_gate,
 )
-from .checkpoint_ui import _handle_checkpoint_rollback
+from .checkpoint_ui import (
+    _handle_checkpoint_rollback, _print_quiet_checkpoint_block,
+)
 
 # Human-readable labels for fix categories, shared by the repair plan
 # display and the per-category result lines.
@@ -572,14 +574,28 @@ def handle_repair(args: argparse.Namespace) -> int:
         metadata_items = vm.get('metadata', {}).get('items', [])
         in_rescue = any(item.get('key') == 'rescue-mode' for item in metadata_items)
 
-        # Check for incomplete rescue checkpoint (from interrupted repair)
-        if not in_rescue and not args.quiet:
+        # Check for incomplete rescue checkpoint (from interrupted repair).
+        # Detection also runs in --quiet mode: starting a fresh rescue over a
+        # half-finished one would orphan its disks. Quiet runs only report it.
+        if not in_rescue:
             checkpoint_mgr = CheckpointManager(
                 compute, project, args.zone, args.instance_name, logger
             )
             checkpoint = checkpoint_mgr.detect_incomplete(
                 operation_type='rescue'
             )
+            if checkpoint and args.quiet:
+                logger.warning(
+                    "Incomplete %s checkpoint found (step %s of %s, started "
+                    "%s); not resuming or rolling back in --quiet mode",
+                    checkpoint.operation, checkpoint.current_step,
+                    checkpoint.total_steps, checkpoint.started_at,
+                )
+                _print_quiet_checkpoint_block(
+                    checkpoint, 'repair', args.instance_name, args.zone,
+                    project,
+                )
+                return 1
             if checkpoint:
                 print(f"\n{warning_prefix()} An incomplete rescue operation was "
                       f"detected for instance [{args.instance_name}].")

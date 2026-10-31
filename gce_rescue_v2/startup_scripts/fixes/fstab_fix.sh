@@ -52,6 +52,18 @@ matches_target() {
 
     while IFS= read -r target; do
         [ -z "$target" ] && continue
+        # The root mount is never a target
+        [ "$target" = "/" ] && continue
+        # Mount point targets (/datadisk, from "Dependency failed for
+        # /datadisk.") match the mount point field exactly and never the
+        # device field: as substrings they would hit unrelated device paths.
+        case "$target" in
+            /dev/*) ;;
+            /*)
+                if [ "${mountpoint%/}" = "${target%/}" ]; then return 0; fi
+                continue
+                ;;
+        esac
         # Match by identifier substring in device field
         if echo "$device" | grep -qiF "$target"; then return 0; fi
         if [ -n "$dev_value" ] && echo "$dev_value" | grep -qiF "$target"; then return 0; fi

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `restore`: the safety-snapshot check looked for `pre-rescue-<vm-name>-*`, but snapshots are named after the boot disk, so restore printed "No safety snapshot found" for any VM whose disk name differs from its name. It now looks up `pre-rescue-<disk-name>-*` (#85)
 - `restore` left `enable-guest-attributes=TRUE` on the VM after every rescue, even when the VM never had the key or had it set to `FALSE`. `rescue` now records the key's original value (or that it was absent), and `restore` puts it back or removes it. VMs rescued by an older version keep the current behaviour (#146)
 - `restore` re-attached the boot disk with its disk name as the device name and auto-delete off, so Terraform and other config tools saw drift (the original is usually `persistent-disk-0` with auto-delete on). `rescue` now records the boot disk's device name, auto-delete, mode and interface, and `restore` re-attaches it with those values. Without the record (rescued by an older version), the old behaviour is kept (#170)
+- `repair --quiet` now checks for an interrupted rescue before starting. If one is found it exits with code 1 and prints the step reached and the commands to roll back or resume, instead of starting a second rescue over the first; it never rolls back or resumes on its own (#154)
+- `repair`: fstab device timeouts that systemd reports by unit name (`A start job is running for dev-sdc.device`, `dev-disk-by\x2duuid-….device`) or by mount point (`Dependency failed for /datadisk.`) are now repaired; previously `repair` reported that it could not identify the fstab entry. Mount point targets match only the fstab mount point field (#109)
 
 ## [2.6.0] - 2026-10-16
 
