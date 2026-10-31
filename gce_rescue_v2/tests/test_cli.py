@@ -955,6 +955,63 @@ class TestHandleRepair:
         captured = capsys.readouterr()
         assert "rescue" in captured.out.lower()
 
+    def test_handle_repair_selinux_relabel_in_progress(self, monkeypatch, capsys):
+        """A relabel banner alone means wait: no rescue-mode suggestion."""
+        self._setup_repair_base(monkeypatch)
+
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "selinux", "severity": "warning",
+                          "name": "selinux_relabel_required",
+                          "description": "relabel"}],
+            unfixable=["selinux"],
+        )
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        exit_code = cli.handle_repair(_parse_args("repair"))
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "A relabel is in progress and reboots the VM when done." in out
+        assert "not yet available" not in out
+        assert "gce-rescue rescue" not in out
+
+    def test_handle_repair_relabel_with_other_unfixable(self, monkeypatch, capsys):
+        """Other manual categories still get the rescue-mode suggestion."""
+        self._setup_repair_base(monkeypatch)
+
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "selinux", "severity": "warning",
+                          "name": "selinux_relabel_required",
+                          "description": "relabel"},
+                         {"category": "kernel", "severity": "critical",
+                          "description": "Missing kernel"}],
+            unfixable=["selinux", "kernel"],
+        )
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        assert cli.handle_repair(_parse_args("repair")) == 0
+        out = capsys.readouterr().out
+        assert "A relabel is in progress" in out
+        assert "[KERNEL] issue but automated fix is not yet available" in out
+        assert "[SELINUX] issue but" not in out
+        assert "gce-rescue rescue" in out
+
+    def test_failed_result_fills_rescue_placeholders(self, capsys):
+        """Fix-script guidance names the real VM, zone and project."""
+        from gce_rescue_v2.cli.repair import _show_repair_results
+        result = {
+            "status": "failed", "fix_lines": [],
+            "error": ("run gce-rescue rescue VM_NAME --zone=ZONE "
+                      "--project=PROJECT first"),
+        }
+        assert _show_repair_results(result, "vm-1", zone="z-1",
+                                    project="p-1") == 1
+        err = capsys.readouterr().err
+        assert "gce-rescue rescue vm-1 --zone=z-1 --project=p-1 first" in err
+
     def test_handle_repair_auth_error(self, monkeypatch):
         """Auth failure returns 1."""
         from gce_rescue_v2.cli import preflight

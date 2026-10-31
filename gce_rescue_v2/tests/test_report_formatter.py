@@ -503,12 +503,12 @@ class TestAutoRepairSuggestion:
             'diagnosis_status': 'boot_errors_detected',
             'boot_errors': [
                 {
-                    'category': 'selinux',
+                    'category': 'machine_id',
                     'severity': 'critical',
-                    'description': 'SELinux relabel failed',
-                    'detected_pattern': 'selinux pattern',
-                    'suggested_fixes': ['Relabel the filesystem'],
-                    'context_lines': ['selinux error'],
+                    'description': 'machine-id is missing',
+                    'detected_pattern': 'machine_id pattern',
+                    'suggested_fixes': ['Regenerate machine-id'],
+                    'context_lines': ['machine_id error'],
                     'matched_line_index': 0,
                 }
             ],

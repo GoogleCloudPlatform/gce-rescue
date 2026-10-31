@@ -5,6 +5,7 @@ following gcloud conventions and trivy/kubectl-style design.
 """
 
 import re
+import textwrap
 from typing import Dict, Any, List, Optional
 from ..core.diagnosis import SEVERITY_ORDER
 from ..core.fix_catalog import CATEGORY_FIX_GUIDANCE
@@ -207,7 +208,9 @@ class DiagnosisReportFormatter:
             SUPPORTED_FIX_CATEGORIES,
             DETECT_ONLY_CATEGORIES,
             INITRAMFS_REBUILD_PATTERNS,
+            SELINUX_RELABEL_IN_PROGRESS_MESSAGE,
             grub_findings_only_missing_initrd,
+            selinux_findings_only_relabel,
         )
         disk_categories = [
             c for c in categories if c not in DETECT_ONLY_CATEGORIES
@@ -242,17 +245,36 @@ class DiagnosisReportFormatter:
             if 'initramfs' not in categories:
                 categories.append('initramfs')
 
+        # The relabel banner alone is a relabel in progress: repair does not
+        # act on it (see RepairOrchestrator._selinux_repair_applicable) and
+        # rescue mode would interrupt it, so it only gets the advice to wait.
+        relabel_wait: List[str] = []
+        if 'selinux' in categories and selinux_findings_only_relabel(errors):
+            categories = [c for c in categories if c != 'selinux']
+            errors = [e for e in errors if e['category'] != 'selinux']
+            relabel_wait = textwrap.wrap(
+                SELINUX_RELABEL_IN_PROGRESS_MESSAGE, width=74,
+                initial_indent='  ', subsequent_indent='  ')
+            if not categories:
+                lines[0] = "What to do:"
+                lines.extend(relabel_wait)
+                if detect_only:
+                    lines.append("")
+                    lines.extend(self._format_detect_only_steps(
+                        detect_only, detect_only_errors, vm_name, zone))
+                return "\n".join(lines)
+
         # Check if auto-repair is available AND can identify targets
         auto_fixable = [c for c in categories if c in SUPPORTED_FIX_CATEGORIES]
 
         # Auto-repair for fstab needs extractable identifiers to target specific
-        # entries; disk_full and grub are repaired as a whole, and initramfs
-        # only needs a finding that a rebuild can fix.
+        # entries; disk_full, grub and selinux are repaired as a whole, and
+        # initramfs only needs a finding that a rebuild can fix.
         if auto_fixable:
             has_targets = grub_as_initramfs or any(
                 (err.get('name') in INITRAMFS_REBUILD_PATTERNS)
                 if err['category'] == 'initramfs'
-                else (err['category'] in ('disk_full', 'grub')
+                else (err['category'] in ('disk_full', 'grub', 'selinux')
                       or _extract_identifier(err.get('detected_pattern', '')))
                 for err in errors
                 if err['category'] in SUPPORTED_FIX_CATEGORIES
@@ -302,6 +324,11 @@ class DiagnosisReportFormatter:
 
         lines.append("    3. Restore the VM:")
         lines.append(f"       $ gce-rescue restore {vm_name} --zone={zone}")
+
+        if relabel_wait:
+            lines.append("")
+            lines.append("  SELinux:")
+            lines.extend(f"  {line}" for line in relabel_wait)
 
         # Detect-only findings get their own guidance block, outside the
         # rescue/restore steps.

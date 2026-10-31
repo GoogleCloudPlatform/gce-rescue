@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, TextIO, Tuple
 from ..core.config import build_user_agent, DEFAULT_DISK_RESIZE_INCREMENT_GB
 from ..core.diagnosis import initramfs_kernel_versions
+from ..core.fix_catalog import (
+    SELINUX_RELABEL_IN_PROGRESS_MESSAGE, selinux_findings_only_relabel,
+)
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
 from ..utils.logger import setup_logging
 from ..orchestration.checkpoint import CheckpointManager
@@ -28,6 +31,7 @@ FIX_LABELS = {
     'filesystem': 'Fix filesystem',
     'disk_full': 'Fix disk full',
     'initramfs': 'Rebuild initramfs',
+    'selinux': 'Fix SELinux',
     'grub': 'Fix GRUB',
 }
 
@@ -150,13 +154,35 @@ def _show_no_change_outcomes(result: Dict[str, Any],
               file=file or sys.stdout)
 
 
+def _fill_command_placeholders(text: str, vm_name: str, zone: str = '',
+                               project: str = '') -> str:
+    """Fill the VM_NAME/ZONE/PROJECT placeholders of a fix script message.
+
+    Fix scripts do not know the VM, zone or project, so guidance they emit
+    ("run gce-rescue rescue VM_NAME --zone=ZONE --project=PROJECT first")
+    carries placeholders. Unknown values leave the placeholder in place.
+    """
+    if not text:
+        return text
+    text = text.replace('VM_NAME', vm_name)
+    if zone:
+        text = text.replace('--zone=ZONE', f'--zone={zone}')
+    if project:
+        text = text.replace('--project=PROJECT', f'--project={project}')
+    return text
+
+
 def _show_repair_results(result: Dict[str, Any], vm_name: str,
                          zone: str = '', project: str = '') -> int:
     """Display repair results and return exit code."""
     status = result.get('status', 'unknown')
-    fix_lines = result.get('fix_lines', [])
+    fix_lines = [
+        _fill_command_placeholders(line, vm_name, zone, project)
+        for line in result.get('fix_lines', [])
+    ]
     fixed_count = result.get('fixed_count', 0)
-    error = result.get('error')
+    error = _fill_command_placeholders(result.get('error'), vm_name, zone,
+                                       project)
     snapshot_name = result.get('snapshot_name')
     duration = result.get('duration_seconds', 0)
 
@@ -717,10 +743,21 @@ def handle_repair(args: argparse.Namespace) -> int:
         print("  Run 'diagnose' for details.")
         return 0
 
+    # The relabel banner alone is a relabel in progress, not a fault:
+    # repair leaves it alone and rescue mode would interrupt it.
+    relabel_in_progress = ('selinux' in unfixable
+                           and selinux_findings_only_relabel(boot_errors))
+
     if not fixable:
         print(f"Repair: {args.instance_name} ({args.zone})")
         print("")
-        for cat in unfixable:
+        manual = [c for c in unfixable
+                  if not (relabel_in_progress and c == 'selinux')]
+        if relabel_in_progress:
+            print(f"  [SELINUX] {SELINUX_RELABEL_IN_PROGRESS_MESSAGE}")
+            if not manual:
+                return 0
+        for cat in manual:
             print(
                 f"  Detected [{cat.upper()}] issue but automated fix is not yet available."
             )
@@ -826,6 +863,12 @@ def handle_repair(args: argparse.Namespace) -> int:
         # Unfixable warnings
         if unfixable:
             for cat in unfixable:
+                if relabel_in_progress and cat == 'selinux':
+                    intro_block.append(
+                        "  [SELINUX] relabel in progress; not repaired "
+                        "(it reboots the VM when done)"
+                    )
+                    continue
                 intro_block.append(
                     f"  {warning_prefix()} [{cat.upper()}] requires manual repair"
                 )
@@ -895,6 +938,8 @@ def handle_repair(args: argparse.Namespace) -> int:
             'disk_full': disk_full_desc,
             'fstab': 'Fix /etc/fstab (comment out invalid entries)',
             'initramfs': 'Rebuild the initramfs for the installed kernel',
+            'selinux': ('Repair the SELinux policy or schedule a full '
+                        'relabel'),
             'grub': 'Reinstall GRUB and regenerate its configuration',
         }
         if fstab_targets:

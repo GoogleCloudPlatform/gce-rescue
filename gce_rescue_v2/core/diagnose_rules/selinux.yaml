@@ -3,8 +3,19 @@
 # NOT detect_only: unlike kernel panics or OOM, these ARE fixable from
 # rescue mode - touch /.autorelabel on the mounted root, fix the policy
 # store via chroot, or boot with selinux=0/enforcing=0 on the kernel
-# command line. auto_repair stays false until startup_scripts/fixes/
-# selinux_fix.sh lands (RepairOrchestrator.validate() requires it).
+# command line.
+#
+# Automated repair: startup_scripts/fixes/selinux_fix.sh. When the policy
+# named by SELINUXTYPE= is missing it switches SELINUXTYPE= to another
+# installed policy, or reinstalls the policy package in a chroot, and
+# schedules a full relabel; if neither is possible it adds selinux=0 to the
+# kernel command line so the VM boots (SELINUX=permissive does not: with no
+# policy loaded systemd cannot label its sockets). An autorelabel kernel
+# argument behind a relabel loop is removed. Otherwise it schedules a full
+# relabel (/.autorelabel), falling back to SELINUX=permissive when
+# /.autorelabel is already on the disk. Changed files are backed up to
+# /var/backups/gce-rescue/ first. The relabel banner alone is a relabel in
+# progress and is not repaired (fix_catalog.selinux_findings_only_relabel).
 #
 # No survives_boot_success (deviation from the master-plan draft, which
 # suggested true): a policy-load failure freezes boot, so it can never
@@ -15,7 +26,7 @@
 category: selinux
 os: linux
 fix_guidance: "From rescue mode, force a full relabel on next boot (sudo touch /mnt/sysroot/.autorelabel), or boot once with SELinux disabled by adding selinux=0 to the kernel command line via the GRUB menu"
-auto_repair: false
+auto_repair: true
 
 patterns:
   - name: selinux_policy_load_failure
@@ -35,7 +46,7 @@ patterns:
       # after 'SELinux:'.
       - 'SELinux:\s+policy read failure'
     fixes:
-      - "The policy store on the disk is missing or corrupt - from rescue mode reinstall it via chroot: sudo chroot /mnt/sysroot dnf reinstall selinux-policy-targeted"
+      - "The policy store on the disk is missing or corrupt - from rescue mode reinstall it via chroot: sudo chroot /mnt/sysroot dnf -y reinstall selinux-policy-targeted"
       - "To boot immediately, add selinux=0 to the kernel command line from the GRUB menu (interactive serial console), then repair the policy from inside the VM"
       - "If /etc/selinux/config names a policy type that is not installed (e.g. SELINUXTYPE=mls without the mls policy), fix it to match the installed policy"
 

@@ -549,10 +549,9 @@ class TestShippedFixInfo:
     def test_selinux_fix_guidance_loaded(self):
         assert 'selinux' in CATEGORY_FIX_GUIDANCE
 
-    def test_selinux_is_not_auto_repairable(self):
-        """selinux stays auto_repair: false until selinux_fix.sh lands
-        (future fix: touch /.autorelabel on the mounted root)."""
-        assert 'selinux' not in SUPPORTED_FIX_CATEGORIES
+    def test_selinux_is_auto_repairable(self):
+        """selinux_fix.sh repairs the policy or schedules a relabel."""
+        assert 'selinux' in SUPPORTED_FIX_CATEGORIES
 
     def test_selinux_patterns_have_fixes(self):
         from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
