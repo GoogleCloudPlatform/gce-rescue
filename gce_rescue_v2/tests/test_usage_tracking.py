@@ -175,7 +175,7 @@ class TestRepairFixLabel:
             orch.execute_custom()
         assert ' fix/custom step/boot-verify' in captured['ua']
 
-    def test_never_on_rescue_or_restore_user_agents(self) -> None:
+    def test_absent_on_standalone_rescue_and_restore(self) -> None:
         rescue = RescueOrchestrator(compute=Mock(), project='p', zone='z',
                                     vm_name='vm-1', session_id='s', mode='auto')
         restore = RestoreOrchestrator(compute=Mock(), project='p', zone='z',
@@ -184,6 +184,29 @@ class TestRepairFixLabel:
         assert 'fix/' not in rescue._ua('vm-stop')
         assert 'fix/' not in restore._ua('vm-stop')
         assert 'fix/' not in rescue._rollback_label('Stop VM')
+
+    def test_present_on_rescue_and_restore_phases_of_repair(self) -> None:
+        # The disk-changing calls of a repair run happen in its rescue and
+        # restore phases; they carry the fix set so it shows up next to the
+        # calls that applied it.
+        rescue = RescueOrchestrator(compute=Mock(), project='p', zone='z',
+                                    vm_name='vm-1', session_id='s',
+                                    mode='auto', fix_label='fstab+grub')
+        restore = RestoreOrchestrator(compute=Mock(), project='p', zone='z',
+                                      vm_name='vm-1', session_id='s',
+                                      mode='auto', fix_label='fstab+grub')
+        assert ' command/rescue ' in rescue._ua('vm-stop')
+        assert ' fix/fstab+grub step/vm-stop' in rescue._ua('vm-stop')
+        assert ' fix/fstab+grub step/vm-start' in restore._ua('vm-start')
+        assert ' fix/fstab+grub step/rollback-' in rescue._rollback_label(
+            'Stop VM')
+
+    def test_repair_passes_fix_label_to_phases(self) -> None:
+        source = (ORCHESTRATION_DIR / 'repair.py').read_text(encoding='utf-8')
+        constructions = len(re.findall(
+            r'= (?:RescueOrchestrator|RestoreOrchestrator)\(', source))
+        assert constructions >= 2
+        assert source.count('fix_label=self._fix_label') == constructions
 
 
 # ---------------------------------------------------------------------------

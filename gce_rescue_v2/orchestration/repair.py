@@ -601,7 +601,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Rescue", RESCUE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             # Skip validation (already done)
             if not rescue.execute():
@@ -721,7 +722,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -967,7 +969,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             if not restore.execute():
                 self._finish_progress(False)

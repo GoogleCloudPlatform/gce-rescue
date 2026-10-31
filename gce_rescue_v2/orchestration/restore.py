@@ -13,6 +13,8 @@ Coordinates the restore workflow (exit rescue mode):
 """
 
 import time
+from typing import Optional
+
 from ..core.config import RestoreConfig, build_user_agent
 from ..utils.os_detection import detect_os_type, detect_architecture, detect_os_flavor
 from ..validators import (
@@ -78,7 +80,8 @@ class RestoreOrchestrator:
     def __init__(self, compute, project: str, zone: str, vm_name: str,
                  config: RestoreConfig = None, logger=None, log_file: str = None,
                  suppress_progress: bool = False, progress_callback=None,
-                 session_id: str = None, mode: str = None):
+                 session_id: str = None, mode: str = None,
+                 fix_label: Optional[str] = None):
         """
         Initialize restore orchestrator.
 
@@ -92,6 +95,8 @@ class RestoreOrchestrator:
             log_file: Log file path (for checkpoint persistence)
             suppress_progress: Suppress progress spinner (for embedding in repair)
             progress_callback: Optional callback(phase_label) invoked on each step
+            fix_label: Fix set of the repair run this restore belongs to
+                (fix/ in the User-Agent); None outside repair.
         """
         self.compute = compute
         self.project = project
@@ -104,6 +109,7 @@ class RestoreOrchestrator:
         self._progress_callback = progress_callback
         self.session_id = session_id
         self.mode = mode
+        self.fix_label = fix_label
 
         # OS info (detected during disk info retrieval)
         self.os_type = None
@@ -278,7 +284,8 @@ class RestoreOrchestrator:
         return build_user_agent(
             session_id=self.session_id, command='restore',
             os_type=self.os_type, arch=self.architecture,
-            flavor=self.os_flavor, mode=self.mode, step=step
+            flavor=self.os_flavor, mode=self.mode, step=step,
+            fix=self.fix_label
         )
 
     def set_resume_state(self, checkpoint: CheckpointData):

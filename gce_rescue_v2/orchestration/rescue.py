@@ -11,6 +11,8 @@ Coordinates the rescue workflow:
 
 import time
 import uuid
+from typing import Optional
+
 from ..core.config import RescueConfig, OS_TYPE_WINDOWS, OS_TYPE_LINUX, build_user_agent
 from .compose import (
     compose_startup_script, compose_startup_script_windows, strip_shebang,
@@ -93,7 +95,8 @@ class RescueOrchestrator:
     def __init__(self, compute, project: str, zone: str, vm_name: str,
                  config: RescueConfig = None, logger=None, log_file: str = None,
                  startup_script_override: str = None, suppress_progress: bool = False,
-                 progress_callback=None, session_id: str = None, mode: str = None):
+                 progress_callback=None, session_id: str = None, mode: str = None,
+                 fix_label: Optional[str] = None):
         """
         Initialize rescue orchestrator.
 
@@ -110,6 +113,8 @@ class RescueOrchestrator:
             progress_callback: Optional callback(phase_label) invoked on each step
             session_id: Analytics session UUID (12-char hex)
             mode: Execution mode ('interactive' or 'auto')
+            fix_label: Fix set of the repair run this rescue belongs to
+                (fix/ in the User-Agent); None outside repair.
         """
         self.compute = compute
         self.project = project
@@ -130,6 +135,7 @@ class RescueOrchestrator:
         self._progress_callback = progress_callback
         self.session_id = session_id
         self.mode = mode
+        self.fix_label = fix_label
 
         # State tracking
         self.state_tracker = StateTracker()
@@ -356,7 +362,8 @@ class RescueOrchestrator:
         return build_user_agent(
             session_id=self.session_id, command='rescue',
             os_type=self.os_type, arch=self.architecture,
-            flavor=self.os_flavor, mode=self.mode, step=step
+            flavor=self.os_flavor, mode=self.mode, step=step,
+            fix=self.fix_label
         )
 
     def set_resume_state(self, checkpoint: CheckpointData):
