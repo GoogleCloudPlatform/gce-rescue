@@ -5,6 +5,12 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `repair --quiet` now checks for an interrupted rescue before starting. If one is found it exits with code 1 and prints the step reached and the commands to roll back or resume, instead of starting a second rescue over the first; it never rolls back or resumes on its own (#154)
+- `repair`: fstab device timeouts that systemd reports by unit name (`A start job is running for dev-sdc.device`, `dev-disk-by\x2duuid-….device`) or by mount point (`Dependency failed for /datadisk.`) are now repaired; previously `repair` reported that it could not identify the fstab entry. Mount point targets match only the fstab mount point field (#109)
+
 ## [2.6.0] - 2026-10-16
 
 ### Added

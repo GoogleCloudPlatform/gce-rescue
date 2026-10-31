@@ -1,5 +1,9 @@
 """Tests for the repair command: orchestrator, CLI, script generation, result parsing."""
 
+import os
+import shutil
+import subprocess
+import sys
 import time
 import logging
 from pathlib import Path
@@ -1025,6 +1029,59 @@ class TestFstabFixScript:
         content = fix_path.read_text()
         assert 'mountpoint" = "/"' in content or "mountpoint\" = \"/\"" in content
 
+    @pytest.mark.skipif(
+        sys.platform != 'linux' or shutil.which('bash') is None,
+        reason='runs fstab_fix.sh under bash',
+    )
+    @pytest.mark.parametrize('targets,commented', [
+        # #109: mount point from 'Dependency failed for /datadisk.'
+        ('/datadisk', ['/dev/sdc /datadisk']),
+        # #109: device from 'dev-sdc.device'
+        ('/dev/sdc', ['/dev/sdc /datadisk']),
+        ('UUID=3333', ['UUID=3333 /mnt/data']),
+        # '/' is never a target, even though it is a substring of every path
+        ('/', []),
+    ])
+    def test_fix_script_mount_point_and_device_targets(self, tmp_path,
+                                                       targets, commented):
+        """Mount point targets match the mount field exactly, nothing else."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'fstab_fix.sh'
+        )
+        sysroot = tmp_path / 'sysroot'
+        (sysroot / 'etc').mkdir(parents=True)
+        (sysroot / 'var' / 'log').mkdir(parents=True)
+        lines = [
+            'UUID=1111 / ext4 defaults 0 1',
+            'UUID=2222 /boot/efi vfat defaults 0 2',
+            '/dev/sdc /datadisk xfs defaults 0 0',
+            'UUID=3333 /mnt/data ext4 defaults 0 2',
+            '/dev/sdd1 /opt/datadisk ext4 defaults 0 2',
+        ]
+        fstab = sysroot / 'etc' / 'fstab'
+        fstab.write_text('\n'.join(lines) + '\n')
+        script = fix_path.read_text().replace(
+            'SYSROOT="/mnt/sysroot"', f'SYSROOT="{sysroot}"'
+        )
+        proc = subprocess.run(
+            ['bash', '-c', script], capture_output=True, text=True,
+            env={'PATH': os.environ.get('PATH', ''),
+                 'REPAIR_TARGETS': targets,
+                 'LOGFILE': str(tmp_path / 'repair.log')},
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        result = fstab.read_text().splitlines()
+        for line in lines:
+            prefix = ' '.join(line.split()[:2])
+            if prefix in commented:
+                assert f'#{line}' in result
+            else:
+                assert line in result
+        assert (sysroot / 'etc' / 'fstab.gce-repair-backup').exists()
+        if commented:
+            assert 'GCE-REPAIR-LINE:[FIXED]' in proc.stderr
+
 
 # ---------------------------------------------------------------------------
 # TestGrubFixScript
@@ -1342,6 +1399,146 @@ class TestExtractFstabTargets:
         targets = orch._extract_fstab_targets(diagnosis)
         assert 'fstab-uuid' in targets
         assert 'kernel-uuid' not in targets
+
+    def test_extract_device_timeout_from_issue_109_lines(self):
+        """The #109 console lines yield the device and the failed mount."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Timed out waiting for device dev-sdc',
+                'context_lines': [
+                    '[  OK  ] Mounted /boot/efi.',
+                    '[*     ] A start job is running for dev-sdc.device '
+                    '(5s / 1min 30s)',
+                    '[DEPEND] Dependency failed for /datadisk.',
+                ],
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert '/dev/sdc' in targets
+        assert '/datadisk' in targets
+        assert '/boot/efi' not in targets
+
+    def test_extract_escaped_uuid_unit_from_context(self):
+        """A \\x2d-escaped by-uuid unit in context maps to UUID=<uuid>."""
+        orch = self._make_orchestrator()
+        uuid = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d'
+        unit = 'dev-disk-by\\x2duuid-' + uuid.replace('-', '\\x2d')
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Timed out waiting for device dev-disk',
+                'context_lines': [
+                    f'[ ***  ] A start job is running for {unit}.device '
+                    f'(1min 2s / 1min 30s)',
+                    '[DEPEND] Dependency failed for /mnt/data.',
+                ],
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert f'UUID={uuid}' in targets
+        assert '/mnt/data' in targets
+        # The truncated 'dev-disk' must never become a /dev/disk target.
+        assert '/dev/disk' not in targets
+
+    def test_extract_ignores_healthy_and_root_context_lines(self):
+        """Found-device lines, / and /sysroot never become targets."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Timed out waiting for device dev-sdc',
+                'context_lines': [
+                    '[  OK  ] Found device dev-sda1.device - PersistentDisk 1.',
+                    '[DEPEND] Dependency failed for /sysroot.',
+                    '[DEPEND] Dependency failed for /.',
+                ],
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert targets == ['/dev/sdc']
+
+    def test_issue_109_diagnosis_is_fstab_fixable(self):
+        """diagnose output for #109 now gives repair something to fix."""
+        serial = (
+            "[    0.000000] Linux version 4.18.0-553.el8_10.x86_64 "
+            "(mockbuild@x86-vm-07)\n"
+            "[  OK  ] Mounted /boot/efi.\n"
+            "[*     ] A start job is running for dev-sdc.device "
+            "(5s / 1min 30s)\n"
+            "[ TIME ] Timed out waiting for device dev-sdc.device.\n"
+            "[DEPEND] Dependency failed for /datadisk.\n"
+            "[DEPEND] Dependency failed for Local File Systems.\n"
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view\n"
+        )
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/rhel9',
+                'deviceName': 'rhel9',
+                'licenses': [
+                    'projects/rhel-cloud/global/licenses/rhel-8-server'
+                ],
+            }],
+            'metadata': {'items': []},
+        }
+        from gce_rescue_v2.operations import DiagnoseOperation
+        compute = _make_compute(vm_info=vm_info, serial_output=serial)
+        diagnosis = DiagnoseOperation(
+            compute, 'proj', 'zone-a', _make_logger()
+        ).execute('rhel9').rollback_data
+
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'rhel9', logger=_make_logger()
+        )
+        assert 'fstab' in orch.get_fixable_categories(diagnosis)
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert '/dev/sdc' in targets
+        assert '/datadisk' in targets
+
+
+class TestSystemdDeviceUnitToFstabTarget:
+    """systemd device unit names -> fstab identifiers (#109)."""
+
+    @pytest.mark.parametrize('unit,expected', [
+        ('dev-sdc.device', '/dev/sdc'),
+        ('dev-sdc1.device', '/dev/sdc1'),
+        ('dev-nvme0n2p1.device', '/dev/nvme0n2p1'),
+        ('dev-disk-by\\x2duuid-1b2c3d4e\\x2d5f60\\x2d4a7b.device',
+         'UUID=1b2c3d4e-5f60-4a7b'),
+        ('dev-disk-by\\x2dlabel-DATA\\x2dDISK.device', 'LABEL=DATA-DISK'),
+        ('dev-disk-by\\x2dpartuuid-66813b81\\x2d01.device',
+         'PARTUUID=66813b81-01'),
+        ('dev-disk-by\\x2did-google\\x2dpersistent\\x2ddisk\\x2d1.device',
+         '/dev/disk/by-id/google-persistent-disk-1'),
+        ('dev-sdb', '/dev/sdb'),
+    ])
+    def test_maps_unit(self, unit, expected):
+        from gce_rescue_v2.orchestration.repair import (
+            systemd_device_unit_to_fstab_target,
+        )
+        assert systemd_device_unit_to_fstab_target(unit) == expected
+
+    @pytest.mark.parametrize('unit', [
+        # device-mapper/LVM belongs to lvm.yaml, not fstab repair
+        'dev-mapper-vg\\x2droot.device',
+        'dev-mapper.device',
+        # already unescaped: the '-' vs '/' boundary is lost, so refuse
+        'dev-disk-by-uuid-1b2c3d4e-5f60.device',
+        'dev-disk.device',
+        'sys-devices-virtual-net-eth0.device',
+    ])
+    def test_rejects_ambiguous_or_non_disk_units(self, unit):
+        from gce_rescue_v2.orchestration.repair import (
+            systemd_device_unit_to_fstab_target,
+        )
+        assert systemd_device_unit_to_fstab_target(unit) is None
 
 
 # ---------------------------------------------------------------------------
