@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `repair`: automatic SELinux repair on Linux. Schedules a full relabel (`/.autorelabel`) when the policy is installed, and sets `SELINUX=permissive` when the configured policy is missing, so the VM boots and the policy can be reinstalled. Changed files are backed up to `/var/backups/gce-rescue/` (#174)
+- `repair`: automatic SELinux repair on Linux. Schedules a full relabel (`/.autorelabel`) when the policy is installed. A `SELINUXTYPE=` that names a policy that is not installed is switched back to the installed one; a missing policy is reinstalled with the package manager and a relabel is scheduled. If the reinstall is not possible, SELinux is disabled on the kernel command line (`selinux=0`) so the VM boots, and the repair output lists the steps to turn it back on. A relabel loop caused by an `autorelabel` kernel argument is ended by removing the argument. A relabel in progress is left alone. Changed files are backed up to `/var/backups/gce-rescue/` (#174)
 
 ## [2.6.0] - 2026-10-16
 

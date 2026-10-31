@@ -9,8 +9,9 @@ change):
     - fstab: Comments out invalid UUID/device/label entries
     - filesystem: Repairs the filesystem (fsck) before the mount attempt
     - initramfs: Rebuilds the initramfs inside the target chroot
-    - selinux: Schedules a full relabel, or sets SELINUX=permissive when the
-      configured policy is missing
+    - selinux: Schedules a full relabel, switches SELINUXTYPE= to the
+      installed policy or reinstalls a missing one, removes an autorelabel
+      kernel argument; selinux=0 on the kernel command line as a last resort
     - grub: Reinstalls/regenerates the GRUB configuration
 
 Usage:
@@ -37,7 +38,7 @@ from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
 from ..core.diagnosis import initramfs_kernel_versions, is_safe_root_device
 from ..core.fix_catalog import (
     INITRAMFS_REBUILD_PATTERNS, SUPPORTED_FIX_CATEGORIES,
-    grub_findings_only_missing_initrd,
+    grub_findings_only_missing_initrd, selinux_findings_only_relabel,
 )
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
@@ -82,6 +83,7 @@ REPAIR_VERIFICATION_FLOOR = {
     'filesystem': 1800,  # e2fsck -f / xfs_repair scale with disk size
     'initramfs': 900,    # rebuild + possible tool install
     'grub': 900,         # grub-install + config regeneration in chroot
+    'selinux': 1200,     # policy reinstall: up to 3 package-manager runs
 }
 
 # Post-restore boot check after an initramfs repair: dracut waits about 180 s
@@ -503,16 +505,14 @@ class RepairOrchestrator:
         """Return True if a selinux finding needs more than waiting.
 
         The relabel banner alone marks a normal relabel that reboots the VM
-        when done. Repairing then would stop the VM mid-relabel and, because
-        /.autorelabel already exists, switch it to permissive mode. Only a
+        when done; repairing then would stop the VM mid-relabel. Only a
         finding other than the banner (the policy failed to load) is
-        repaired; a relabel loop gets the manual guidance from diagnose.
+        repaired. The diagnose report uses the same check
+        (selinux_findings_only_relabel), so both agree.
         """
-        return any(
-            e.get('category') == 'selinux'
-            and e.get('name') != 'selinux_relabel_required'
-            for e in diagnosis.get('boot_errors', [])
-        )
+        boot_errors = diagnosis.get('boot_errors', [])
+        return (any(e.get('category') == 'selinux' for e in boot_errors)
+                and not selinux_findings_only_relabel(boot_errors))
 
     def execute(self, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the full repair: rescue (with fix script) -> parse results -> restore.

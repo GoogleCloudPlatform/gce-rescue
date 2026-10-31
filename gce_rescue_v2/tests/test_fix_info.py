@@ -550,7 +550,7 @@ class TestShippedFixInfo:
         assert 'selinux' in CATEGORY_FIX_GUIDANCE
 
     def test_selinux_is_auto_repairable(self):
-        """selinux_fix.sh schedules a relabel or sets SELINUX=permissive."""
+        """selinux_fix.sh repairs the policy or schedules a relabel."""
         assert 'selinux' in SUPPORTED_FIX_CATEGORIES
 
     def test_selinux_patterns_have_fixes(self):
