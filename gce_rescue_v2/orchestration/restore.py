@@ -29,6 +29,7 @@ from ..operations import (
     StartVMOperation,
     DeleteDiskOperation
 )
+from ..operations.set_metadata import restore_pre_rescue_items
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
@@ -727,6 +728,8 @@ class RestoreOrchestrator:
         This method:
         1. Removes all rescue-related keys (rescue-mode, rescue-*, startup-script)
         2. Restores backed up keys (rescue-backup-* -> original key name)
+        3. Removes keys rescue added that did not exist before (e.g.
+           enable-guest-attributes, #146), as recorded at rescue time
 
         Example:
             Before: [rescue-backup-startup-script="user script", startup-script="rescue script", rescue-mode="123"]
@@ -741,39 +744,7 @@ class RestoreOrchestrator:
         metadata = vm.get('metadata', {})
         items = metadata.get('items', [])
 
-        # Keys to remove (rescue-related)
-        rescue_keys = [
-            'rescue-mode',
-            'startup-script',
-            'windows-startup-script-ps1',
-            'rescue-original-disk',
-            'rescue-os-type'
-        ]
-
-        # Prefix for backed up keys
-        backup_prefix = 'rescue-backup-'
-
-        # Build clean metadata
-        result = {}
-
-        for item in items:
-            key = item['key']
-            value = item['value']
-
-            if key in rescue_keys:
-                # Skip rescue-related keys
-                continue
-            elif key.startswith(backup_prefix):
-                # Restore backed up key to original name
-                original_key = key[len(backup_prefix):]
-                result[original_key] = value
-                self._log_debug(f"  Restoring '{key}' as '{original_key}'")
-            else:
-                # Keep other keys as-is
-                result[key] = value
-
-        # Convert back to list format
-        return [{'key': k, 'value': v} for k, v in result.items()]
+        return restore_pre_rescue_items(items)
 
     def _check_snapshot_status(self):
         """Check if safety snapshot was created successfully during rescue.

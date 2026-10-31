@@ -842,7 +842,9 @@ class RescueOrchestrator:
                     # Let the guest write a guest attribute on completion, which
                     # the orchestrator polls as a reliable alternative to the
                     # serial-console marker (serial can drop the script's final
-                    # output burst before the process exits).
+                    # output burst before the process exits). SetMetadata
+                    # records the key's pre-rescue state (value or absence)
+                    # so restore can put it back exactly (#146).
                     {'key': 'enable-guest-attributes', 'value': 'TRUE'},
                 ]
                 result = set_metadata.execute(

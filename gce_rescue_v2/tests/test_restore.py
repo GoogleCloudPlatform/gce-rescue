@@ -476,3 +476,95 @@ def test_snapshot_check_skipped_without_disk_name():
 
     assert snaps.filters == []
     assert not any('No safety snapshot' in m for m in _info_messages(logger))
+
+
+# ===================================================================
+# enable-guest-attributes round trip (#146)
+# ===================================================================
+
+_RESCUE_ITEMS = [
+    {"key": "startup-script", "value": "rescue script"},
+    {"key": "rescue-mode", "value": "12345"},
+    {"key": "rescue-original-disk", "value": "orig-disk"},
+    {"key": "rescue-os-type", "value": "linux"},
+    {"key": "enable-guest-attributes", "value": "TRUE"},
+]
+
+
+def _metadata_after_rescue(pre_rescue_items):
+    """Metadata as SetMetadataOperation writes it during rescue."""
+    op = SetMetadataOperation(FakeCompute(), "p", "z", None)
+    return op._merge_with_backup(pre_rescue_items, _RESCUE_ITEMS)
+
+
+def _clean_metadata(items):
+    compute = FakeCompute([{"metadata": {"fingerprint": "fp", "items": items}}])
+    orch = RestoreOrchestrator(
+        compute=compute, project="p", zone="z", vm_name="vm",
+        config=RestoreConfig(), logger=None,
+    )
+    return {item["key"]: item["value"] for item in orch._get_clean_metadata()}
+
+
+def test_guest_attributes_absent_before_rescue_absent_after_restore():
+    """Rescue adds the key; restore removes it again."""
+    during = _metadata_after_rescue([{"key": "ssh-keys", "value": "user:key"}])
+    during_map = {i["key"]: i["value"] for i in during}
+    assert during_map["enable-guest-attributes"] == "TRUE"
+    assert during_map["rescue-backup-absent-keys"] == "enable-guest-attributes"
+
+    restored = _clean_metadata(during)
+
+    assert restored == {"ssh-keys": "user:key"}
+
+
+def test_guest_attributes_false_before_rescue_false_after_restore():
+    """A user-set FALSE is backed up during rescue and put back on restore."""
+    during = _metadata_after_rescue([
+        {"key": "enable-guest-attributes", "value": "FALSE"},
+        {"key": "ssh-keys", "value": "user:key"},
+    ])
+    during_map = {i["key"]: i["value"] for i in during}
+    assert during_map["enable-guest-attributes"] == "TRUE"
+    assert during_map["rescue-backup-enable-guest-attributes"] == "FALSE"
+    assert "rescue-backup-absent-keys" not in during_map
+
+    restored = _clean_metadata(during)
+
+    assert restored == {"enable-guest-attributes": "FALSE", "ssh-keys": "user:key"}
+
+
+def test_guest_attributes_true_before_rescue_kept_after_restore():
+    """A user-set TRUE stays TRUE."""
+    during = _metadata_after_rescue([{"key": "enable-guest-attributes", "value": "TRUE"}])
+
+    restored = _clean_metadata(during)
+
+    assert restored == {"enable-guest-attributes": "TRUE"}
+
+
+def test_guest_attributes_no_record_left_unchanged():
+    """VM rescued by an older version (no record): keep today's behaviour."""
+    items = [
+        {"key": "rescue-mode", "value": "12345"},
+        {"key": "startup-script", "value": "rescue script"},
+        {"key": "rescue-original-disk", "value": "orig-disk"},
+        {"key": "enable-guest-attributes", "value": "TRUE"},
+    ]
+
+    restored = _clean_metadata(items)
+
+    assert restored == {"enable-guest-attributes": "TRUE"}
+
+
+def test_guest_attributes_record_survives_resumed_rescue():
+    """Re-running the metadata step must not record rescue's own TRUE as the original."""
+    first = _metadata_after_rescue([])
+    second = _metadata_after_rescue(first)
+    second_map = {i["key"]: i["value"] for i in second}
+    assert "rescue-backup-enable-guest-attributes" not in second_map
+    assert second_map["rescue-backup-absent-keys"] == "enable-guest-attributes"
+
+    first_false = _metadata_after_rescue([{"key": "enable-guest-attributes", "value": "FALSE"}])
+    second_false = _metadata_after_rescue(first_false)
+    assert _clean_metadata(second_false)["enable-guest-attributes"] == "FALSE"

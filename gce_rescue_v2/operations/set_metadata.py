@@ -5,7 +5,10 @@ Manages instance metadata for rescue operations. Preserves existing metadata
 by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
+import logging
 import time
+from typing import Dict, Iterable, List, Optional, Set
+
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, METADATA_SET_FAILED
 
@@ -22,6 +25,33 @@ RESCUE_CONFLICT_KEYS = [
     'windows-startup-script-ps1',
 ]
 
+# Keys rescue sets that are also legitimate user settings and must survive
+# restore unchanged (#146). If the key exists, its value is backed up as
+# rescue-backup-<key>; if it does not, the key is listed in
+# RESCUE_ABSENT_KEYS_KEY so restore removes it again.
+RESCUE_RESTORABLE_KEYS = [
+    'enable-guest-attributes',
+]
+
+# Comma-separated list of RESCUE_RESTORABLE_KEYS that did not exist before
+# rescue added them.
+RESCUE_ABSENT_KEYS_KEY = f'{RESCUE_BACKUP_PREFIX}absent-keys'
+
+# rescue-backup-* keys that hold rescue bookkeeping rather than a backed-up
+# user key, so restore must never turn them back into a metadata key.
+RESCUE_BACKUP_RECORD_KEYS = {
+    RESCUE_ABSENT_KEYS_KEY,
+}
+
+# Keys written for the rescue session itself; removed outright on restore.
+RESCUE_SESSION_KEYS = [
+    'rescue-mode',
+    'startup-script',
+    'windows-startup-script-ps1',
+    'rescue-original-disk',
+    'rescue-os-type',
+]
+
 # All rescue-related keys (for cleanup during restore)
 RESCUE_METADATA_KEYS = [
     'rescue-mode',
@@ -31,6 +61,69 @@ RESCUE_METADATA_KEYS = [
     'windows-startup-script-ps1',
     CHECKPOINT_KEY,  # Clean up checkpoint on restore
 ]
+
+_logger = logging.getLogger(__name__)
+
+
+def parse_absent_keys(value: Optional[str]) -> Set[str]:
+    """Parse the comma-separated RESCUE_ABSENT_KEYS_KEY value into a set."""
+    if not value:
+        return set()
+    return {key.strip() for key in value.split(',') if key.strip()}
+
+
+def restore_pre_rescue_items(items: List[Dict[str, str]],
+                             strip_keys: Iterable[str] = RESCUE_SESSION_KEYS
+                             ) -> List[Dict[str, str]]:
+    """Rebuild the pre-rescue metadata items from rescue-mode metadata.
+
+    - Keys in `strip_keys` (rescue session keys) are dropped.
+    - rescue-backup-<key> is restored as <key>, replacing rescue's value.
+    - Keys listed in RESCUE_ABSENT_KEYS_KEY did not exist before rescue and
+      are dropped, unless a backup for them exists.
+    - Bookkeeping records (RESCUE_BACKUP_RECORD_KEYS) are dropped.
+    - Everything else is kept as-is.
+
+    Without bookkeeping records (VM rescued by an older version), keys such as
+    enable-guest-attributes are kept with their current value, as before.
+
+    Args:
+        items: Current metadata items ({'key': str, 'value': str}).
+        strip_keys: Rescue session keys to remove.
+
+    Returns:
+        Metadata items as they were before rescue.
+    """
+    strip = set(strip_keys)
+    backups: Dict[str, str] = {}
+    absent: Set[str] = set()
+    for item in items:
+        key = item['key']
+        if key == RESCUE_ABSENT_KEYS_KEY:
+            absent = parse_absent_keys(item.get('value'))
+        elif key.startswith(RESCUE_BACKUP_PREFIX) and key not in RESCUE_BACKUP_RECORD_KEYS:
+            backups[key[len(RESCUE_BACKUP_PREFIX):]] = item['value']
+
+    result: Dict[str, str] = {}
+    for item in items:
+        key = item['key']
+        value = item['value']
+
+        if key in strip or key in RESCUE_BACKUP_RECORD_KEYS:
+            continue
+        if key.startswith(RESCUE_BACKUP_PREFIX):
+            original_key = key[len(RESCUE_BACKUP_PREFIX):]
+            result[original_key] = value
+            _logger.debug("  Restoring '%s' as '%s'", key, original_key)
+        elif key in backups:
+            # The backup holds the pre-rescue value; rescue's value is dropped.
+            continue
+        elif key in absent:
+            _logger.debug("  Removing '%s' (added by rescue)", key)
+        else:
+            result[key] = value
+
+    return [{'key': k, 'value': v} for k, v in result.items()]
 
 
 class SetMetadataOperation(BaseOperation):
@@ -180,6 +273,15 @@ class SetMetadataOperation(BaseOperation):
         """
         # Get keys we're about to set
         new_keys = {item['key'] for item in new_items}
+        original_keys = {item['key'] for item in original_items}
+
+        # Records left by an earlier attempt of this rescue (resumed session)
+        # describe the true pre-rescue state; never overwrite them with the
+        # value that attempt itself set.
+        absent_keys: Set[str] = set()
+        for item in original_items:
+            if item['key'] == RESCUE_ABSENT_KEYS_KEY:
+                absent_keys = parse_absent_keys(item.get('value'))
 
         # Build result starting with original items
         result = {}
@@ -199,9 +301,24 @@ class SetMetadataOperation(BaseOperation):
                 backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
                 result[backup_key] = value
                 self._log_debug(f"  Backing up '{key}' as '{backup_key}'")
+            elif key in new_keys and key in RESCUE_RESTORABLE_KEYS:
+                backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
+                if key in absent_keys or backup_key in original_keys:
+                    self._log_debug(f"  '{key}' already recorded, keeping existing record")
+                else:
+                    result[backup_key] = value
+                    self._log_debug(f"  Backing up '{key}' as '{backup_key}'")
             elif key not in new_keys:
                 # Keep original key as-is (not being overwritten)
                 result[key] = value
+
+        # Record restorable keys that rescue is adding, so restore removes them
+        for key in RESCUE_RESTORABLE_KEYS:
+            if key in new_keys and key not in original_keys:
+                absent_keys.add(key)
+        if absent_keys:
+            result[RESCUE_ABSENT_KEYS_KEY] = ','.join(sorted(absent_keys))
+            self._log_debug(f"  Recording keys added by rescue: {result[RESCUE_ABSENT_KEYS_KEY]}")
 
         # Add all new items
         for item in new_items:

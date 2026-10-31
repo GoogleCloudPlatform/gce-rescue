@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `restore`: the safety-snapshot check looked for `pre-rescue-<vm-name>-*`, but snapshots are named after the boot disk, so restore printed "No safety snapshot found" for any VM whose disk name differs from its name. It now looks up `pre-rescue-<disk-name>-*` (#85)
+- `restore` left `enable-guest-attributes=TRUE` on the VM after every rescue, even when the VM never had the key or had it set to `FALSE`. `rescue` now records the key's original value (or that it was absent), and `restore` puts it back or removes it. VMs rescued by an older version keep the current behaviour (#146)
 
 ## [2.6.0] - 2026-10-16
 

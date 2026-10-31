@@ -355,6 +355,39 @@ class TestReconcileRescueState:
         startup_item = [i for i in original_items if i['key'] == 'startup-script'][0]
         assert startup_item['value'] == 'original script'
 
+    def test_reconcile_metadata_drops_keys_added_by_rescue(self):
+        """Rollback metadata must not keep enable-guest-attributes that rescue added (#146)."""
+        vm_info = {
+            'status': 'TERMINATED',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/proj/zones/zone-a/disks/rescue-disk-12345',
+                'deviceName': 'rescue-disk-12345',
+            }],
+            'metadata': {
+                'items': [
+                    {'key': 'rescue-mode', 'value': '12345'},
+                    {'key': 'enable-guest-attributes', 'value': 'TRUE'},
+                    {'key': 'rescue-backup-absent-keys', 'value': 'enable-guest-attributes'},
+                    {'key': 'ssh-keys', 'value': 'user:key'},
+                ],
+                'fingerprint': 'xyz'
+            },
+        }
+        compute = _make_compute(vm_info)
+        checkpoint = _make_checkpoint(step=1)
+        state_tracker = StateTracker()
+
+        _reconcile_rescue_state(
+            compute, 'proj', 'zone-a', 'test-vm',
+            checkpoint, state_tracker, _make_logger()
+        )
+
+        meta_op = [op for op in state_tracker.operations
+                   if op.operation_name == 'Set Metadata'][0]
+        original_items = meta_op.rollback_data['original_metadata']['items']
+        assert original_items == [{'key': 'ssh-keys', 'value': 'user:key'}]
+
     def test_reconcile_skips_when_no_original_disk_in_context(self):
         """Reconciliation should skip if checkpoint has no original_disk_name."""
         compute = _make_compute()

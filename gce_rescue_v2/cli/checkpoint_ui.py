@@ -274,20 +274,8 @@ def _reconcile_rescue_state(compute, project: str, zone: str, vm_name: str,
     if has_rescue_metadata and "Set Metadata" not in checkpointed_op_names:
         _log("Rescue metadata found but not in checkpoint - adding to rollback")
         # Reconstruct pre-rescue metadata by removing rescue keys and restoring backups
-        rescue_keys = {'rescue-mode', 'startup-script', 'windows-startup-script-ps1',
-                       'rescue-original-disk', 'rescue-os-type'}
-        backup_prefix = 'rescue-backup-'
-        restored_items = []
-        for item in metadata_items:
-            if item['key'] in rescue_keys:
-                continue
-            if item['key'].startswith(backup_prefix):
-                restored_items.append({
-                    'key': item['key'][len(backup_prefix):],
-                    'value': item['value']
-                })
-            else:
-                restored_items.append(item)
+        from ..operations.set_metadata import restore_pre_rescue_items
+        restored_items = restore_pre_rescue_items(metadata_items)
         original_metadata = {
             'fingerprint': metadata_obj.get('fingerprint', ''),
             'items': restored_items
