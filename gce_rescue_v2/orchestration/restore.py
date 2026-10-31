@@ -776,12 +776,23 @@ class RestoreOrchestrator:
         return [{'key': k, 'value': v} for k, v in result.items()]
 
     def _check_snapshot_status(self):
-        """Check if safety snapshot was created successfully during rescue."""
+        """Check if safety snapshot was created successfully during rescue.
+
+        Snapshots are named after the ORIGINAL DISK, not the VM
+        (`pre-rescue-{disk_name}-{timestamp}`, see CreateSnapshotOperation),
+        so the lookup has to use the disk name read from rescue metadata.
+        Filtering on the VM name only matched VMs whose boot disk happened to
+        share their name and printed a false "No safety snapshot" warning for
+        everyone else (issue #85).
+        """
+        if not self.original_disk_name:
+            self._log_debug("Original disk name unknown, skipping snapshot check")
+            return
+
         try:
-            # List snapshots with rescue prefix for this VM
             snapshots = self.compute.snapshots().list(
                 project=self.project,
-                filter=f'name:pre-rescue-{self.vm_name}-*'
+                filter=f'name:pre-rescue-{self.original_disk_name}-*'
             ).execute()
 
             if not snapshots.get('items'):

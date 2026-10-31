@@ -5,6 +5,11 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `restore`: the safety-snapshot check looked for `pre-rescue-<vm-name>-*`, but snapshots are named after the boot disk, so restore printed "No safety snapshot found" for any VM whose disk name differs from its name. It now looks up `pre-rescue-<disk-name>-*` (#85)
+
 ## [2.6.0] - 2026-10-16
 
 ### Added

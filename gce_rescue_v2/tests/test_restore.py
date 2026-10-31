@@ -394,3 +394,85 @@ def test_restore_rollback_clears_checkpoint(stub_restore, monkeypatch):
     orch = _make_orch()
     assert orch.execute() is False
     clear_mock.assert_called_once()
+
+
+# ===================================================================
+# Safety snapshot lookup (issue #85)
+# ===================================================================
+
+
+class _RecordingSnapshots:
+    """snapshots() fake that records the filter and returns canned items."""
+
+    def __init__(self, items):
+        self.items = items
+        self.filters = []
+
+    def list(self, project=None, filter=None):
+        self.filters.append(filter)
+        return _Exec({'items': self.items})
+
+
+def _make_snapshot_orch(items, vm_name="my-vm", disk_name="my-vm-boot"):
+    from unittest.mock import MagicMock
+
+    compute = FakeCompute()
+    compute._snapshots = _RecordingSnapshots(items)
+    logger = MagicMock()
+    orch = RestoreOrchestrator(
+        compute=compute, project="p", zone="z", vm_name=vm_name,
+        config=RestoreConfig(), logger=logger, suppress_progress=True,
+    )
+    orch.original_disk_name = disk_name
+    return orch, compute._snapshots, logger
+
+
+def _info_messages(logger):
+    return [str(c.args[0]) for c in logger.info.call_args_list if c.args]
+
+
+def test_snapshot_check_filters_by_original_disk_name():
+    """The snapshot filter uses the original disk name, never the VM name."""
+    orch, snaps, _ = _make_snapshot_orch(
+        [{'name': 'pre-rescue-my-vm-boot-123', 'status': 'READY',
+          'creationTimestamp': '2026-01-01T00:00:00Z'}]
+    )
+
+    orch._check_snapshot_status()
+
+    assert snaps.filters == ['name:pre-rescue-my-vm-boot-*']
+    assert all('pre-rescue-my-vm-*' not in f for f in snaps.filters)
+
+
+def test_snapshot_check_ready_snapshot_no_warning():
+    """A READY snapshot named after the disk is found; no warning is printed."""
+    orch, _, logger = _make_snapshot_orch(
+        [{'name': 'pre-rescue-my-vm-boot-123', 'status': 'READY',
+          'creationTimestamp': '2026-01-01T00:00:00Z'}]
+    )
+
+    orch._check_snapshot_status()
+
+    assert not any('No safety snapshot' in m for m in _info_messages(logger))
+    debug_messages = [str(c.args[0]) for c in logger.debug.call_args_list if c.args]
+    assert any('Safety snapshot verified: pre-rescue-my-vm-boot-123' in m
+               for m in debug_messages)
+
+
+def test_snapshot_check_warns_when_none_found():
+    """With no matching snapshot the existing warning is still shown."""
+    orch, _, logger = _make_snapshot_orch([])
+
+    orch._check_snapshot_status()
+
+    assert any('No safety snapshot' in m for m in _info_messages(logger))
+
+
+def test_snapshot_check_skipped_without_disk_name():
+    """No disk name means nothing to look up; no API call, no warning."""
+    orch, snaps, logger = _make_snapshot_orch([], disk_name=None)
+
+    orch._check_snapshot_status()
+
+    assert snaps.filters == []
+    assert not any('No safety snapshot' in m for m in _info_messages(logger))
