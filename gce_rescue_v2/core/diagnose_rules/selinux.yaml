@@ -46,7 +46,7 @@ patterns:
       # after 'SELinux:'.
       - 'SELinux:\s+policy read failure'
     fixes:
-      - "The policy store on the disk is missing or corrupt - from rescue mode reinstall it via chroot: sudo chroot /mnt/sysroot dnf reinstall selinux-policy-targeted"
+      - "The policy store on the disk is missing or corrupt - from rescue mode reinstall it via chroot: sudo chroot /mnt/sysroot dnf -y reinstall selinux-policy-targeted"
       - "To boot immediately, add selinux=0 to the kernel command line from the GRUB menu (interactive serial console), then repair the policy from inside the VM"
       - "If /etc/selinux/config names a policy type that is not installed (e.g. SELINUXTYPE=mls without the mls policy), fix it to match the installed policy"
 

@@ -898,7 +898,7 @@ class TestDisableOnCmdline:
         line = res.line('[FIXED]')
         assert 'SELinux is DISABLED until the policy package is reinstalled' \
             in line
-        assert ('sudo dnf reinstall selinux-policy-targeted && sudo grubby '
+        assert ('sudo dnf -y reinstall selinux-policy-targeted && sudo grubby '
                 '--update-kernel=ALL --remove-args=selinux=0') in line
         assert line.endswith('sudo touch /.autorelabel && sudo reboot')
         assert 'grubby --update-kernel=ALL --args=selinux=0' \

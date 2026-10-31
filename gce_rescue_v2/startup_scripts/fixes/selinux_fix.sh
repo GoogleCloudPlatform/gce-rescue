@@ -222,9 +222,9 @@ selinux_package_manager() {
 # Prints the command a user runs inside the VM to reinstall the policy.
 selinux_reinstall_hint() {
     case "${2:-dnf}" in
-        apt-get) echo "sudo apt-get install --reinstall selinux-policy-$1" ;;
-        zypper) echo "sudo zypper install --force selinux-policy-$1" ;;
-        *) echo "sudo ${2:-dnf} reinstall selinux-policy-$1" ;;
+        apt-get) echo "sudo apt-get install -y --reinstall selinux-policy-$1" ;;
+        zypper) echo "sudo zypper --non-interactive install --force selinux-policy-$1" ;;
+        *) echo "sudo ${2:-dnf} -y reinstall selinux-policy-$1" ;;
     esac
 }
 
