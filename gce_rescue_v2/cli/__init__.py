@@ -477,6 +477,9 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
             ' drive letter starting from D: onward (locate the target volume'
             ' via Get-Volume rather than assuming D:). The script runs after'
             ' the mount completes; the VM stays in rescue mode for inspection.'
+            ' Linux scripts receive OS_FLAVOR (license name, e.g.'
+            ' debian-12-bookworm) and BOOT_MODE (uefi, bios or unknown)'
+            ' describing the affected disk.'
         )
     )
 
@@ -529,7 +532,9 @@ def _add_repair_args(parser: argparse.ArgumentParser):
             ' drive letter starting from D: onward (locate the target volume'
             ' via Get-Volume rather than assuming D:). Skips diagnosis and'
             ' applies your script instead of an auto-generated fix, then'
-            ' restores the VM and verifies boot.'
+            ' restores the VM and verifies boot. Linux scripts receive'
+            ' OS_FLAVOR (license name, e.g. debian-12-bookworm) and'
+            ' BOOT_MODE (uefi, bios or unknown) describing the affected disk.'
         )
     )
 

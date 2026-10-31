@@ -17,7 +17,7 @@ from .compose import (
 )
 from ..utils.os_detection import (
     detect_os_type, get_os_display_name, detect_architecture, ARCH_ARM64,
-    get_rescue_disk_type, detect_os_flavor
+    get_rescue_disk_type, detect_os_flavor, detect_boot_mode
 )
 from ..validators import (
     ValidationRunner,
@@ -130,6 +130,9 @@ class RescueOrchestrator:
         self.os_type = None
         self.architecture = None
         self.os_flavor = None
+        # Firmware of the ORIGINAL boot disk (uefi/bios/unknown), read from
+        # the instance before the disk swap; exported to --fix-script runs.
+        self.boot_mode = None
         self.vm_info = None
         self.original_disk_size_gb = None
 
@@ -1067,6 +1070,7 @@ class RescueOrchestrator:
         self.os_type = detect_os_type(self.vm_info)
         self.architecture = detect_architecture(self.vm_info)
         self.os_flavor = detect_os_flavor(self.vm_info)
+        self.boot_mode = detect_boot_mode(self.vm_info)
         self._log_debug(f"Detected OS: {get_os_display_name(self.os_type)}, Architecture: {self.architecture}")
 
         # Auto-detect rescue disk type based on machine family
@@ -1199,10 +1203,14 @@ class RescueOrchestrator:
                             script, [self.config.fix_script]
                         )
                     else:
-                        # Bash: append with the marker relocated to the end
+                        # Bash: append with the marker relocated to the end.
+                        # Custom fixes get the same OS_FLAVOR / BOOT_MODE
+                        # context as the built-in repair scripts.
                         script = compose_startup_script(
                             script, [strip_shebang(self.config.fix_script)],
-                            repair_targets=None
+                            repair_targets=None,
+                            os_flavor=self.os_flavor or 'unknown',
+                            boot_mode=self.boot_mode or 'unknown',
                         )
                 return script
 

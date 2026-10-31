@@ -4,6 +4,7 @@ GCE Rescue - OS and VM Feature Detection Utility
 Detects VM characteristics:
 - Operating system (Windows/Linux)
 - CPU architecture (x86_64/ARM64)
+- Firmware boot mode (UEFI/BIOS)
 - Shielded VM configuration
 - Confidential VM configuration
 """
@@ -14,6 +15,11 @@ from ..core.config import OS_TYPE_LINUX, OS_TYPE_WINDOWS
 # Architecture types
 ARCH_X86_64 = 'x86_64'
 ARCH_ARM64 = 'arm64'
+
+# Firmware boot modes (see detect_boot_mode)
+BOOT_MODE_UEFI = 'uefi'
+BOOT_MODE_BIOS = 'bios'
+BOOT_MODE_UNKNOWN = 'unknown'
 
 # License types
 LICENSE_FREE = 'free'
@@ -257,6 +263,46 @@ def detect_architecture(vm: Dict[str, Any]) -> str:
 
     # Default to x86_64
     return ARCH_X86_64
+
+
+def detect_boot_mode(vm: Dict[str, Any]) -> str:
+    """Detect the firmware the VM boots its ORIGINAL disk with.
+
+    Compute Engine selects the firmware from the boot disk: a disk carrying
+    the UEFI_COMPATIBLE guest OS feature boots with UEFI, any other disk
+    with legacy BIOS. Secure Boot requires UEFI, so an enabled Secure Boot
+    flag also means UEFI. This is read from the instance resource (fetched
+    before the disk swap) so it describes the broken disk, not the rescue
+    VM - /sys/firmware/efi inside the rescue VM only reflects the rescue
+    image.
+
+    Args:
+        vm: VM instance response from GCP API
+
+    Returns:
+        BOOT_MODE_UEFI, BOOT_MODE_BIOS, or BOOT_MODE_UNKNOWN when the
+        instance has no boot disk or the API returned no guest OS features
+        for it (an empty list is omitted from API responses, so its absence
+        is not proof of BIOS).
+    """
+    boot_disk = next(
+        (disk for disk in vm.get('disks', []) if disk.get('boot')), None
+    )
+    if boot_disk is None:
+        return BOOT_MODE_UNKNOWN
+
+    features = {
+        feature.get('type')
+        for feature in boot_disk.get('guestOsFeatures') or []
+        if isinstance(feature, dict)
+    }
+    if 'UEFI_COMPATIBLE' in features:
+        return BOOT_MODE_UEFI
+
+    if (vm.get('shieldedInstanceConfig') or {}).get('enableSecureBoot'):
+        return BOOT_MODE_UEFI
+
+    return BOOT_MODE_BIOS if features else BOOT_MODE_UNKNOWN
 
 
 def is_shielded_vm(vm: Dict[str, Any]) -> bool:
