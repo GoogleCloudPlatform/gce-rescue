@@ -294,7 +294,7 @@ NOTES
     # REPAIR COMMAND
     repair_parser = subparsers.add_parser(
         'repair',
-        help='Diagnose and auto-fix boot issues (Linux only)',
+        help='Diagnose and auto-fix boot issues',
         description='Automatically diagnose and repair boot issues. Combines'
                     ' diagnose, rescue (with embedded fix), and restore into a'
                     ' single command.',
@@ -311,16 +311,20 @@ EXAMPLES
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
 SUPPORTED FIXES
-    - fstab: Comments out invalid UUID, device, or label entries
-    - grub: Reinstalls GRUB and regenerates its configuration
+    - fstab: Comments out invalid UUID, device, or label entries (Linux)
+    - grub: Reinstalls GRUB and regenerates its configuration (Linux)
     - initramfs: Rebuilds the initramfs of the kernel that failed to boot
-      (boots the previous kernel if the rebuild fails)
+      (boots the previous kernel if the rebuild fails) (Linux)
     - disk_full: Resizes the boot disk, expands the root filesystem, and
-      reports the largest directories (no files are deleted)
+      reports the largest directories (no files are deleted) (Linux)
+    - Custom fix scripts via --fix-script (Linux and Windows), e.g. the
+      bundled Windows BCD repair script (startup_scripts/fixes/windows_bcd_fix.ps1)
 
 NOTES
-    Diagnosis-driven repair is Linux-only. On Windows VMs, supply your own
-    PowerShell fix with --fix-script, or use 'rescue' to fix manually.
+    Diagnosis-driven repair is Linux-only. Windows VMs are supported with
+    --fix-script (e.g. startup_scripts/fixes/windows_bcd_fix.ps1), which skips
+    diagnosis and runs the supplied PowerShell script, or use 'rescue' to fix
+    manually.
     The VM will be stopped during repair and restarted when complete.
         """
     )
