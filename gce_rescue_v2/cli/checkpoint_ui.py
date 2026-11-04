@@ -117,8 +117,11 @@ def _print_quiet_checkpoint_block(checkpoint: CheckpointData, command: str,
           "and choose Rollback:", file=file)
     print(f"  $ gce-rescue {command} {vm_name} {flags}", file=file)
     print("", file=file)
-    print("To resume the interrupted rescue instead, run:", file=file)
-    print(f"  $ gce-rescue rescue {vm_name} {flags}", file=file)
+    # Resuming is offered by the command that owns the checkpoint (rescue
+    # for repair's own rescue phase).
+    print(f"To resume the interrupted {checkpoint.operation} instead, run "
+          f"without --quiet and choose Continue:", file=file)
+    print(f"  $ gce-rescue {checkpoint.operation} {vm_name} {flags}", file=file)
 
 
 def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
