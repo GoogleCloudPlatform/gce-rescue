@@ -571,6 +571,103 @@ def test_guest_attributes_record_survives_resumed_rescue():
 
 
 # ===================================================================
+# Startup-script backup survives a resumed rescue (#213)
+# ===================================================================
+
+_WINDOWS_RESCUE_ITEMS = [
+    {"key": "windows-startup-script-ps1", "value": "rescue ps1"},
+    {"key": "rescue-mode", "value": "12345"},
+    {"key": "rescue-original-disk", "value": "orig-disk"},
+    {"key": "rescue-os-type", "value": "windows"},
+    {"key": "enable-guest-attributes", "value": "TRUE"},
+]
+
+
+def _as_map(items):
+    return {i["key"]: i["value"] for i in items}
+
+
+def test_first_metadata_step_backs_up_user_startup_script():
+    """Baseline: a fresh rescue backs up the user's script."""
+    during = _as_map(_metadata_after_rescue([{"key": "startup-script", "value": "user script"}]))
+
+    assert during["startup-script"] == "rescue script"
+    assert during["rescue-backup-startup-script"] == "user script"
+
+
+def test_resumed_metadata_step_keeps_startup_script_backup():
+    """Re-running the metadata step keeps the pre-rescue backup, and restore puts it back."""
+    first = _metadata_after_rescue([
+        {"key": "startup-script", "value": "user script"},
+        {"key": "ssh-keys", "value": "user:key"},
+    ])
+    second = _metadata_after_rescue(first)
+    second_map = _as_map(second)
+
+    assert second_map["startup-script"] == "rescue script"
+    assert second_map["rescue-backup-startup-script"] == "user script"
+    assert _clean_metadata(second) == {"startup-script": "user script", "ssh-keys": "user:key"}
+
+
+@pytest.mark.parametrize("backup_first", [True, False])
+def test_resumed_metadata_step_independent_of_item_order(backup_first):
+    """The API does not promise item order; the backup must survive either way."""
+    backup = {"key": "rescue-backup-startup-script", "value": "user script"}
+    current = {"key": "startup-script", "value": "rescue script from attempt 1"}
+    rescued = [
+        {"key": "rescue-mode", "value": "111"},
+        {"key": "rescue-original-disk", "value": "orig-disk"},
+    ]
+    items = ([backup, current] if backup_first else [current, backup]) + rescued
+
+    merged = _as_map(_metadata_after_rescue(items))
+
+    assert merged["rescue-backup-startup-script"] == "user script"
+    assert merged["startup-script"] == "rescue script"
+
+
+def test_resumed_metadata_step_without_user_script_creates_no_backup():
+    """No startup-script before rescue: the resumed step must not back up rescue's own script."""
+    first = _metadata_after_rescue([{"key": "ssh-keys", "value": "user:key"}])
+    second = _metadata_after_rescue(first)
+
+    assert "rescue-backup-startup-script" not in _as_map(second)
+    assert _clean_metadata(second) == {"ssh-keys": "user:key"}
+
+
+def test_resumed_metadata_step_keeps_windows_script_backup():
+    """Same rule for windows-startup-script-ps1."""
+    op = SetMetadataOperation(FakeCompute(), "p", "z", None)
+    first = op._merge_with_backup(
+        [{"key": "windows-startup-script-ps1", "value": "user ps1"}], _WINDOWS_RESCUE_ITEMS)
+    second = op._merge_with_backup(first, _WINDOWS_RESCUE_ITEMS)
+    second_map = _as_map(second)
+
+    assert second_map["windows-startup-script-ps1"] == "rescue ps1"
+    assert second_map["rescue-backup-windows-startup-script-ps1"] == "user ps1"
+    assert _clean_metadata(second) == {"windows-startup-script-ps1": "user ps1"}
+
+
+def test_resumed_windows_step_without_user_script_creates_no_backup():
+    op = SetMetadataOperation(FakeCompute(), "p", "z", None)
+    first = op._merge_with_backup([], _WINDOWS_RESCUE_ITEMS)
+    second = op._merge_with_backup(first, _WINDOWS_RESCUE_ITEMS)
+
+    assert "rescue-backup-windows-startup-script-ps1" not in _as_map(second)
+    assert _clean_metadata(second) == {}
+
+
+def test_linux_startup_script_untouched_on_windows_rescue():
+    """A Windows rescue does not set startup-script, so it is neither backed up nor replaced."""
+    op = SetMetadataOperation(FakeCompute(), "p", "z", None)
+    merged = _as_map(op._merge_with_backup(
+        [{"key": "startup-script", "value": "user sh"}], _WINDOWS_RESCUE_ITEMS))
+
+    assert merged["startup-script"] == "user sh"
+    assert "rescue-backup-startup-script" not in merged
+
+
+# ===================================================================
 # Original boot attachment on restore (#170)
 # ===================================================================
 

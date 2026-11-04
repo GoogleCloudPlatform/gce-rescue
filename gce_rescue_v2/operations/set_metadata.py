@@ -52,9 +52,13 @@ RESCUE_BACKUP_RECORD_KEYS = {
 
 _DISK_MODES = ('READ_WRITE', 'READ_ONLY')
 
+# Marker written with the rescue startup script; present while a VM is in
+# rescue mode (or a rescue of it was interrupted after the metadata step).
+RESCUE_MODE_KEY = 'rescue-mode'
+
 # Keys written for the rescue session itself; removed outright on restore.
 RESCUE_SESSION_KEYS = [
-    'rescue-mode',
+    RESCUE_MODE_KEY,
     'startup-script',
     'windows-startup-script-ps1',
     'rescue-original-disk',
@@ -356,6 +360,14 @@ class SetMetadataOperation(BaseOperation):
             if item['key'] == RESCUE_ABSENT_KEYS_KEY:
                 absent_keys = parse_absent_keys(item.get('value'))
 
+        # rescue-mode is written in the same setMetadata call as the rescue
+        # startup script, and validation refuses to start a new rescue while
+        # it is present. Seeing it here means an earlier attempt of this
+        # session already replaced the conflict keys (an interrupt landed
+        # after the metadata call but before the checkpoint recorded it), so
+        # their current values are rescue's own script, not the user's (#213).
+        rescue_already_applied = RESCUE_MODE_KEY in original_keys
+
         # Build result starting with original items
         result = {}
 
@@ -370,10 +382,19 @@ class SetMetadataOperation(BaseOperation):
 
             # Check if this key will be overwritten by new items
             if key in new_keys and key in RESCUE_CONFLICT_KEYS:
-                # Backup this key with prefix
                 backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
-                result[backup_key] = value
-                self._log_debug(f"  Backing up '{key}' as '{backup_key}'")
+                if backup_key in original_keys:
+                    # An existing backup holds the pre-rescue value; the
+                    # current value is the one rescue set (#213).
+                    self._log_debug(f"  '{backup_key}' already exists, keeping existing backup")
+                elif rescue_already_applied:
+                    # The key did not exist before rescue; the current value
+                    # is rescue's script and must not become a "backup" that
+                    # restore would put back.
+                    self._log_debug(f"  '{key}' was set by an earlier attempt of this rescue, not backing it up")
+                else:
+                    result[backup_key] = value
+                    self._log_debug(f"  Backing up '{key}' as '{backup_key}'")
             elif key in new_keys and key in RESCUE_RESTORABLE_KEYS:
                 backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
                 if key in absent_keys or backup_key in original_keys:
