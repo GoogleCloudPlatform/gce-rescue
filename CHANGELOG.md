@@ -5,6 +5,11 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Tests: construct `YAML_PATH` in `test_windows_bugcheck.py` using `Path(__file__).parent.parent` without `.resolve()`, matching all other rule and test files (#240)
+
 ## [2.7.0] - 2026-11-14
 
 ### Added
