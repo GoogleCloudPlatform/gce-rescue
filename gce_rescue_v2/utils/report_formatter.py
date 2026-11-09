@@ -8,6 +8,7 @@ import re
 import textwrap
 from typing import Dict, Any, List, Optional
 from ..core.diagnosis import SEVERITY_ORDER
+from ..core.cloned_disks import CLONED_DISK_CATEGORY
 from ..core.fix_catalog import CATEGORY_FIX_GUIDANCE
 from .colors import red, yellow, green, bold, dim
 
@@ -229,6 +230,19 @@ class DiagnosisReportFormatter:
             lines.extend(self._format_detect_only_steps(
                 detect_only, detect_only_errors, vm_name, zone))
             return "\n".join(lines)
+
+        # A copy of the boot disk next to disk findings (#194): until it is
+        # dealt with, the VM, rescue mode and repair can all act on either
+        # disk (e.g. fsck /dev/sdb1 may hit the copy), so it comes first.
+        if CLONED_DISK_CATEGORY in detect_only:
+            lines.append("  First, deal with the copy of the boot disk (until then, "
+                         "rescue and repair can act on the wrong disk):")
+            lines.extend(f"  {line}" for line in self._format_detect_only_steps(
+                [CLONED_DISK_CATEGORY], detect_only_errors, vm_name, zone))
+            lines.append("")
+            lines.append("  Then, if the VM still does not boot:")
+            lines.append("")
+            detect_only = [c for c in detect_only if c != CLONED_DISK_CATEGORY]
 
         categories = disk_categories
         errors = disk_errors
@@ -507,5 +521,6 @@ def _category_label(category: str) -> str:
         'network': 'Fix network configuration',
         'windows_boot_manager': 'Repair Windows Boot Manager (BCD)',
         'windows_bugcheck': 'Investigate Windows bugcheck (BSOD)',
+        'cloned_disk': 'Detach the copy of the boot disk',
     }
     return labels.get(category, f'Fix {category}')

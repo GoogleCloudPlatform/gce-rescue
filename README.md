@@ -181,7 +181,7 @@ networks where outbound calls to pypi.org are unwanted.
 | Feature | Description |
 |---------|-------------|
 | **Linux + Windows** | Auto-detects OS, uses appropriate rescue environment |
-| **Boot Diagnostics** | Serial console analysis across 21 Linux boot-failure categories (fstab, GRUB, kernel, filesystem, network, storage) and Windows boot-manager / bugcheck errors |
+| **Boot Diagnostics** | Serial console analysis across 21 Linux boot-failure categories (fstab, GRUB, kernel, filesystem, network, storage) and Windows boot-manager / bugcheck errors, plus a check for attached copies of the boot disk (duplicate UUIDs) |
 | **Auto-Repair** | Automated fixes on Linux for fstab and GRUB errors, missing or corrupt initramfs, full boot disks, and SELinux policy/relabel failures (more categories planned) |
 | **Custom Fix Scripts** | Bring your own fix (`--fix-script`) for known issues at scale — no diagnosis needed |
 | **Automatic Rollback** | Operations roll back on failure |

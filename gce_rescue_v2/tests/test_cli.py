@@ -1012,6 +1012,45 @@ class TestHandleRepair:
         err = capsys.readouterr().err
         assert "gce-rescue rescue vm-1 --zone=z-1 --project=p-1 first" in err
 
+    # --- copy of the boot disk attached (issue #194) ---
+
+    CLONE_FINDING = {
+        "name": "cloned_boot_disk", "category": "cloned_disk", "severity": "warning",
+        "description": "Disk copy (device persistent-disk-1) looks like a copy of the boot disk",
+        "suggested_fixes": ["If the VM should not use it, stop the VM, detach it and "
+                            "start the VM: gcloud compute instances detach-disk vm-1 "
+                            "--disk=copy --zone=us-central1-a"],
+        "disk_name": "copy",
+    }
+    FSTAB_FINDING = {"category": "fstab", "severity": "critical",
+                     "description": "UUID specified in /etc/fstab cannot be found",
+                     "detected_pattern": "UUID=0B1C-2D3E"}
+
+    @pytest.mark.parametrize("boot_errors,fixable,expected_exit,blocked", [
+        # Only the copy: a risk to report; nothing else needed repair.
+        ([CLONE_FINDING], [], 0, False),
+        # The copy next to a fixable finding: repair refuses to run.
+        ([FSTAB_FINDING, CLONE_FINDING], ["fstab"], 1, True),
+    ])
+    def test_handle_repair_stops_when_boot_disk_copy_attached(
+        self, monkeypatch, capsys, boot_errors, fixable, expected_exit, blocked,
+    ):
+        """With duplicate UUIDs the VM can boot either disk, so a repair could
+        fix one and boot the other: nothing is changed."""
+        self._setup_repair_base(monkeypatch)
+        Fake = self._make_fake_repair_orch(boot_errors=boot_errors, fixable=fixable,
+                                           fstab_targets=["UUID=0B1C-2D3E"])
+        Fake.execute = Mock(side_effect=AssertionError("must not repair"))
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake)
+
+        assert cli.handle_repair(_parse_args("repair")) == expected_exit
+        out = capsys.readouterr().out
+        assert "[CLONED_DISK] Disk copy" in out
+        assert "detach-disk vm-1 --disk=copy" in out
+        assert ("Not repairing the other findings" in out) is blocked
+        assert "automated fix is not yet available" not in out
+
     def test_handle_repair_auth_error(self, monkeypatch):
         """Auth failure returns 1."""
         from gce_rescue_v2.cli import preflight

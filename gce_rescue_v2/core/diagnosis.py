@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 VALID_SEVERITIES = {'critical', 'error', 'warning'}
 VALID_OS_SCOPES = {'linux', 'windows', 'any'}
+# Where a category's findings come from: serial-console patterns (the
+# default) or an API check run by DiagnoseOperation.
+VALID_SOURCES = {'serial', 'api'}
 
 
 @dataclass
@@ -118,8 +121,22 @@ def _validate_pattern_file(data: dict, filename: str) -> None:
         if key not in data:
             raise ValueError(f"{filename}: missing required field '{key}'")
 
-    if not isinstance(data['patterns'], list) or len(data['patterns']) == 0:
+    # 'source: api' categories are found by an API check (e.g. cloned_disk,
+    # see core/cloned_disks.py), so they have no serial patterns; every
+    # other category needs at least one.
+    source = data.get('source', 'serial')
+    if source not in VALID_SOURCES:
+        raise ValueError(
+            f"{filename}: 'source' must be one of: "
+            f"{', '.join(sorted(VALID_SOURCES))} (got '{source}')"
+        )
+    if not isinstance(data['patterns'], list):
+        raise ValueError(f"{filename}: 'patterns' must be a list")
+    if source == 'serial' and not data['patterns']:
         raise ValueError(f"{filename}: 'patterns' must be a non-empty list")
+    if source == 'api' and data['patterns']:
+        raise ValueError(
+            f"{filename}: 'source: api' categories have no serial patterns")
 
     for flag in ('survives_boot_success', 'detect_only'):
         if flag in data and not isinstance(data[flag], bool):
@@ -162,17 +179,15 @@ def _validate_pattern_file(data: dict, filename: str) -> None:
                 ) from e
 
 
-def _load_patterns_from_yaml(
-    patterns_dir: Path = None,
-) -> List[BootErrorPattern]:
-    """Load patterns from YAML files in the diagnose_rules/ directory.
+def _load_rule_files(patterns_dir: Path = None) -> List[dict]:
+    """Load and validate every YAML rule file in the diagnose_rules/ directory.
 
     Args:
-        patterns_dir: Directory containing YAML pattern files.
+        patterns_dir: Directory containing YAML rule files.
             Defaults to the diagnose_rules/ directory next to this module.
 
     Returns:
-        List of BootErrorPattern objects.
+        The parsed files, in file-name order.
 
     Raises:
         ValueError: If no YAML files found or validation fails
@@ -184,12 +199,18 @@ def _load_patterns_from_yaml(
     if not yaml_files:
         raise ValueError(f"No pattern YAML files found in {patterns_dir}")
 
-    all_patterns: List[BootErrorPattern] = []
-
+    rules = []
     for yaml_file in yaml_files:
         data = yaml.safe_load(yaml_file.read_text(encoding='utf-8'))
         _validate_pattern_file(data, yaml_file.name)
+        rules.append(data)
+    return rules
 
+
+def _patterns_from_rules(rules: List[dict]) -> List[BootErrorPattern]:
+    """The serial patterns of the given rule files ('source: api' files have none)."""
+    all_patterns: List[BootErrorPattern] = []
+    for data in rules:
         category = data['category']
         survives = bool(data.get('survives_boot_success', False))
         detect_only = bool(data.get('detect_only', False))
@@ -207,19 +228,38 @@ def _load_patterns_from_yaml(
                 detect_only=detect_only,
                 os=os_scope,
             ))
-
     return all_patterns
 
 
-# Load patterns at module level (fail fast if patterns are broken)
-BOOT_ERROR_PATTERNS = _load_patterns_from_yaml()
+def _load_patterns_from_yaml(
+    patterns_dir: Path = None,
+) -> List[BootErrorPattern]:
+    """Load patterns from YAML files in the diagnose_rules/ directory.
+
+    Args:
+        patterns_dir: Directory containing YAML pattern files.
+            Defaults to the diagnose_rules/ directory next to this module.
+
+    Returns:
+        List of BootErrorPattern objects.
+
+    Raises:
+        ValueError: If no YAML files found or validation fails
+    """
+    return _patterns_from_rules(_load_rule_files(patterns_dir))
+
+
+# Load rules at module level (fail fast if patterns are broken)
+_RULES = _load_rule_files()
+BOOT_ERROR_PATTERNS = _patterns_from_rules(_RULES)
 
 # Category behavior sets derived from the YAML flags — the analysis engine
-# never hardcodes category names.
+# never hardcodes category names. Read from the files rather than the
+# patterns so that 'source: api' categories (no patterns) are included.
 SURVIVES_BOOT_SUCCESS_CATEGORIES = frozenset(
-    p.category for p in BOOT_ERROR_PATTERNS if p.survives_boot_success)
+    r['category'] for r in _RULES if r.get('survives_boot_success'))
 DETECT_ONLY_CATEGORIES = frozenset(
-    p.category for p in BOOT_ERROR_PATTERNS if p.detect_only)
+    r['category'] for r in _RULES if r.get('detect_only'))
 
 # Categories whose findings record the version of the kernel that failed to
 # boot. initramfs repair rebuilds the initramfs of exactly that kernel.

@@ -8,9 +8,11 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List, TextIO, Tuple
+from ..core.cloned_disks import CLONED_DISK_CATEGORY
 from ..core.config import build_user_agent, DEFAULT_DISK_RESIZE_INCREMENT_GB
 from ..core.diagnosis import initramfs_kernel_versions
 from ..core.fix_catalog import (
+    CATEGORY_FIX_GUIDANCE,
     SELINUX_RELABEL_IN_PROGRESS_MESSAGE, selinux_findings_only_relabel,
 )
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
@@ -443,6 +445,39 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
                                 zone=args.zone, project=project)
 
 
+def _show_cloned_disk_block(args: argparse.Namespace, project: str,
+                            clones: List[Dict[str, Any]], blocked: bool) -> int:
+    """Explain why repair does not run while a copy of the boot disk is attached.
+
+    With duplicate UUIDs the VM can boot from either disk (which one can
+    change between reboots), so a rescue-based repair could fix the boot
+    disk while the VM keeps booting the copy. Nothing is changed.
+
+    Returns:
+        1 when other findings were left unrepaired (blocked), else 0: the
+        copy is a risk to report, and nothing else needed repair.
+    """
+    print(f"Repair: {args.instance_name} ({args.zone})")
+    print("")
+    for err in clones:
+        print(f"  {warning_prefix()} [{CLONED_DISK_CATEGORY.upper()}] {err['description']}")
+    print("")
+    if blocked:
+        print("  Not repairing the other findings: the VM can boot from either disk, so a")
+        print("  repair could fix one disk while the VM keeps booting the other.")
+        print("")
+    print(f"  {CATEGORY_FIX_GUIDANCE[CLONED_DISK_CATEGORY]}.")
+    for err in clones:
+        for fix in err.get('suggested_fixes', []):
+            print(f"    - {fix}")
+    print("")
+    # The VM may have been running (or stuck) on the copy: only the boot
+    # after the detach shows whether the boot disk itself needs repair.
+    print(f"  Then run repair again if the VM still does not boot: gce-rescue repair "
+          f"{args.instance_name} --zone={args.zone} --project={project}")
+    return 1 if blocked else 0
+
+
 def handle_repair(args: argparse.Namespace) -> int:
     """Handle repair command."""
     from ..core.auth import AuthManager
@@ -742,6 +777,11 @@ def handle_repair(args: argparse.Namespace) -> int:
         print("  No boot issues found. Nothing to repair.")
         print("  Run 'diagnose' for details.")
         return 0
+
+    clones = [e for e in boot_errors if e['category'] == CLONED_DISK_CATEGORY]
+    if clones:
+        return _show_cloned_disk_block(args, project, clones,
+                                       blocked=len(clones) < len(boot_errors))
 
     # The relabel banner alone is a relabel in progress, not a fault:
     # repair leaves it alone and rescue mode would interrupt it.
