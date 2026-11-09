@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rescue` / `repair`: increased default `disk_create_timeout` from 300s to 600s so creating large rescue disks (such as 50 GB Windows Server images) does not time out under load (#241)
 - `rescue` / `restore` / `repair`: retry transient Compute Engine API HTTP 5xx, 429 rate-limit, socket timeout, and SSL EOF errors with exponential backoff (`RetryingHttpRequest`, default 3 retries), and catch transient exceptions during `BaseOperation._wait_for_status` polling instead of aborting immediately (#242)
 - `rescue` / `restore` / `repair`: `StartVMOperation` now re-issues `instances().start()` (up to 2 retries) when a VM transitions through a lingering `STOPPING` state to `TERMINATED` or remains `TERMINATED` across consecutive polls after a start request, and `StopVMOperation` now waits for `TERMINATED` when the VM is already in `STOPPING` state instead of failing (#243)
+- Windows: flush volume caches (`Write-VolumeCache`) on all mounted non-`C:` volumes after running `--fix-script` commands and before emitting `GCE-RESCUE-COMPLETE`, preventing cached NTFS writes on the target disk from being lost or leaving the volume dirty when the rescue VM is stopped (#244)
 
 ## [2.7.0] - 2026-11-14
 

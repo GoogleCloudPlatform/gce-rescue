@@ -353,3 +353,11 @@ class TestComposeStartupScriptWindows:
         assert 'fix body' in script
         assert script.rindex(f'Write-Log "{RESCUE_COMPLETE_MARKER}"') > \
             script.index('fix body')
+
+    def test_flushes_volume_cache_before_marker(self):
+        """Windows composition flushes non-C volume caches before emitting completion marker."""
+        fix = 'Remove-Item D:\\badstartup.ps1 -Force'
+        script = compose_startup_script_windows(BASE_SCRIPT_WINDOWS, [fix])
+        marker_pos = script.index(f'Write-Log "{RESCUE_COMPLETE_MARKER}"')
+        assert 'Write-VolumeCache' in script
+        assert script.index(fix) < script.index('Write-VolumeCache') < marker_pos
