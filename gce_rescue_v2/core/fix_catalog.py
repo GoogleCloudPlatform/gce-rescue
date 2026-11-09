@@ -162,6 +162,30 @@ def grub_findings_only_missing_initrd(boot_errors: List[Dict[str, Any]]) -> bool
     )
 
 
+SELINUX_RELABEL_PATTERN = 'selinux_relabel_required'
+
+# Shown by diagnose and repair when the only selinux finding is the relabel
+# banner: the relabel finishes and reboots on its own, and rescue mode would
+# interrupt it.
+SELINUX_RELABEL_IN_PROGRESS_MESSAGE = (
+    "A relabel is in progress and reboots the VM when done. Wait for it; "
+    "run diagnose again if the banner repeats across reboots."
+)
+
+
+def selinux_findings_only_relabel(boot_errors: List[Dict[str, Any]]) -> bool:
+    """Whether the selinux findings are only the relabel banner.
+
+    The banner marks a normal relabel that reboots the VM when done, so the
+    selinux repair does not act on it: repairing would stop the VM
+    mid-relabel. Any other selinux finding (the policy failed to load) is
+    repaired.
+    """
+    selinux = [err for err in boot_errors if err.get('category') == 'selinux']
+    return bool(selinux) and all(
+        err.get('name') == SELINUX_RELABEL_PATTERN for err in selinux)
+
+
 def get_fixes_for_pattern(category: str, pattern_name: str) -> List[str]:
     """Look up suggested fixes for a specific pattern.
 
