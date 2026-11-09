@@ -32,11 +32,11 @@
 # (0xc000000e) and the MS-documented uppercase form both match.
 category: windows_boot_manager
 os: windows
-# Windows boot repair (BCD rebuild via bcdedit / bootrec / Startup Repair)
-# is a future branch. This category is DETECT-ONLY today: it surfaces the
-# failure and hands back manual guidance, never an auto-fix.
-auto_repair: false
-detect_only: true
+# Windows Boot Manager / BCD failures are auto-repaired via
+# startup_scripts/fixes/windows_bcd_fix.ps1; fix_guidance below documents the
+# manual recovery steps when rescue mode is used instead.
+auto_repair: true
+detect_only: false
 fix_guidance: "Rescue the disk (gce-rescue rescue), attach the original disk as a secondary volume on the rescue VM, then repair the Boot Configuration Data: run Startup Repair, or from the rescue VM rebuild the BCD with bcdedit /store <secondary>:\\Boot\\BCD and bootrec /rebuildbcd / bootrec /fixboot against the recovered Windows volume"
 
 patterns:
