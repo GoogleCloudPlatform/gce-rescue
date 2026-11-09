@@ -430,3 +430,72 @@ class TestWindowsBcdFixScript:
         assert 'startup_scripts/fixes/*.ps1' in setup_py
         assert 'startup_scripts/fixes/*.ps1' in pyproject
         assert '*.ps1 text eol=lf' in gitattributes
+
+
+_SAFE_MODE_FIX_SCRIPT = (
+    Path(__file__).parent.parent
+    / 'startup_scripts'
+    / 'fixes'
+    / 'windows_safe_mode_fix.ps1'
+)
+
+
+class TestWindowsSafeModeFixScript:
+    """The canned Safe-Mode + SAC/Boot-EMS fix script (--fix-script) must
+    honor the repair marker protocol, configure safeboot/bootems/ems via
+    bcdedit.exe /store, and compose cleanly with rescue_mount_windows.ps1."""
+
+    def _script(self) -> str:
+        return _SAFE_MODE_FIX_SCRIPT.read_text(encoding='utf-8')
+
+    def test_script_exists(self):
+        assert _SAFE_MODE_FIX_SCRIPT.exists()
+
+    def test_emits_result_and_fixed_line_markers(self):
+        text = self._script()
+        assert 'GCE-REPAIR-RESULT:' in text
+        assert 'GCE-REPAIR-LINE:[FIXED]' in text
+        assert 'GCE-REPAIR-LINE:[INFO]' in text
+        assert 'bcdedit /deletevalue {default} safeboot' in text
+
+    def test_single_result_emission_block(self):
+        text = self._script()
+        assert 'GCE-REPAIR-RESULT:SUCCESS:$Fixes' in text
+        assert 'GCE-REPAIR-RESULT:NO_ISSUES:0' in text
+        assert 'GCE-REPAIR-RESULT:FAILED:$FixReason' in text
+        marker = text.index('Single result-emission point')
+        for match in re.finditer(r'GCE-REPAIR-RESULT:', text):
+            assert match.start() > marker
+
+    def test_never_calls_exit(self):
+        for line in self._script().splitlines():
+            code = line.split('#', 1)[0]
+            code = re.sub(r'"[^"]*"', '""', code)
+            code = re.sub(r"'[^']*'", "''", code)
+            assert not re.search(r'\bexit\b', code), f"must not call exit: {line!r}"
+
+    def test_sets_safeboot_bootems_and_ems_offline(self):
+        text = self._script()
+        assert 'bcdedit.exe' in text
+        assert '/store $bcdPath /set "{default}" safeboot network' in text
+        assert '/store $bcdPath /set "{bootmgr}" bootems Yes' in text
+        assert '/store $bcdPath /set "{default}" ems Yes' in text
+        assert '.gce-safe-mode-backup' in text
+        assert '.gce-repair-backup' not in text
+
+    def test_refuses_bitlocker_and_uses_lf_line_endings(self):
+        text = self._script()
+        assert 'BitLocker-locked' in text
+        assert 'manage-bde -unlock' in text
+        assert b'\r' not in _SAFE_MODE_FIX_SCRIPT.read_bytes()
+
+    def test_composes_cleanly_with_windows_mount_script(self):
+        from gce_rescue_v2.orchestration.compose import (
+            RESCUE_COMPLETE_MARKER, compose_startup_script_windows,
+        )
+        base = _WINDOWS_MOUNT_SCRIPT.read_text(encoding='utf-8')
+        fix = self._script()
+        combined = compose_startup_script_windows(base, [fix])
+        bcdedit_pos = combined.index('bcdedit.exe')
+        complete_pos = combined.index(f'Write-Log "{RESCUE_COMPLETE_MARKER}"')
+        assert bcdedit_pos < complete_pos
