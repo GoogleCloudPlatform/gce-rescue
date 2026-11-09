@@ -6,6 +6,9 @@ Each YAML file contains both detection patterns and fix info in one place.
 Exports:
     CATEGORY_FIX_GUIDANCE: Dict mapping category -> manual fix command
     SUPPORTED_FIX_CATEGORIES: Set of categories with auto_repair: true
+    API_REPAIR_CATEGORIES: Subset of SUPPORTED_FIX_CATEGORIES with
+        api_repair: true, repaired through the Compute API alone (metadata,
+        reset) instead of a fix script in rescue mode
     DETECT_ONLY_CATEGORIES: Set of categories with detect_only: true
         (runtime conditions — rescue mode does not apply)
     get_fixes_for_pattern(): Look up suggested fixes by category + pattern name
@@ -84,6 +87,9 @@ def _validate_fix_file(data: dict, filename: str) -> None:
         raise ValueError(f"{filename}: missing required field 'patterns'")
     if not isinstance(data['patterns'], list):
         raise ValueError(f"{filename}: 'patterns' must be a list")
+    if data.get('api_repair') and not data.get('auto_repair'):
+        raise ValueError(
+            f"{filename}: 'api_repair: true' requires 'auto_repair: true'")
 
 
 def _build_exports(
@@ -123,6 +129,13 @@ def _build_exports(
 _FIX_DATA = _load_fix_files()
 (CATEGORY_FIX_GUIDANCE, SUPPORTED_FIX_CATEGORIES, DETECT_ONLY_CATEGORIES,
  _PATTERN_FIXES) = _build_exports(_FIX_DATA)
+
+# Categories repaired through the Compute API alone (instance metadata,
+# reset) - no rescue mode, no disk swap, so no startup_scripts/fixes/ script.
+API_REPAIR_CATEGORIES = frozenset(
+    category for category, data in _FIX_DATA.items()
+    if data.get('api_repair', False)
+)
 
 # initramfs findings that an initramfs rebuild can fix: a missing, corrupt
 # or driver-less image. The other initramfs patterns describe symptoms a

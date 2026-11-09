@@ -4579,6 +4579,46 @@ class TestStartupScriptDetection:
         names = [e['name'] for e in data['boot_errors']]
         assert 'startup_script_failed' in names
 
+    def test_guest_agent_startup_script_url_failure_detected(self):
+        """Guest-agent wording for a URL script names startup-script-url."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64\n"
+            "google_metadata_script_runner[712]: Script \"startup-script-url\" "
+            "failed with error: exit status 1\n"
+        )
+        data = _diagnose(serial)
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'startup_script_failed' in names
+
+    _OLD_BOOT_FAILED = (
+        "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (x) #1\n"
+        'google_metadata_script_runner[712]: Script "startup-script" '
+        "failed with error: exit status 1\n"
+        "systemd[1]: Startup finished in 1.7s (kernel) + 17.2s (userspace)\n"
+    )
+
+    def test_failure_from_an_older_boot_is_cleared(self):
+        """The script runs on every boot: a failure printed before the latest
+        boot's banner is stale (repair would disable a fixed script)."""
+        serial = self._OLD_BOOT_FAILED + (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (x) #1\n"
+            "google_metadata_script_runner[701]: Finished running startup scripts\n"
+            "systemd[1]: Startup finished in 1.7s (kernel) + 16.0s (userspace)\n"
+        )
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'RUNNING', 'linux')
+        assert 'startup_script' not in {e.category for e in result.boot_errors}
+
+    def test_failure_repeated_in_latest_boot_is_kept(self):
+        serial = self._OLD_BOOT_FAILED + self._OLD_BOOT_FAILED
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'RUNNING', 'linux')
+        assert 'startup_script' in {e.category for e in result.boot_errors}
+
+    def test_failure_without_a_kernel_banner_is_kept(self):
+        """No banner (rotated out of the buffer): nothing to scope by."""
+        serial = self._OLD_BOOT_FAILED.split("\n", 1)[1] + "x" * 60
+        result = analyze_serial_output(serial, 'test-vm', 'zone-a', 'RUNNING', 'linux')
+        assert 'startup_script' in {e.category for e in result.boot_errors}
+
     def test_windows_startup_script_failures_detected(self):
         """Red-team C3: Windows startup-script failures on COM1 were
         completely undetected - both the exit-status form and the

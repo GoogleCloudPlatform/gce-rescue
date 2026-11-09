@@ -6,11 +6,16 @@
 category: startup_script
 os: linux
 fix_guidance: "Read the startup-script output lines above the exit-status line in the serial log, then fix the script in metadata: gcloud compute instances describe VM_NAME --zone=ZONE --format=\"value(metadata.items.extract(startup-script))\""
-auto_repair: false
+# repair disables the failing script through instance metadata (it is saved
+# under gce-rescue-disabled-<key>), resets the VM and verifies the new boot.
+# api_repair: the fix is made through the Compute API alone - no rescue mode,
+# no disk swap, so no startup_scripts/fixes/startup_script_fix.sh exists.
+auto_repair: true
+api_repair: true
 # detect_only: the failing code is the USER's startup script (VM metadata,
 # not on-disk boot configuration) - there is nothing on the rescued disk
-# for the repair command to edit, and disk swap would not change the
-# metadata the script runs from.
+# to edit, and rescue mode would not change the metadata the script runs
+# from. It is also never a boot root cause.
 detect_only: true
 # A booted VM whose provisioning failed is exactly the case this category
 # exists for - the boot-success marker always appears around these lines,
@@ -33,8 +38,8 @@ patterns:
       - '(?:windows-)?(?:startup|sysprep-specialize)-script(?:-(?:url|ps1|cmd|bat))? exit status [1-9]'
       # Guest-agent wording: Script "startup-script" failed with error:
       # ... - .? tolerates the quote character (serial output sometimes
-      # mangles or drops it). Same Windows/sysprep suffixes as above.
-      - 'Script .?(?:windows-)?(?:startup|sysprep-specialize)-script(?:-(?:ps1|cmd|bat))?.? failed'
+      # mangles or drops it). Same url/Windows/sysprep suffixes as above.
+      - 'Script .?(?:windows-)?(?:startup|sysprep-specialize)-script(?:-(?:url|ps1|cmd|bat))?.? failed'
     fixes:
       - "The script's own output (stdout/stderr) is in the serial log directly above the exit-status line - fix the failing command there"
       - "View the current script: gcloud compute instances describe VM_NAME --zone=ZONE --format=\"value(metadata.items.extract(startup-script))\""

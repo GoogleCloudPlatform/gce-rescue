@@ -671,6 +671,43 @@ class TestDetectOnlyFixSection:
         # cpu_lockup guidance must not appear inside step 2's command list
         assert '- Identify the offending process/workload' in report
 
+    @staticmethod
+    def _startup_script_diagnosis(os_type='linux'):
+        return {
+            'vm_name': 'web-1', 'zone': 'us-central1-a', 'status': 'RUNNING',
+            'os_type': os_type, 'os_flavor': 'debian-12', 'architecture': 'x86_64',
+            'license_type': 'free', 'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': [{
+                'category': 'startup_script', 'severity': 'warning',
+                'description': 'GCE startup script exited with a non-zero status',
+                'detected_pattern': 'Script "startup-script" failed',
+                'suggested_fixes': ['View the current script'],
+                'context_lines': ['Script "startup-script" failed with error: exit status 1'],
+                'matched_line_index': 0,
+            }],
+            'recommendations': [],
+        }
+
+    def test_startup_script_recommends_repair_without_rescue(self, formatter):
+        """startup_script is repaired through the API: repair is recommended,
+        and the manual steps sit under it, still without rescue mode."""
+        report = formatter.format_report(self._startup_script_diagnosis())
+        assert 'Auto-repair (recommended):' in report
+        assert '$ gce-rescue repair web-1 --zone=us-central1-a' in report
+        assert '    Fix startup script:' in report  # nested under "Or fix manually"
+        assert 'gce-rescue rescue' not in report
+
+    def test_startup_script_on_windows_does_not_recommend_repair(self, formatter):
+        report = formatter.format_report(self._startup_script_diagnosis('windows'))
+        assert 'Auto-repair' not in report
+        assert 'gce-rescue repair' not in report
+
+    def test_detect_only_without_repair_has_no_repair_line(
+        self, formatter, cpu_lockup_diagnosis
+    ):
+        report = formatter.format_report(cpu_lockup_diagnosis)
+        assert 'Auto-repair' not in report
+
     def test_kernel_panic_only_report_has_no_fake_command(self, formatter):
         """Integration red-team C3: kernel is detect-only — a panic-only
         report must not render the prose fix_guidance behind a '$ ' prompt

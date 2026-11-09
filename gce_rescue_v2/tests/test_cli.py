@@ -1033,7 +1033,13 @@ class TestHandleRepair:
         self._setup_repair_base(monkeypatch)
         from gce_rescue_v2.cli import preflight
         monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: ["local-ssd-0"])
-        Fake = self._make_fake_repair_orch()
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "fstab", "severity": "error",
+                          "description": "Bad UUID in /etc/fstab",
+                          "detected_pattern": "UUID=bad-uuid"}],
+            fixable=["fstab"],
+            fstab_targets=["UUID=bad-uuid"],
+        )
         monkeypatch.setattr(
             "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
         )
@@ -1044,6 +1050,22 @@ class TestHandleRepair:
         captured = capsys.readouterr()
         assert "Local SSD" in captured.err
         assert "--force" in captured.err
+
+    def test_handle_repair_local_ssd_nothing_to_repair_needs_no_force(
+        self, monkeypatch, capsys,
+    ):
+        """The Local SSD gate only applies once a rescue-based repair is planned."""
+        self._setup_repair_base(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: ["local-ssd-0"])
+        Fake = self._make_fake_repair_orch()
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        exit_code = cli.handle_repair(_parse_args("repair"))
+        assert exit_code == 0
+        assert "Nothing to repair" in capsys.readouterr().out
 
     def test_handle_repair_local_ssd_force_proceeds(self, monkeypatch):
         """repair --quiet --force on a Local SSD VM proceeds past the stop guard."""
@@ -1078,7 +1100,13 @@ class TestHandleRepair:
             lambda *a, **kw: (None, "Unrecognized rescue image URL format: oops"),
         )
 
-        Fake = self._make_fake_repair_orch()
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "fstab", "severity": "error",
+                          "description": "Bad UUID in /etc/fstab",
+                          "detected_pattern": "UUID=bad-uuid"}],
+            fixable=["fstab"],
+            fstab_targets=["UUID=bad-uuid"],
+        )
         monkeypatch.setattr(
             "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
         )
@@ -1110,12 +1138,15 @@ class TestHandleRepair:
             def validate(self): return True
             def diagnose(self):
                 return {"instance_name": "vm-1", "zone": "us-central1-a",
-                        "boot_errors": [], "boot_status": "healthy"}
-            def get_fixable_categories(self, d): return []
+                        "boot_errors": [{"category": "fstab", "severity": "error",
+                                         "description": "Bad UUID in /etc/fstab",
+                                         "detected_pattern": "UUID=bad-uuid"}],
+                        "boot_status": "error"}
+            def get_fixable_categories(self, d): return ["fstab"]
             def get_unfixable_categories(self, d): return []
-            def _extract_fstab_targets(self, d): return []
+            def _extract_fstab_targets(self, d): return ["UUID=bad-uuid"]
             def execute(self, d):
-                return {"status": "success", "fixed_count": 0,
+                return {"status": "success", "fixed_count": 1,
                         "fix_lines": [], "error": None,
                         "snapshot_name": "s", "duration_seconds": 1}
 
@@ -1131,6 +1162,213 @@ class TestHandleRepair:
         assert exit_code == 0
         # Confirm the mutation happened on the orchestrator's config
         assert captured['orch'].config.custom_rescue_image_size_gb == 50
+
+    # --- startup_script: API-only repair (issue #203) ---
+
+    STARTUP_FINDING = {
+        "category": "startup_script", "severity": "warning",
+        "description": "GCE startup script exited with a non-zero status",
+        "detected_pattern": 'Script "startup-script" failed',
+    }
+    STARTUP_SUCCESS = {
+        "status": "success", "fixed_count": 1,
+        "fix_lines": ["[FIXED] startup_script: disabled startup-script "
+                      "(saved as gce-rescue-disabled-startup-script)"],
+        "error": None, "guidance": [], "next_steps": ["To put startup-script back"],
+        "boot_verified": True, "boot_errors_after": [], "snapshot_name": None,
+        "duration_seconds": 50,
+    }
+
+    STARTUP_SERIAL = (
+        "[    0.000000] Linux version 6.1.0-54-cloud-amd64 (x) #1\n"
+        'google_metadata_script_runner[9]: Metadata key("startup-script"), '
+        'command("/bin/bash"): app: starting service\n'
+        'google_metadata_script_runner[9]: Script "startup-script" failed '
+        "with error: exit status 1\n"
+    )
+
+    def _setup_startup_vm(self, monkeypatch, items=None, disks=None,
+                          serial=None):
+        """Repair base with the VM's metadata, disks and serial output."""
+        compute = self._setup_repair_base(monkeypatch)
+        vm = compute.instances.return_value.get.return_value.execute.return_value
+        vm["metadata"] = {"fingerprint": "fp", "items": items if items is not None
+                          else [{"key": "startup-script", "value": "exit 1"}]}
+        if disks is not None:
+            vm["disks"] = disks
+        compute.instances.return_value.getSerialPortOutput.return_value \
+            .execute.return_value = {"contents": serial or self.STARTUP_SERIAL,
+                                     "next": 4096}
+        return compute
+
+    def _startup_orch(self, monkeypatch, compute, execute_result=None):
+        """Fake orchestrator for a startup_script diagnosis: the real
+        read-only plan against `compute`, a recorded execute."""
+        from gce_rescue_v2.orchestration.startup_script_repair import (
+            StartupScriptRepair,
+        )
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[self.STARTUP_FINDING], fixable=["startup_script"],
+            execute_result=execute_result or self.STARTUP_SUCCESS,
+        )
+        executed = []
+        original = Fake.execute
+
+        def execute(orch, diagnosis):
+            executed.append(diagnosis)
+            return original(orch, diagnosis)
+
+        def plan(orch, diagnosis):
+            return StartupScriptRepair(compute, "test-proj", "us-central1-a",
+                                       "vm-1").plan(diagnosis["boot_errors"])
+
+        Fake.execute = execute
+        Fake.plan_startup_script_repair = plan
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake)
+        return executed
+
+    @staticmethod
+    def _interactive_args():
+        return cli.create_parser().parse_args(
+            ["repair", "vm-1", "--zone", "us-central1-a", "--project",
+             "test-proj", "--format", "disable"])
+
+    def test_startup_script_quiet_skips_rescue_prerequisites(
+        self, monkeypatch, capsys,
+    ):
+        """No rescue mode, so Local SSD (--force) and org-policy gates do not
+        apply: --quiet without --force repairs, with no prompt."""
+        compute = self._setup_startup_vm(monkeypatch)
+        from gce_rescue_v2.cli import preflight
+        monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: ["local-ssd-0"])
+        monkeypatch.setattr(preflight, "check_image_org_policy",
+                            lambda *a, **kw: "blocked by org policy")
+        monkeypatch.setattr("builtins.input", Mock(side_effect=AssertionError))
+        executed = self._startup_orch(monkeypatch, compute)
+
+        exit_code = cli.handle_repair(_parse_args("repair"))
+        assert exit_code == 0
+        assert len(executed) == 1
+        out = capsys.readouterr().out
+        assert "Disable startup-script -> Reset VM -> Verify boot" in out
+        assert "[FIXED] startup_script" in out
+        assert "To put startup-script back" in out
+
+    @pytest.mark.parametrize("answer,ran", [("y", True), ("n", False)])
+    def test_startup_script_interactive_confirmation(
+        self, monkeypatch, capsys, answer, ran,
+    ):
+        compute = self._setup_startup_vm(monkeypatch)
+        monkeypatch.setattr("builtins.input", lambda *a: answer)
+        executed = self._startup_orch(monkeypatch, compute)
+
+        exit_code = cli.handle_repair(self._interactive_args())
+        assert exit_code == 0
+        assert bool(executed) is ran
+        out = capsys.readouterr().out
+        assert "gce-rescue-disabled-startup-script" in out  # shown in the plan
+        assert "Reset the VM (a hard reset" in out
+        assert "| app: starting service" in out             # the script's output
+        assert "will not run on the next boot" in out        # side-effect warning
+
+    def test_startup_script_plan_mentions_vm_specifics(self, monkeypatch, capsys):
+        """MIG member, Local SSD and a shutdown-script change the plan text."""
+        compute = self._setup_startup_vm(
+            monkeypatch,
+            items=[{"key": "startup-script", "value": "exit 1"},
+                   {"key": "shutdown-script", "value": "flush"},
+                   {"key": "created-by", "value":
+                    "projects/1/zones/z/instanceGroupManagers/web-mig"}],
+            disks=[{"boot": True, "source": "d", "type": "PERSISTENT"},
+                   {"type": "SCRATCH", "interface": "NVME"}])
+        monkeypatch.setattr("builtins.input", lambda *a: "n")
+        self._startup_orch(monkeypatch, compute)
+
+        cli.handle_repair(self._interactive_args())
+        out = capsys.readouterr().out
+        assert "managed instance group web-mig" in out
+        assert "shutdown-script does not run" in out
+        assert "Local SSD data is kept" in out
+
+    @pytest.mark.parametrize("overrides,expected", [
+        ({}, 0),
+        ({"boot_verified": None,
+          "boot_errors_after": ["the boot did not finish within 240s"]}, 0),
+        ({"boot_verified": False,
+          "boot_errors_after": ["fstab: emergency mode"]}, 1),
+        ({"status": "not_applied", "fix_lines": [], "error": "nothing to disable"}, 1),
+        ({"status": "error", "error": "reset failed"}, 1),
+    ])
+    def test_startup_script_exit_codes(self, monkeypatch, overrides, expected):
+        compute = self._setup_startup_vm(monkeypatch)
+        self._startup_orch(monkeypatch, compute,
+                           execute_result={**self.STARTUP_SUCCESS, **overrides})
+        assert cli.handle_repair(_parse_args("repair")) == expected
+
+    def test_startup_script_failed_verification_says_repair_again(
+        self, monkeypatch, capsys,
+    ):
+        compute = self._setup_startup_vm(monkeypatch)
+        self._startup_orch(monkeypatch, compute, execute_result={
+            **self.STARTUP_SUCCESS, "boot_verified": False,
+            "boot_errors_after": ["fstab: UUID specified in /etc/fstab cannot be found"]})
+        assert cli.handle_repair(_parse_args("repair")) == 1
+        out = capsys.readouterr().out
+        assert "fstab: UUID specified" in out
+        assert "gce-rescue repair vm-1 --zone=us-central1-a' again" in out
+
+    @pytest.mark.parametrize("items,needle", [
+        # A saved copy is in the way: refused, never overwritten.
+        ([{"key": "startup-script", "value": "new"},
+          {"key": "gce-rescue-disabled-startup-script", "value": "old"}],
+         "not overwritten"),
+        # Not set on the instance (inherited from project metadata).
+        ([], "project metadata"),
+    ])
+    def test_startup_script_no_prompt_when_nothing_would_change(
+        self, monkeypatch, capsys, items, needle,
+    ):
+        """No plan, prompt or repair for a change that will be refused; the
+        reason is printed and the exit code is 1."""
+        compute = self._setup_startup_vm(monkeypatch, items=items)
+        monkeypatch.setattr("builtins.input", Mock(side_effect=AssertionError))
+        executed = self._startup_orch(monkeypatch, compute)
+
+        assert cli.handle_repair(self._interactive_args()) == 1
+        assert executed == []
+        captured = capsys.readouterr()
+        assert "Repair plan" not in captured.out
+        assert needle in captured.err
+
+    def test_startup_script_already_disabled_plan(self, monkeypatch, capsys):
+        """Re-run after an interruption: the plan skips the metadata step."""
+        compute = self._setup_startup_vm(monkeypatch, items=[
+            {"key": "gce-rescue-disabled-startup-script", "value": "exit 1"}])
+        monkeypatch.setattr("builtins.input", lambda *a: "n")
+        self._startup_orch(monkeypatch, compute)
+
+        assert cli.handle_repair(self._interactive_args()) == 0
+        out = capsys.readouterr().out
+        assert "already disabled by an earlier repair" in out
+        assert "1. Reset the VM" in out
+
+    def test_startup_script_with_disk_issue_is_deferred(self, monkeypatch, capsys):
+        """Next to a disk category, only the disk repair runs; the startup
+        script is named as not changed in this run."""
+        self._setup_repair_base(monkeypatch)
+        fstab = {"category": "fstab", "severity": "error",
+                 "description": "Bad UUID in /etc/fstab",
+                 "detected_pattern": "UUID=bad-uuid"}
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[fstab, self.STARTUP_FINDING], fixable=["fstab"],
+            fstab_targets=["UUID=bad-uuid"])
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake)
+
+        assert cli.handle_repair(_parse_args("repair")) == 0
+        out = capsys.readouterr().out
+        assert "[STARTUP_SCRIPT] is not changed in this run" in out
 
 
 # ---------------------------------------------------------------------------

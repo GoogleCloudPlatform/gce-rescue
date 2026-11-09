@@ -20,7 +20,9 @@ from gce_rescue_v2.orchestration.repair import (
     RESCUE_SUBSTEP_LABELS,
     RESTORE_SUBSTEP_LABELS,
 )
-from gce_rescue_v2.core.fix_catalog import SUPPORTED_FIX_CATEGORIES
+from gce_rescue_v2.core.fix_catalog import (
+    API_REPAIR_CATEGORIES, SUPPORTED_FIX_CATEGORIES,
+)
 from gce_rescue_v2.orchestration.rescue import RescueOrchestrator
 from gce_rescue_v2.orchestration.restore import RestoreOrchestrator
 from gce_rescue_v2.core.config import RescueConfig
@@ -168,6 +170,42 @@ class TestRepairOrchestrator:
         }
         fixable = orch.get_fixable_categories(diagnosis)
         assert fixable == ['fstab']
+
+    def test_startup_script_alone_is_fixable(self):
+        orch = RepairOrchestrator(
+            _make_compute(), 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        diagnosis = {'boot_errors': [{'category': 'startup_script',
+                                      'severity': 'warning'}]}
+        assert orch.get_fixable_categories(diagnosis) == ['startup_script']
+
+    def test_startup_script_deferred_next_to_disk_category(self):
+        """API and rescue repairs never run in one session: the disk repair
+        wins, startup_script is neither fixable nor unfixable this run."""
+        orch = RepairOrchestrator(
+            _make_compute(), 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        diagnosis = {'boot_errors': [
+            {'category': 'startup_script', 'severity': 'warning'},
+            {'category': 'fstab', 'severity': 'critical'},
+        ]}
+        assert orch.get_fixable_categories(diagnosis) == ['fstab']
+        assert 'startup_script' not in orch.get_unfixable_categories(diagnosis)
+
+    def test_execute_routes_startup_script_to_api_repair(self):
+        """No rescue mode: execute() hands the findings to StartupScriptRepair."""
+        orch = RepairOrchestrator(
+            _make_compute(), 'proj', 'zone-a', 'vm-1', logger=_make_logger()
+        )
+        errors = [{'category': 'startup_script', 'severity': 'warning',
+                   'detected_pattern': 'startup-script exit status 1'}]
+        with patch('gce_rescue_v2.orchestration.repair.StartupScriptRepair') as cls, \
+                patch('gce_rescue_v2.orchestration.repair.RescueOrchestrator') as rescue:
+            cls.return_value.run.return_value = {'status': 'success'}
+            result = orch.execute({'boot_errors': errors})
+        assert result == {'status': 'success'}
+        cls.return_value.run.assert_called_once_with(errors)
+        rescue.assert_not_called()
 
     def test_get_unfixable_categories(self):
         """Should return categories without fix scripts."""
@@ -1725,16 +1763,16 @@ class TestSupportedCategories:
         assert 'kernel' not in SUPPORTED_FIX_CATEGORIES
 
     def test_supported_set_is_exactly_the_shipped_scripts(self):
-        """The full auto-repairable set — update when a new fix script lands."""
+        """The full auto-repairable set — update when a new fix lands."""
         assert SUPPORTED_FIX_CATEGORIES == {
-            'fstab', 'grub', 'disk_full', 'initramfs', 'selinux'}
+            'fstab', 'grub', 'disk_full', 'initramfs', 'selinux', 'startup_script'}
 
     def test_fix_script_exists_for_each_supported_category(self):
-        """Every supported category should have a corresponding fix script."""
+        """Every category repaired in rescue mode has a fix script."""
         fixes_dir = (
             Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
         )
-        for cat in SUPPORTED_FIX_CATEGORIES:
+        for cat in SUPPORTED_FIX_CATEGORIES - API_REPAIR_CATEGORIES:
             script_path = fixes_dir / f'{cat}_fix.sh'
             assert script_path.exists(), (
                 f"Missing fix script for supported category '{cat}': {script_path}"
