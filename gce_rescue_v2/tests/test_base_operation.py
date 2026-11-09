@@ -126,3 +126,50 @@ class TestWaitForStatus:
         result = self.op._wait_for_status(check_func, "STOPPED", timeout=5)
         assert result is False
 
+    def test_status_polling_retries(self):
+        """Test that status polling retries on transient errors."""
+        check_func = Mock(side_effect=[Exception("Transient 503"), "STOPPED"])
+        result = self.op._wait_for_status(check_func, "STOPPED")
+        assert result is True
+        assert check_func.call_count == 2
+
+
+class TestRetryingHttpRequest:
+    """Tests for RetryingHttpRequest default retry behavior."""
+
+    def test_defaults_num_retries(self, monkeypatch):
+        """execute() passes DEFAULT_HTTP_RETRIES when num_retries is omitted."""
+        import googleapiclient.http
+        from gce_rescue_v2.core.auth import DEFAULT_HTTP_RETRIES, RetryingHttpRequest
+
+        captured = {}
+
+        def fake_super_execute(self, http=None, num_retries=0):
+            captured["http"] = http
+            captured["num_retries"] = num_retries
+            return {"ok": True}
+
+        monkeypatch.setattr(googleapiclient.http.HttpRequest, "execute", fake_super_execute)
+        req = RetryingHttpRequest(
+            Mock(), lambda resp, content: content, "https://example.com"
+        )
+        assert req.execute() == {"ok": True}
+        assert captured["num_retries"] == DEFAULT_HTTP_RETRIES
+
+    def test_respects_explicit_num_retries(self, monkeypatch):
+        """execute() preserves an explicit num_retries override."""
+        import googleapiclient.http
+        from gce_rescue_v2.core.auth import RetryingHttpRequest
+
+        captured = {}
+
+        def fake_super_execute(self, http=None, num_retries=0):
+            captured["num_retries"] = num_retries
+            return {"ok": True}
+
+        monkeypatch.setattr(googleapiclient.http.HttpRequest, "execute", fake_super_execute)
+        req = RetryingHttpRequest(
+            Mock(), lambda resp, content: content, "https://example.com"
+        )
+        req.execute(num_retries=0)
+        assert captured["num_retries"] == 0

@@ -27,6 +27,16 @@ logging.getLogger('googleapiclient.http').setLevel(logging.ERROR)
 # OAuth scopes required for Google Compute Engine API
 SCOPES = ['https://www.googleapis.com/auth/compute']
 
+# Default retry count for transient HTTP 5xx, rate-limit, socket, and SSL errors
+DEFAULT_HTTP_RETRIES = 3
+
+
+class RetryingHttpRequest(googleapiclient.http.HttpRequest):
+    """HttpRequest subclass that defaults execute() to retrying transient errors."""
+
+    def execute(self, http=None, num_retries=DEFAULT_HTTP_RETRIES):
+        return super().execute(http=http, num_retries=num_retries)
+
 
 class AuthManager:
     """
@@ -140,7 +150,7 @@ class AuthManager:
                         self._credentials,
                         http=httplib2.Http()
                     )
-                    return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+                    return RetryingHttpRequest(auth_http, *args, **kwargs)
 
                 self._compute = discovery.build(
                     'compute',

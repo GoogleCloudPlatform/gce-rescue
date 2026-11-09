@@ -11,9 +11,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Optional
 from googleapiclient import discovery
-import googleapiclient.http
 import google_auth_httplib2
 import httplib2
+
+from ..core.auth import RetryingHttpRequest
 
 
 @dataclass
@@ -184,7 +185,7 @@ class BaseValidator(ABC):
             auth_http = google_auth_httplib2.AuthorizedHttp(
                 credentials, http=httplib2.Http()
             )
-            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+            return RetryingHttpRequest(auth_http, *args, **kwargs)
 
         return discovery.build(
             'compute', 'v1', credentials=credentials,

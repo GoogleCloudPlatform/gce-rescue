@@ -31,10 +31,10 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Set
 
 from googleapiclient import discovery
-import googleapiclient.http
 import google_auth_httplib2
 import httplib2
 
+from ..core.auth import RetryingHttpRequest
 from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
 from ..core.diagnosis import initramfs_kernel_versions, is_safe_root_device
 from ..core.fix_catalog import (
@@ -312,7 +312,7 @@ class RepairOrchestrator:
             auth_http = google_auth_httplib2.AuthorizedHttp(
                 credentials, http=httplib2.Http()
             )
-            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+            return RetryingHttpRequest(auth_http, *args, **kwargs)
 
         return discovery.build(
             'compute', 'v1', credentials=credentials,
