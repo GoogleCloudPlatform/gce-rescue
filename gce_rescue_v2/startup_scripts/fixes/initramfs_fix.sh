@@ -43,6 +43,10 @@
 # All logic lives in functions prefixed initramfs_ (fix scripts share one
 # shell, so names must not collide). The script never calls 'exit': later
 # fix scripts and the completion signal must still run.
+#
+# Commands inside the target run through the shared chroot helper
+# (fixes/lib/chroot.sh), which the composer inlines because of this line:
+# gce-rescue-requires: chroot
 
 SYSROOT="/mnt/sysroot"
 LOGFILE="${LOGFILE:-/var/log/gce-rescue.log}"
@@ -73,28 +77,23 @@ INITRAMFS_LIST_TIMEOUT=120
 # Small helpers
 # ---------------------------------------------------------------------------
 
-# Runs a command inside the target system. A fixed PATH and C locale make
-# the result independent of the startup-script environment.
+# Runs a command inside the target system (chroot helper: fixed PATH and C
+# locale, so the result is independent of the startup-script environment).
+# Kept as thin wrappers so the call sites below did not change when the
+# chroot code moved to fixes/lib/chroot.sh.
 initramfs_in_chroot() {
-    chroot "$SYSROOT" /usr/bin/env -i \
-        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        LC_ALL=C HOME=/root TERM=dumb "$@"
+    chroot_exec "$@"
 }
 
 # Runs a command inside the target with a time limit; output goes to the
 # log file only.
 initramfs_chroot_run() {
-    local limit="$1"
-    shift
-    log "chroot: $*"
-    timeout "$limit" chroot "$SYSROOT" /usr/bin/env -i \
-        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-        LC_ALL=C HOME=/root TERM=dumb "$@" >> "$LOGFILE" 2>&1
+    chroot_run "$@"
 }
 
 # Whether a command exists inside the target system.
 initramfs_has_cmd() {
-    initramfs_in_chroot /bin/sh -c 'command -v "$1"' sh "$1" >/dev/null 2>&1
+    chroot_has_cmd "$1"
 }
 
 # A kernel version is only used if it is a plain release string.
@@ -921,8 +920,15 @@ initramfs_warn_config() {
 # Main
 # ---------------------------------------------------------------------------
 
+# Entry point. Runs the repair, then undoes the chroot setup on every path
+# (the repair returns early in many places).
 initramfs_repair() {
-    local family kernels target img fixes=0 candidates fallback fallback_img dir f bls_changed bls_files
+    initramfs_repair_main
+    chroot_leave
+}
+
+initramfs_repair_main() {
+    local family kernels target img fixes=0 candidates fallback fallback_img f bls_changed bls_files
 
     INITRAMFS_TOUCHED=""
     INITRAMFS_GRUB_CFG=""
@@ -943,12 +949,10 @@ initramfs_repair() {
         return
     fi
 
-    # Chroot support (the base script mounts proc, sys and dev).
-    for dir in proc sys dev dev/pts run; do
-        if [ -d "$SYSROOT/$dir" ] && ! mountpoint -q "$SYSROOT/$dir"; then
-            mount -o bind "/$dir" "$SYSROOT/$dir" 2>/dev/null || true
-        fi
-    done
+    # Chroot support (the base script mounts proc, sys and dev). No DNS:
+    # rebuilding an initramfs never downloads anything, so the target's
+    # resolv.conf is left untouched.
+    chroot_enter --no-dns
 
     # A separate /boot MUST be mounted: writing into the empty mount point
     # on the root filesystem would "repair" files GRUB never reads.

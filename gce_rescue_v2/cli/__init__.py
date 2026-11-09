@@ -16,6 +16,7 @@ import argparse
 import sys
 from pathlib import Path
 from ..core.config import RescueConfig, RestoreConfig, VERSION
+from ..orchestration.compose import load_fix_lib, required_fix_libs
 from ..utils.colors import error_prefix
 from ..utils.version_check import VersionChecker
 
@@ -590,6 +591,8 @@ def validate_args(args: argparse.Namespace) -> bool:
 
 # The combined startup script is delivered via VM metadata, which caps values
 # at 256 KB. Leave headroom for the mount script and composition overhead.
+# Shared fix libraries a script declares are inlined into the same value, so
+# they count against this budget too.
 MAX_FIX_SCRIPT_BYTES = 200 * 1024
 
 
@@ -603,8 +606,9 @@ def read_fix_script(path: str) -> str:
         The script content.
 
     Raises:
-        ValueError: If the file does not exist, cannot be read, is empty, or
-            exceeds the metadata size budget.
+        ValueError: If the file does not exist, cannot be read, is empty,
+            declares an unknown or malformed fix library, or (together with
+            the libraries it declares) exceeds the metadata size budget.
     """
     script_path = Path(path)
     if not script_path.is_file():
@@ -615,10 +619,20 @@ def read_fix_script(path: str) -> str:
         raise ValueError(f"--fix-script: could not read {path}: {e}") from e
     if not content.strip():
         raise ValueError(f"--fix-script: file is empty: {path}")
+    # A custom script may ask for a shared fix library
+    # ("# gce-rescue-requires: chroot"). Custom scripts are composed only
+    # once the VM is already stopped and its disk swapped, so a typo or an
+    # unknown library must fail here, before any change to the VM.
+    try:
+        libs = [load_fix_lib(name) for name in required_fix_libs([content])]
+    except ValueError as e:
+        raise ValueError(f"--fix-script: {e}") from e
     size = len(content.encode('utf-8'))
-    if size > MAX_FIX_SCRIPT_BYTES:
+    lib_size = sum(len(lib.encode('utf-8')) for lib in libs)
+    if size + lib_size > MAX_FIX_SCRIPT_BYTES:
+        with_libs = f" plus {lib_size} bytes of declared libraries" if lib_size else ""
         raise ValueError(
-            f"--fix-script: file is too large ({size} bytes, max "
+            f"--fix-script: file is too large ({size} bytes{with_libs}, max "
             f"{MAX_FIX_SCRIPT_BYTES}). The script is delivered via VM "
             f"metadata (256 KB limit); reduce the script size."
         )

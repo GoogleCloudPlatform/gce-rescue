@@ -10,6 +10,7 @@ orchestrator (custom fix scripts via --fix-script).
 """
 
 import re
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from ..core.diagnosis import is_safe_kernel_version, is_safe_root_device
@@ -129,6 +130,79 @@ def strip_shebang(script: str) -> str:
     return script
 
 
+# Shared shell libraries for fix scripts (startup_scripts/fixes/lib/<name>.sh).
+# A fix script asks for one or more with a comment line
+#     # gce-rescue-requires: chroot
+#     # gce-rescue-requires: chroot, other_lib
+# and the composer inlines each library once, before the fix scripts. Fix
+# scripts that do not ask get nothing extra (#210).
+FIX_LIB_DIR = Path(__file__).resolve().parent.parent / 'startup_scripts' / 'fixes' / 'lib'
+# Any comment line that STARTS with the keyword is a declaration. It is then
+# parsed strictly, so a malformed one (trailing comment, wrong case, empty)
+# fails composition instead of being silently ignored: an ignored declaration
+# would only surface on the rescue VM as "chroot_enter: command not found".
+_REQUIRES_LINE_RE = re.compile(r'^[ \t]*#[ \t]*gce-rescue-requires\b(.*)$',
+                               re.MULTILINE | re.IGNORECASE)
+# ":" then the names; "[^#]" rejects a trailing comment on the line.
+_REQUIRES_BODY_RE = re.compile(r'^:[ \t]*([^#]*?)[ \t]*$')
+_LIB_NAME_RE = re.compile(r'^[a-z][a-z0-9_]*$')
+
+
+def required_fix_libs(fix_scripts: List[str]) -> List[str]:
+    """Names of the libraries the fix scripts declare, in first-use order.
+
+    A declaration is a comment line starting with "gce-rescue-requires"
+    (case-insensitive), followed by ":" and one or more library names
+    separated by commas and/or spaces.
+
+    Raises:
+        ValueError: If a declaration line is malformed or names an invalid
+            library.
+    """
+    names: List[str] = []
+    for script in fix_scripts:
+        for rest in _REQUIRES_LINE_RE.findall(script):
+            body = _REQUIRES_BODY_RE.match(rest)
+            names_text = body.group(1).strip(', \t') if body else ''
+            if not names_text:
+                raise ValueError(
+                    f'Malformed "gce-rescue-requires" line: '
+                    f'"# gce-rescue-requires{rest.rstrip()}". Expected '
+                    '"# gce-rescue-requires: name[, name...]" with nothing '
+                    'else on the line.'
+                )
+            for name in re.split(r'[,\s]+', names_text):
+                if not _LIB_NAME_RE.match(name):
+                    raise ValueError(
+                        f'Fix script requires an invalid library name {name!r} '
+                        '(expected lowercase letters, digits and underscores).'
+                    )
+                if name not in names:
+                    names.append(name)
+    return names
+
+
+def load_fix_lib(name: str, lib_dir: Optional[Path] = None) -> str:
+    """Return the body of fixes/lib/<name>.sh with its shebang removed.
+
+    Raises:
+        ValueError: If the library does not exist or is empty — composing
+            the script without it would make the fix fail on the rescue VM.
+    """
+    if not _LIB_NAME_RE.match(name):
+        raise ValueError(f'Invalid fix library name {name!r}.')
+    path = (lib_dir or FIX_LIB_DIR) / f'{name}.sh'
+    if not path.is_file():
+        raise ValueError(
+            f"Fix script requires library '{name}', but {path} does not exist. "
+            'Cannot proceed: the fix would fail on the rescue VM.'
+        )
+    body = strip_shebang(path.read_text(encoding='utf-8'))
+    if not body.strip():
+        raise ValueError(f"Fix library '{name}' is empty: {path}")
+    return body
+
+
 def compose_startup_script(base_script: str, fix_scripts: List[str],
                            repair_targets: Optional[List[str]] = None,
                            failing_kernel: Optional[str] = None,
@@ -149,6 +223,11 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
     (fsck) can run even when the disk would fail to mount. The remainder of
     each fix script is appended at the end as usual. Scripts without a
     pre-mount block are composed exactly as before.
+
+    A fix script that contains a "# gce-rescue-requires: <name>" line gets
+    startup_scripts/fixes/lib/<name>.sh inlined once, after the injected
+    variables and before the first fix body (see required_fix_libs). This
+    also works for custom --fix-script scripts.
 
     Variables available to fix scripts (each is only defined when the
     corresponding argument is not None):
@@ -200,11 +279,20 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
         The combined startup script.
 
     Raises:
-        ValueError: If a fix script has a malformed pre-mount block, or if a
+        ValueError: If a fix script has a malformed pre-mount block, if a
             pre-mount block is present but the base script lacks the
-            PREMOUNT_ANCHOR line (the block would silently never run).
+            PREMOUNT_ANCHOR line (the block would silently never run), or if
+            a fix script requires a library that does not exist.
     """
     env_exports = _fix_env_exports(os_flavor, boot_mode)
+
+    # Load declared libraries before composing anything else. For
+    # diagnosis-driven repair this runs before the rescue starts; custom
+    # --fix-script declarations are also checked by read_fix_script() during
+    # CLI pre-flight, because custom scripts are composed only at rescue step
+    # 6, after the VM has been stopped and its boot disk swapped.
+    fix_libs = [(name, load_fix_lib(name))
+                for name in required_fix_libs(fix_scripts)]
 
     # Lift pre-mount blocks out of the fix scripts (order preserved)
     premount_blocks: List[str] = []
@@ -321,6 +409,13 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
                 names.append(name)
         combined += '# selinux patterns found by diagnosis (may be empty)\n'
         combined += f'GCE_SELINUX_FINDINGS="{" ".join(names)}"\n\n'
+
+    # Shared libraries go after every injected variable and before the first
+    # fix body, once each, whatever number of fixes asked for them.
+    for name, body in fix_libs:
+        combined += f'# === GCE Repair Fix Library: {name} ===\n'
+        combined += body.rstrip('\n') + '\n'
+        combined += f'# === End of Fix Library: {name} ===\n\n'
 
     for fix_body in fix_bodies:
         combined += fix_body + '\n\n'
