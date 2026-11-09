@@ -143,7 +143,7 @@ class RescueConfig:
     # Timeout settings (in seconds)
     vm_stop_timeout: int = 300  # 5 minutes
     vm_start_timeout: int = 300  # 5 minutes
-    disk_create_timeout: int = 300  # 5 minutes
+    disk_create_timeout: int = 600  # 10 minutes (50GB Windows images can take >5m)
     operation_timeout: int = 600  # 10 minutes
     # Startup-script verification (poll serial console for the completion marker).
     # Linux/general default; Windows boots slower and the Windows mount script can

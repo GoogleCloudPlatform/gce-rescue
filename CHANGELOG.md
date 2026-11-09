@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Tests: construct `YAML_PATH` in `test_windows_bugcheck.py` using `Path(__file__).parent.parent` without `.resolve()`, matching all other rule and test files (#240)
+- `rescue` / `repair`: increased default `disk_create_timeout` from 300s to 600s so creating large rescue disks (such as 50 GB Windows Server images) does not time out under load (#241)
 
 ## [2.7.0] - 2026-11-14
 
