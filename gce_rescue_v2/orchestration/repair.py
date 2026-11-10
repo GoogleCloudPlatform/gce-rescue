@@ -37,7 +37,7 @@ import httplib2
 from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
 from ..core.diagnosis import initramfs_kernel_versions, is_safe_root_device
 from ..core.fix_catalog import (
-    INITRAMFS_REBUILD_PATTERNS, SUPPORTED_FIX_CATEGORIES,
+    API_REPAIR_CATEGORIES, INITRAMFS_REBUILD_PATTERNS, SUPPORTED_FIX_CATEGORIES,
     grub_findings_only_missing_initrd, selinux_findings_only_relabel,
 )
 from ..operations import DiagnoseOperation
@@ -51,6 +51,7 @@ from .compose import (
 )
 from .rescue import RescueOrchestrator
 from .restore import RestoreOrchestrator
+from .startup_script_repair import StartupScriptRepair
 
 # Marker prefixes emitted by fix scripts to serial console
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
@@ -370,9 +371,10 @@ class RepairOrchestrator:
                 self._log_error(f"Invalid --fix-script: {e}")
                 return False
 
-        # Verify fix scripts exist for all supported categories
+        # Verify fix scripts exist for all categories repaired in rescue mode
+        # (API-repaired categories, e.g. startup_script, have none).
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
-        for cat in SUPPORTED_FIX_CATEGORIES:
+        for cat in sorted(SUPPORTED_FIX_CATEGORIES - API_REPAIR_CATEGORIES):
             script_path = fixes_dir / f'{cat}_fix.sh'
             if not script_path.exists():
                 self._log_error(
@@ -483,7 +485,9 @@ class RepairOrchestrator:
         filesystem is excluded when its findings only name non-boot devices
         (see _filesystem_errors_on_boot_disk); initramfs is excluded when a
         rebuild cannot fix any of its findings (see
-        _initramfs_rebuild_applicable).
+        _initramfs_rebuild_applicable). API-repaired categories
+        (startup_script) are only returned when no disk category is: the two
+        kinds of repair never run in one session.
         """
         categories = []
         seen = set()
@@ -545,6 +549,19 @@ class RepairOrchestrator:
                 "fstab findings name no fstab entry; excluded so the other "
                 "repairs can run"
             )
+        # API-repaired categories (startup_script) only fail on a VM that
+        # booted. Next to a disk category they come from an older boot in
+        # the serial buffer, so this run repairs the disk only; the VM is
+        # rediagnosed after it boots.
+        if any(c not in API_REPAIR_CATEGORIES for c in categories):
+            deferred = [c for c in categories if c in API_REPAIR_CATEGORIES]
+            if deferred:
+                categories = [c for c in categories
+                              if c not in API_REPAIR_CATEGORIES]
+                self._log_debug(
+                    f"{deferred} deferred: disk repairs run first; re-run "
+                    "repair after the VM boots"
+                )
         # Stable sort: known categories in execution order, unknowns after
         # them in their original (diagnosis) order.
         categories.sort(
@@ -600,8 +617,28 @@ class RepairOrchestrator:
         return (any(e.get('category') == 'selinux' for e in boot_errors)
                 and not selinux_findings_only_relabel(boot_errors))
 
+    def _startup_script_repair(self) -> StartupScriptRepair:
+        return StartupScriptRepair(
+            self.compute, self.project, self.zone, self.vm_name,
+            logger=self.logger,
+            client_for=lambda step: self._create_tracked_client(self._ua(step)),
+            ua=self._ua,
+        )
+
+    def plan_startup_script_repair(self, diagnosis: Dict[str, Any]):
+        """What execute() would change for a startup_script-only diagnosis.
+
+        Read-only; see StartupScriptRepair.plan(). execute() re-plans, so it
+        acts on the metadata as it is when the repair starts.
+        """
+        return self._startup_script_repair().plan(diagnosis.get('boot_errors', []))
+
     def execute(self, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the full repair: rescue (with fix script) -> parse results -> restore.
+
+        A diagnosis whose only fixable category is startup_script is repaired
+        through the Compute API instead (see StartupScriptRepair): no rescue
+        mode, no snapshot.
 
         Args:
             diagnosis: Diagnosis dict from diagnose()
@@ -617,6 +654,11 @@ class RepairOrchestrator:
         # From here on every repair API call records the fix set applied.
         # get_fixable_categories() already returns FIX_EXECUTION_ORDER order.
         self._fix_label = '+'.join(fixable)
+
+        # API-only repair (no rescue mode): get_fixable_categories() never
+        # mixes these with disk categories.
+        if fixable == ['startup_script']:
+            return self._startup_script_repair().run(diagnosis.get('boot_errors', []))
 
         # Destructive-fix guard: filesystem repair runs fsck/xfs_repair on
         # the user's original disk - the pre-rescue snapshot is the ONLY

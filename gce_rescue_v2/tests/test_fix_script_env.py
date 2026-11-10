@@ -12,7 +12,9 @@ from unittest.mock import Mock
 import pytest
 
 from gce_rescue_v2.core.config import RescueConfig, OS_TYPE_LINUX
-from gce_rescue_v2.core.fix_catalog import SUPPORTED_FIX_CATEGORIES
+from gce_rescue_v2.core.fix_catalog import (
+    API_REPAIR_CATEGORIES, SUPPORTED_FIX_CATEGORIES,
+)
 from gce_rescue_v2.orchestration.compose import (
     PREMOUNT_ANCHOR,
     PREMOUNT_BEGIN_MARKER,
@@ -246,7 +248,8 @@ class TestRepairInjectsFixEnv:
         script = orch._generate_repair_script(diagnosis)
         assert f'export BOOT_MODE="{mode}"' in script
 
-    @pytest.mark.parametrize('category', sorted(SUPPORTED_FIX_CATEGORIES))
+    @pytest.mark.parametrize(
+        'category', sorted(SUPPORTED_FIX_CATEGORIES - API_REPAIR_CATEGORIES))
     def test_present_for_every_category(self, category: str) -> None:
         orch = _repair_orchestrator(
             _vm(features=['UEFI_COMPATIBLE'], license_url=LICENSES['rhel']))

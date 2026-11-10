@@ -321,6 +321,9 @@ SUPPORTED FIXES
       removes an autorelabel kernel argument that relabels every boot (Linux)
     - disk_full: Resizes the boot disk, expands the root filesystem, and
       reports the largest directories (no files are deleted) (Linux)
+    - startup_script: Disables the failing startup script (saved in instance
+      metadata as gce-rescue-disabled-<key>), resets the VM and checks the
+      new boot. No rescue mode and no disk changes (Linux)
     - Custom fix scripts via --fix-script (Linux and Windows), e.g. the
       bundled Windows BCD repair script (startup_scripts/fixes/windows_bcd_fix.ps1)
 

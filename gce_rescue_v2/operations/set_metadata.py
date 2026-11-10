@@ -215,7 +215,9 @@ class SetMetadataOperation(BaseOperation):
         """
         return "Set Metadata"
 
-    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True, tracking_label: str = None) -> OperationResult:
+    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True,
+                tracking_label: str = None,
+                expected_fingerprint: Optional[str] = None) -> OperationResult:
         """
         Set metadata on the specified VM instance, preserving existing metadata.
 
@@ -233,6 +235,10 @@ class SetMetadataOperation(BaseOperation):
             tracking_label (str): Tracking label for usage analytics.
                 Format: '{operation_type}-{action_group}-{action_detail}'
                 Example: 'rescue-meta-set-rescue-keys'
+            expected_fingerprint (str): Fingerprint of the metadata that
+                metadata_items was computed from. When given, it is sent
+                instead of the current one, so the API rejects the write if
+                the metadata changed in between (no silent overwrite).
 
         Returns:
             OperationResult: Result including `rollback_data` with `vm_name`
@@ -253,7 +259,7 @@ class SetMetadataOperation(BaseOperation):
             ).execute()
 
             original_metadata = vm.get('metadata', {})
-            fingerprint = original_metadata.get('fingerprint')
+            fingerprint = expected_fingerprint or original_metadata.get('fingerprint')
             original_items = original_metadata.get('items', [])
 
             self._log_debug(f"Original metadata has {len(original_items)} items")

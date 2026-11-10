@@ -224,10 +224,20 @@ class DiagnosisReportFormatter:
         ]
 
         # All findings are detect-only: print guidance without the
-        # rescue/restore workflow (rescue mode would not help here).
+        # rescue/restore workflow (rescue mode would not help here). Those
+        # that repair fixes through the Compute API (startup_script, Linux
+        # only) lead with the repair command.
         if not disk_categories:
-            lines.extend(self._format_detect_only_steps(
-                detect_only, detect_only_errors, vm_name, zone))
+            steps = self._format_detect_only_steps(
+                detect_only, detect_only_errors, vm_name, zone)
+            if (diagnosis.get('os_type') != 'windows'
+                    and any(c in SUPPORTED_FIX_CATEGORIES for c in detect_only)):
+                lines.append("  Auto-repair (recommended):")
+                lines.append(f"    $ gce-rescue repair {vm_name} --zone={zone}")
+                lines.append("")
+                lines.append("  Or fix manually:")
+                steps = [f"  {line}" for line in steps]
+            lines.extend(steps)
             return "\n".join(lines)
 
         categories = disk_categories

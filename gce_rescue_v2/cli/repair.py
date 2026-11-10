@@ -11,11 +11,13 @@ from typing import Optional, Dict, Any, List, TextIO, Tuple
 from ..core.config import build_user_agent, DEFAULT_DISK_RESIZE_INCREMENT_GB
 from ..core.diagnosis import initramfs_kernel_versions
 from ..core.fix_catalog import (
-    SELINUX_RELABEL_IN_PROGRESS_MESSAGE, selinux_findings_only_relabel,
+    API_REPAIR_CATEGORIES, SELINUX_RELABEL_IN_PROGRESS_MESSAGE,
+    selinux_findings_only_relabel,
 )
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
 from ..utils.logger import setup_logging
 from ..orchestration.checkpoint import CheckpointManager
+from ..orchestration.startup_script_repair import disabled_key
 from .output import _Spinner, _format_duration
 from .preflight import (
     get_gcloud_config, _create_tracked_client, check_local_ssd_quiet_gate,
@@ -33,6 +35,7 @@ FIX_LABELS = {
     'initramfs': 'Rebuild initramfs',
     'selinux': 'Fix SELinux',
     'grub': 'Fix GRUB',
+    'startup_script': 'Disable startup script',
 }
 
 
@@ -443,6 +446,218 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
                                 zone=args.zone, project=project)
 
 
+def _check_rescue_prerequisites(args: argparse.Namespace, compute: Any,
+                                vm: Optional[Dict[str, Any]], project: str,
+                                session_id: str, mode: str, orchestrator,
+                                config) -> Tuple[Optional[int], List[str]]:
+    """Pre-flight checks that only matter when repair uses rescue mode.
+
+    Run before every rescue-based flow (custom --fix-script, resuming a
+    rescue, diagnosis-driven disk repair), all before any VM change. Not run
+    for the API-only startup_script repair: it never creates a rescue disk
+    and its reset keeps Local SSD data.
+
+    Returns:
+        (exit_code, local_ssds). exit_code is None when repair may continue.
+    """
+    if not vm:
+        return None, []
+
+    # Validate --rescue-image BEFORE any destructive ops. Same shared
+    # helper used by handle_rescue. Resolved size is mutated onto the
+    # orchestrator's config so the inner rescue phase uses it.
+    from . import preflight as _preflight
+    if getattr(args, 'rescue_image', None):
+        size_gb, err = _preflight.validate_custom_rescue_image(
+            compute, vm, args.rescue_image,
+            session_id=session_id, command='repair', mode=mode,
+        )
+        if err:
+            print(f"{error_prefix()} {err}", file=sys.stderr)
+            return 1, []
+        orchestrator.config.custom_rescue_image_size_gb = size_gb
+
+    # Pre-flight: is the rescue image's project allowed by org policy?
+    # Catches constraints/compute.trustedImageProjects BEFORE stopping the VM
+    # (zero downtime). Fails open if the policy can't be read. Issue #122.
+    image_project = _preflight.resolve_rescue_image_project(
+        vm, rescue_image_url=getattr(args, 'rescue_image', None)
+    )
+    policy_err = _preflight.check_image_org_policy(
+        compute, project, image_project, command='repair',
+        instance_name=args.instance_name,
+    )
+    if policy_err:
+        print(f"{error_prefix()} {policy_err}", file=sys.stderr)
+        return 1, []
+
+    # Local SSD safety gate (shared with rescue). In --quiet mode require
+    # --force; otherwise proceed but make the data loss explicit and ensure
+    # the stop discards Local SSDs (force) so it doesn't fail mid-operation.
+    local_ssds, ssd_err = check_local_ssd_quiet_gate(
+        vm, args.instance_name, args.zone, 'repair',
+        args.quiet, getattr(args, 'force', False),
+    )
+    if ssd_err:
+        print(f"{error_prefix()} {ssd_err}", file=sys.stderr)
+        return 1, []
+    if local_ssds:
+        # Stopping the VM destroys Local SSD data; force the discard so the
+        # stop succeeds (matches rescue). The data-loss warning is shown in
+        # the confirmation plan blocks, right before the Proceed prompt.
+        config.force = True
+    return None, local_ssds
+
+
+def _run_startup_script_repair(args: argparse.Namespace, orchestrator,
+                               diagnosis: Dict[str, Any]) -> int:
+    """Repair a failing startup script through the Compute API (#203).
+
+    Shows the plan and asks for confirmation (unless --quiet), runs the
+    repair, prints the results and returns the exit code. The plan comes from
+    the same read-only step the repair starts with, so what is shown is what
+    runs (the repair re-reads the metadata before changing it).
+    """
+    boot_errors = diagnosis.get('boot_errors', [])
+    plan, refusal = orchestrator.plan_startup_script_repair(diagnosis)
+    # Nothing would change (no key named, a saved copy in the way, a key
+    # inherited from project metadata) or the VM could not be read: say why,
+    # without a prompt for a change that will not be made.
+    if refusal:
+        return _show_startup_script_results(refusal, args.instance_name, args.zone)
+
+    if not args.quiet:
+        block = _startup_script_plan_block(args, orchestrator, diagnosis, plan)
+        for line in block:
+            print(line)
+        try:
+            response = input("  Proceed? [y/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 0
+        if response not in ('y', 'yes'):
+            print("\nAborted by user.")
+            return 0
+        clear_lines(len(block) + 1)
+
+    print(f"Repairing instance [{args.instance_name}]:")
+    for i, err in enumerate(e for e in boot_errors if e['category'] == 'startup_script'):
+        label = "  Issue: " if i == 0 else "         "
+        print(f"{label} [STARTUP_SCRIPT] {err['description']}")
+    print(f"  Plan:   Disable {', '.join(plan.disabled)} -> Reset VM -> Verify boot")
+    print("")
+
+    result = orchestrator.execute(diagnosis)
+    return _show_startup_script_results(result, args.instance_name, args.zone)
+
+
+def _startup_script_plan_block(args: argparse.Namespace, orchestrator,
+                               diagnosis: Dict[str, Any], plan) -> List[str]:
+    """Lines describing a startup_script repair plan, shown before Proceed?"""
+    names = ', '.join(plan.disabled)
+    block = [f"Repair: {args.instance_name} ({args.zone})", "",
+             f"  Failing startup script: {names}. The VM booted; the script"
+             f" exited with an error."]
+    for key in plan.disabled:
+        lines = plan.script_output.get(key)
+        if lines:
+            block.append(f"  Last output of {key}:")
+            block += [f"    | {line[:100]}" for line in lines]
+    for key in plan.disable.already_disabled:
+        block.append(f"  {key} was already disabled by an earlier repair"
+                     f" (saved as {disabled_key(key)}).")
+    for cat in orchestrator.get_unfixable_categories(diagnosis):
+        block.append(f"  {warning_prefix()} [{cat.upper()}] requires manual repair")
+
+    block += ["", f"  {warning_prefix()} Whatever the script sets up (services,"
+              " mounts, settings) will not run on the next boot. Changes it"
+              " already made on the disk stay."]
+    if plan.mig:
+        block.append(f"  {warning_prefix()} This VM belongs to managed instance"
+                     f" group {plan.mig.name}: recreating it from the template brings"
+                     f" the script back (fix the template too).")
+
+    reset = ("Reset the VM (a hard reset: running processes stop without a"
+             " clean shutdown")
+    reset += ("; its shutdown-script does not run" if plan.has_shutdown_script else "")
+    reset += ("; Local SSD data is kept)" if plan.has_local_ssd else ")")
+    steps = []
+    if plan.disable.disable:
+        steps.append(f"Save {', '.join(plan.disable.disable)} in instance metadata as "
+                     f"{', '.join(disabled_key(k) for k in plan.disable.disable)},"
+                     f" then remove it")
+    steps += [reset, "Check that the VM boots without the startup script"]
+    block += ["", "  Repair plan (no rescue mode, no disk changes):"]
+    block += [f"    {i}. {step}" for i, step in enumerate(steps, 1)]
+    block.append("")
+    return block
+
+
+def _show_startup_script_results(result: Dict[str, Any], vm_name: str,
+                                 zone: str) -> int:
+    """Display the result of a startup_script repair and return the exit code.
+
+    Exit 1 when nothing could be changed, an API call failed, or the boot
+    after the reset still shows problems, so automation can tell.
+    """
+    status = result.get('status')
+    if status == 'not_applied':
+        print(f"{error_prefix()} {result.get('error')}", file=sys.stderr)
+        if result.get('guidance'):
+            print("", file=sys.stderr)
+            for line in result['guidance']:
+                print(line, file=sys.stderr)
+        return 1
+
+    if status == 'error':
+        print(f"{error_prefix()} {result.get('error')}", file=sys.stderr)
+        if result.get('fix_lines'):
+            print("", file=sys.stderr)
+            print("Already done:", file=sys.stderr)
+            for line in result['fix_lines']:
+                print(f"  {line}", file=sys.stderr)
+        if result.get('next_steps'):
+            print("", file=sys.stderr)
+            for line in result['next_steps']:
+                print(line, file=sys.stderr)
+        return 1
+
+    print("Repair results:")
+    for line in result.get('fix_lines', []):
+        print(f"  {line.replace('[FIXED]', green('[FIXED]'), 1)}")
+    duration = result.get('duration_seconds')
+    # How the new boot went is reported by the verification line below.
+    completion = f"Repair complete. Instance [{vm_name}] was reset."
+    if duration:
+        completion += f" ({_format_duration(duration)})"
+    print("")
+    print(completion)
+
+    exit_code = 0
+    verified = result.get('boot_verified')
+    if verified is True:
+        print(green("Boot verification: the VM booted without the startup script."))
+    elif verified is False:
+        print("")
+        print(f"{warning_prefix()} The boot after the reset still shows problems:")
+        for err in result.get('boot_errors_after', []):
+            print(f"  - {err}")
+        # E.g. emergency mode from an fstab entry the disabled script wrote:
+        # a second repair handles what this boot shows.
+        print(f"  Run 'gce-rescue repair {vm_name} --zone={zone}' again to repair"
+              f" what the new boot shows, or 'diagnose' for details.")
+        exit_code = 1
+    else:
+        reasons = '; '.join(result.get('boot_errors_after', [])) or 'no reason given'
+        print(f"{warning_prefix()} Could not confirm the new boot: {reasons}.")
+
+    if result.get('next_steps'):
+        print("")
+        for line in result['next_steps']:
+            print(line)
+    return exit_code
+
+
 def handle_repair(args: argparse.Namespace) -> int:
     """Handle repair command."""
     from ..core.auth import AuthManager
@@ -552,50 +767,6 @@ def handle_repair(args: argparse.Namespace) -> int:
                   f"/console?project={project}&port=1", file=sys.stderr)
             return 1
 
-        # Validate --rescue-image BEFORE any destructive ops. Same shared
-        # helper used by handle_rescue. Resolved size is mutated onto the
-        # orchestrator's config so the inner rescue phase uses it.
-        from . import preflight as _preflight
-        if getattr(args, 'rescue_image', None):
-            size_gb, err = _preflight.validate_custom_rescue_image(
-                compute, vm, args.rescue_image,
-                session_id=session_id, command='repair', mode=mode,
-            )
-            if err:
-                print(f"{error_prefix()} {err}", file=sys.stderr)
-                return 1
-            orchestrator.config.custom_rescue_image_size_gb = size_gb
-
-        # Pre-flight: is the rescue image's project allowed by org policy?
-        # Catches constraints/compute.trustedImageProjects BEFORE stopping the VM
-        # (zero downtime). Fails open if the policy can't be read. Issue #122.
-        image_project = _preflight.resolve_rescue_image_project(
-            vm, rescue_image_url=getattr(args, 'rescue_image', None)
-        )
-        policy_err = _preflight.check_image_org_policy(
-            compute, project, image_project, command='repair',
-            instance_name=args.instance_name,
-        )
-        if policy_err:
-            print(f"{error_prefix()} {policy_err}", file=sys.stderr)
-            return 1
-
-        # Local SSD safety gate (shared with rescue). In --quiet mode require
-        # --force; otherwise proceed but make the data loss explicit and ensure
-        # the stop discards Local SSDs (force) so it doesn't fail mid-operation.
-        local_ssds, ssd_err = check_local_ssd_quiet_gate(
-            vm, args.instance_name, args.zone, 'repair',
-            args.quiet, getattr(args, 'force', False),
-        )
-        if ssd_err:
-            print(f"{error_prefix()} {ssd_err}", file=sys.stderr)
-            return 1
-        if local_ssds:
-            # Stopping the VM destroys Local SSD data; force the discard so the
-            # stop succeeds (matches rescue). The data-loss warning is shown in
-            # the confirmation plan blocks below, right before the Proceed prompt.
-            config.force = True
-
         vm_status = vm.get('status', 'UNKNOWN')
         metadata_items = vm.get('metadata', {}).get('items', [])
         in_rescue = any(item.get('key') == 'rescue-mode' for item in metadata_items)
@@ -699,6 +870,10 @@ def handle_repair(args: argparse.Namespace) -> int:
                     return 0
 
             print("")
+            exit_code, local_ssds = _check_rescue_prerequisites(
+                args, compute, vm, project, session_id, mode, orchestrator, config)
+            if exit_code is not None:
+                return exit_code
             result = orchestrator.resume()
             return _show_repair_results(result, args.instance_name,
                                         zone=args.zone, project=project)
@@ -715,6 +890,10 @@ def handle_repair(args: argparse.Namespace) -> int:
 
     # Custom fix script (--fix-script): skip diagnosis, run the supplied fix
     if config.fix_script:
+        exit_code, local_ssds = _check_rescue_prerequisites(
+            args, compute, vm, project, session_id, mode, orchestrator, config)
+        if exit_code is not None:
+            return exit_code
         return _run_custom_fix_script(args, orchestrator, project,
                                       config.fix_script, local_ssds=local_ssds)
 
@@ -769,6 +948,19 @@ def handle_repair(args: argparse.Namespace) -> int:
             f"--zone={args.zone} --project={project}"
         )
         return 0
+
+    # API-only repair (startup_script): no rescue mode, so none of the
+    # rescue pre-flight checks below apply.
+    if all(cat in API_REPAIR_CATEGORIES for cat in fixable):
+        return _run_startup_script_repair(args, orchestrator, diagnosis)
+
+    exit_code, local_ssds = _check_rescue_prerequisites(
+        args, compute, vm, project, session_id, mode, orchestrator, config)
+    if exit_code is not None:
+        return exit_code
+    # Found but not repaired in this run (see get_fixable_categories).
+    deferred = sorted({err['category'] for err in boot_errors
+                       if err['category'] in API_REPAIR_CATEGORIES})
 
     # Guard: if fstab errors detected but no specific entries identified,
     # auto-repair can't know which lines to comment out.
@@ -872,6 +1064,11 @@ def handle_repair(args: argparse.Namespace) -> int:
                 intro_block.append(
                     f"  {warning_prefix()} [{cat.upper()}] requires manual repair"
                 )
+        for cat in deferred:
+            intro_block.append(
+                f"  {warning_prefix()} [{cat.upper()}] not changed in this run;"
+                f" run repair again once the VM boots"
+            )
 
         intro_block.append("  Run 'diagnose' for details.")
 
@@ -1016,6 +1213,9 @@ def handle_repair(args: argparse.Namespace) -> int:
         plan_parts.append(FIX_LABELS.get(cat, f'Fix {cat}'))
     plan_parts.append("Restore")
     print(f"  Plan:   {' -> '.join(plan_parts)}")
+    for cat in deferred:
+        print(f"  Note:   [{cat.upper()}] is not changed in this run; "
+              f"run repair again once the VM boots")
     print("")
 
     # Execute repair (concise header already printed)

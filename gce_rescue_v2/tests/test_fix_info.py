@@ -7,7 +7,9 @@ from gce_rescue_v2.core.fix_catalog import (
     _load_fix_files,
     _validate_fix_file,
     _build_exports,
+    API_REPAIR_CATEGORIES,
     CATEGORY_FIX_GUIDANCE,
+    DETECT_ONLY_CATEGORIES,
     SUPPORTED_FIX_CATEGORIES,
     get_fixes_for_pattern,
     grub_findings_only_missing_initrd,
@@ -133,6 +135,17 @@ class TestValidateFixFile:
 
     def test_valid_data_passes(self):
         data = {'category': 'x', 'fix_guidance': 'y', 'patterns': [{'name': 'p', 'fixes': ['fix']}]}
+        _validate_fix_file(data, 'test.yaml')  # Should not raise
+
+    def test_api_repair_requires_auto_repair(self):
+        data = {'category': 'x', 'fix_guidance': 'y', 'patterns': [],
+                'api_repair': True}
+        with pytest.raises(ValueError, match="'api_repair: true' requires"):
+            _validate_fix_file(data, 'test.yaml')
+
+    def test_api_repair_with_auto_repair_passes(self):
+        data = {'category': 'x', 'fix_guidance': 'y', 'patterns': [],
+                'api_repair': True, 'auto_repair': True}
         _validate_fix_file(data, 'test.yaml')  # Should not raise
 
 
@@ -570,10 +583,12 @@ class TestShippedFixInfo:
     def test_startup_script_fix_guidance_loaded(self):
         assert 'startup_script' in CATEGORY_FIX_GUIDANCE
 
-    def test_startup_script_is_not_auto_repairable(self):
-        """startup_script is detect-only: the failing code lives in VM
-        metadata, not on the rescued disk."""
-        assert 'startup_script' not in SUPPORTED_FIX_CATEGORIES
+    def test_startup_script_is_repaired_through_the_api(self):
+        """startup_script is repaired through instance metadata (no rescue
+        mode) and stays detect-only: nothing on the disk to edit."""
+        assert 'startup_script' in SUPPORTED_FIX_CATEGORIES
+        assert 'startup_script' in DETECT_ONLY_CATEGORIES
+        assert API_REPAIR_CATEGORIES == {'startup_script'}
 
     def test_startup_script_patterns_have_fixes(self):
         from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
@@ -633,9 +648,9 @@ class TestShippedFixInfo:
             )
 
     def test_fix_script_exists_for_supported_categories(self):
-        """Every auto-repairable category should have a fix script."""
+        """Every category repaired in rescue mode should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
-        for cat in SUPPORTED_FIX_CATEGORIES:
+        for cat in SUPPORTED_FIX_CATEGORIES - API_REPAIR_CATEGORIES:
             script_path = fixes_dir / f'{cat}_fix.sh'
             assert script_path.exists(), (
                 f"Missing fix script for supported category '{cat}': {script_path}"

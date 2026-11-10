@@ -242,6 +242,14 @@ BOOT_SUCCESS_MARKERS = [
 ]
 
 
+def latest_boot_start(serial_output: str) -> int:
+    """Offset of the last 'Linux version' banner, or 0 when there is none."""
+    start = 0
+    for match in _LINUX_VERSION_RE.finditer(serial_output or ''):
+        start = match.start()
+    return start
+
+
 def latest_boot_completed(serial_output: str) -> bool:
     """Whether the most recent boot in serial_output reached userspace.
 
@@ -252,10 +260,7 @@ def latest_boot_completed(serial_output: str) -> bool:
     """
     if not serial_output:
         return False
-    start = 0
-    for match in _LINUX_VERSION_RE.finditer(serial_output):
-        start = match.start()
-    tail = serial_output[start:]
+    tail = serial_output[latest_boot_start(serial_output):]
     return any(re.search(marker, tail, re.IGNORECASE)
                for marker in BOOT_SUCCESS_MARKERS)
 
@@ -783,6 +788,26 @@ def analyze_serial_output(
                 detected_errors = [
                     e for e in detected_errors if e.category != 'disk_full'
                 ]
+
+    # startup_script findings survive boot success (the script runs at the
+    # end of a successful boot), but each boot runs the script again: a
+    # failure printed before the latest boot's kernel banner is from an older
+    # boot and says nothing about the script now. repair disables the script
+    # a finding names (#203), so a stale finding would disable a script the
+    # user has since fixed. detected_pattern is the last match, so it being
+    # before the banner means no failure was printed in the latest boot.
+    if any(e.category == 'startup_script' for e in detected_errors):
+        boot_start = latest_boot_start(serial_output)
+        if boot_start > 0:
+            def _in_latest_boot(err: DetectedError) -> bool:
+                return serial_output.rfind(err.detected_pattern) >= boot_start
+            stale = [e for e in detected_errors
+                     if e.category == 'startup_script' and not _in_latest_boot(e)]
+            if stale:
+                logger.debug(f"Clearing {len(stale)} startup_script finding(s) "
+                             f"from a boot before the latest one")
+                detected_errors = [e for e in detected_errors
+                                   if not any(e is s for s in stale)]
 
 
     # Determine diagnosis status and recommendations
