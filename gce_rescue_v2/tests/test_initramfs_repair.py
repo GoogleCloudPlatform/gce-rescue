@@ -45,6 +45,7 @@ from gce_rescue_v2.utils.report_formatter import DiagnosisReportFormatter
 
 SCRIPT = (Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
           / 'initramfs_fix.sh')
+CHROOT_LIB = SCRIPT.parent / 'lib' / 'chroot.sh'
 
 RHEL9 = '5.14.0-427.13.1.el9_4.x86_64'
 RHEL9_OLD = '5.14.0-362.8.1.el9_3.x86_64'
@@ -1051,6 +1052,8 @@ class TestScriptStatic:
 HARNESS = r'''
 export LOGFILE="$WORK/log"
 GCE_INITRAMFS_FIX_LIB_ONLY=1
+# The composed startup script inlines the chroot helper before the fix.
+source "$CHROOT_LIB" 2>/dev/null
 source "$SCRIPT" 2>/dev/null
 SYSROOT="$ROOT"
 
@@ -1261,6 +1264,7 @@ class FakeRoot:
         full_env = {
             'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
             'SCRIPT': str(SCRIPT), 'ROOT': str(self.root),
+            'CHROOT_LIB': str(CHROOT_LIB),
             'WORK': str(self.work),
             'FAKE_TOOLS': TOOLS[self.family] if tools is None else tools,
         }
@@ -1447,6 +1451,28 @@ class TestScriptGuards:
         res = root.run()
         assert res.result == 'FAILED:unsupported Linux distribution'
         assert root.snapshot() == before
+
+    @pytest.mark.parametrize('os_release,expected', [
+        (None, 'SUCCESS:'),                                    # full repair
+        ('ID=arch\n', 'FAILED:unsupported Linux distribution'),  # early return
+    ])
+    def test_unmounts_its_own_binds_on_every_path(self, tmp_path, os_release, expected):
+        """initramfs_repair undoes chroot_enter (shared helper, #210) however it ends."""
+        root = FakeRoot(tmp_path, 'rhel', [RHEL9], images={RHEL9: 'missing'})
+        for d in ('proc', 'sys', 'dev/pts', 'run'):
+            root.path(d).mkdir(parents=True, exist_ok=True)
+        if os_release:
+            root.path('etc/os-release').write_text(os_release)
+        res = root.run('mount() { echo "mount ${!#}" >> "$WORK/cmds"; }\n'
+                       'umount() { echo "umount ${!#}" >> "$WORK/cmds"; }\n'
+                       'initramfs_repair')
+        assert res.result.startswith(expected)
+        lines = (root.work / 'cmds').read_text().splitlines()
+        binds = [l.split(' ', 1)[1] for l in lines if l.startswith('mount ')]
+        umounts = [l.split(' ', 1)[1] for l in lines if l.startswith('umount ')]
+        expected_binds = [str(root.path(d)) for d in ('proc', 'sys', 'dev', 'dev/pts', 'run')]
+        assert binds == expected_binds
+        assert umounts == list(reversed(expected_binds))
 
     def test_no_kernels(self, tmp_path):
         root = FakeRoot(tmp_path, 'rhel', [], modules=[RHEL9])
