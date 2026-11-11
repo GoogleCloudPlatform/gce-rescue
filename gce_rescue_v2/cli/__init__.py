@@ -321,12 +321,16 @@ SUPPORTED FIXES
       removes an autorelabel kernel argument that relabels every boot (Linux)
     - disk_full: Resizes the boot disk, expands the root filesystem, and
       reports the largest directories (no files are deleted) (Linux)
-    - Custom fix scripts via --fix-script (Linux and Windows), e.g. the
-      bundled Windows BCD repair script (startup_scripts/fixes/windows_bcd_fix.ps1)
+    - Custom fix scripts via --fix-script (Linux and Windows), including the
+      bundled Windows fix scripts:
+      * startup_scripts/fixes/windows_bcd_fix.ps1 (rebuild BCD store)
+      * startup_scripts/fixes/windows_safe_mode_fix.ps1 (enable Safe Mode
+        with Networking and SAC/Boot-EMS)
 
 NOTES
     Diagnosis-driven repair is Linux-only. Windows VMs are supported with
-    --fix-script (e.g. startup_scripts/fixes/windows_bcd_fix.ps1), which skips
+    --fix-script (e.g. startup_scripts/fixes/windows_bcd_fix.ps1 or
+    startup_scripts/fixes/windows_safe_mode_fix.ps1), which skips
     diagnosis and runs the supplied PowerShell script, or use 'rescue' to fix
     manually.
     The VM will be stopped during repair and restarted when complete.
