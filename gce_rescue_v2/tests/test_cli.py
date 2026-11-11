@@ -8,6 +8,7 @@ Tests:
 - Command handlers (diagnose, rescue, restore, repair)
 """
 
+import argparse
 import time
 from unittest.mock import Mock
 
@@ -1230,6 +1231,66 @@ class TestFixScriptFlag:
         """read_fix_script raises ValueError for a non-existent path."""
         with pytest.raises(ValueError, match="file not found"):
             cli.read_fix_script("/nonexistent/path/to/fix.sh")
+
+    def test_read_fix_script_resolves_bundled_bare_name(self, tmp_path, monkeypatch):
+        """Bare script name falls back to the packaged fixes directory."""
+        monkeypatch.chdir(tmp_path)
+        content = cli.read_fix_script("windows_bcd_fix.ps1")
+        assert "GCE-REPAIR-RESULT:" in content
+        assert "\r\n" not in content
+
+    def test_fix_script_bundled_bare_name_populates_config(self, tmp_path, monkeypatch):
+        """repair --fix-script=<bundled> works from any working directory."""
+        monkeypatch.chdir(tmp_path)
+        args = self.parser.parse_args([
+            "repair", "vm-1", "--zone", "us-central1-a",
+            "--fix-script", "windows_bcd_fix.ps1",
+        ])
+        config = cli.args_to_rescue_config(args)
+        assert config.fix_script is not None
+        assert "bcdboot.exe" in config.fix_script
+
+    def test_read_fix_script_local_file_shadows_bundled_name(self, tmp_path, monkeypatch):
+        """A file in cwd takes precedence over a bundled script with the same name."""
+        monkeypatch.chdir(tmp_path)
+        local_override = tmp_path / "windows_bcd_fix.ps1"
+        local_override.write_text("# local override\nWrite-Log 'custom'\n")
+        assert cli.read_fix_script("windows_bcd_fix.ps1") == (
+            "# local override\nWrite-Log 'custom'\n"
+        )
+
+    def test_read_fix_script_missing_bare_name_lists_bundled_scripts(self, tmp_path, monkeypatch):
+        """Missing bare name raises ValueError listing available bundled scripts."""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError) as exc_info:
+            cli.read_fix_script("does_not_exist.ps1")
+        msg = str(exc_info.value)
+        assert "file not found: does_not_exist.ps1" in msg
+        assert "Available bundled fix scripts:" in msg
+        assert "windows_bcd_fix.ps1" in msg
+        assert "grub_fix.sh" in msg
+
+    def test_read_fix_script_explicit_path_with_separator_does_not_fallback(self, tmp_path, monkeypatch):
+        """Non-existent path with separator does not fall back to bundled dir."""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError) as exc_info:
+            cli.read_fix_script("./windows_bcd_fix.ps1")
+        msg = str(exc_info.value)
+        assert "file not found: ./windows_bcd_fix.ps1" in msg
+        assert "Available bundled fix scripts:" not in msg
+
+    def test_repair_help_lists_bundled_fix_scripts(self):
+        """repair --help lists bundled fix script names for pip users."""
+        repair_subparser = None
+        for action in self.parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                repair_subparser = action.choices["repair"]
+                break
+        assert repair_subparser is not None
+        help_text = repair_subparser.format_help()
+        assert "--fix-script=windows_bcd_fix.ps1" in help_text
+        for name in cli.list_bundled_fix_scripts():
+            assert name in help_text
 
 
 class TestVerificationTimeoutFlag:
