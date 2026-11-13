@@ -1,5 +1,9 @@
 """Tests for the repair command: orchestrator, CLI, script generation, result parsing."""
 
+import os
+import shutil
+import subprocess
+import sys
 import time
 import logging
 from pathlib import Path
@@ -81,8 +85,8 @@ class TestRepairOrchestrator:
         with patch.object(orch, 'validate', return_value=True):
             assert orch.validate() is True
 
-    def test_validate_windows_rejected(self):
-        """Windows VMs should be rejected by validate()."""
+    def test_validate_windows_allowed(self):
+        """Windows VMs should pass validate() for diagnosis-driven repair."""
         vm_info = {
             'status': 'TERMINATED',
             'disks': [{
@@ -98,13 +102,11 @@ class TestRepairOrchestrator:
         orch = RepairOrchestrator(
             compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
         )
-        # Patch out the rescue validation to isolate OS check
-        with patch(
-            'gce_rescue_v2.orchestration.repair.RescueOrchestrator.validate',
-            return_value=True
-        ):
+        # Patch out the pre-flight validators to isolate OS check
+        with patch('gce_rescue_v2.validators.ValidationRunner') as runner_cls:
+            runner_cls.return_value.run_all.return_value.all_passed.return_value = True
             with patch.object(orch, '_create_tracked_client', return_value=compute):
-                assert orch.validate() is False
+                assert orch.validate() is True
 
     def test_diagnose_returns_dict(self):
         """diagnose() should return a diagnosis dict on success."""
@@ -253,9 +255,10 @@ class TestFixExecutionOrdering:
         )
 
     def test_execution_order_constant(self):
-        """filesystem first, disk_full before fstab, grub last."""
+        """filesystem first, disk_full before fstab, selinux before grub, plus windows_boot_manager."""
         assert FIX_EXECUTION_ORDER == [
-            'filesystem', 'disk_full', 'fstab', 'initramfs', 'grub'
+            'filesystem', 'disk_full', 'fstab', 'initramfs', 'selinux', 'grub',
+            'windows_boot_manager',
         ]
 
     def test_categories_sorted_into_execution_order(self):
@@ -1025,6 +1028,59 @@ class TestFstabFixScript:
         content = fix_path.read_text()
         assert 'mountpoint" = "/"' in content or "mountpoint\" = \"/\"" in content
 
+    @pytest.mark.skipif(
+        sys.platform != 'linux' or shutil.which('bash') is None,
+        reason='runs fstab_fix.sh under bash',
+    )
+    @pytest.mark.parametrize('targets,commented', [
+        # #109: mount point from 'Dependency failed for /datadisk.'
+        ('/datadisk', ['/dev/sdc /datadisk']),
+        # #109: device from 'dev-sdc.device'
+        ('/dev/sdc', ['/dev/sdc /datadisk']),
+        ('UUID=3333', ['UUID=3333 /mnt/data']),
+        # '/' is never a target, even though it is a substring of every path
+        ('/', []),
+    ])
+    def test_fix_script_mount_point_and_device_targets(self, tmp_path,
+                                                       targets, commented):
+        """Mount point targets match the mount field exactly, nothing else."""
+        fix_path = (
+            Path(__file__).parent.parent / 'startup_scripts' / 'fixes' / 'fstab_fix.sh'
+        )
+        sysroot = tmp_path / 'sysroot'
+        (sysroot / 'etc').mkdir(parents=True)
+        (sysroot / 'var' / 'log').mkdir(parents=True)
+        lines = [
+            'UUID=1111 / ext4 defaults 0 1',
+            'UUID=2222 /boot/efi vfat defaults 0 2',
+            '/dev/sdc /datadisk xfs defaults 0 0',
+            'UUID=3333 /mnt/data ext4 defaults 0 2',
+            '/dev/sdd1 /opt/datadisk ext4 defaults 0 2',
+        ]
+        fstab = sysroot / 'etc' / 'fstab'
+        fstab.write_text('\n'.join(lines) + '\n')
+        script = fix_path.read_text().replace(
+            'SYSROOT="/mnt/sysroot"', f'SYSROOT="{sysroot}"'
+        )
+        proc = subprocess.run(
+            ['bash', '-c', script], capture_output=True, text=True,
+            env={'PATH': os.environ.get('PATH', ''),
+                 'REPAIR_TARGETS': targets,
+                 'LOGFILE': str(tmp_path / 'repair.log')},
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        result = fstab.read_text().splitlines()
+        for line in lines:
+            prefix = ' '.join(line.split()[:2])
+            if prefix in commented:
+                assert f'#{line}' in result
+            else:
+                assert line in result
+        assert (sysroot / 'etc' / 'fstab.gce-repair-backup').exists()
+        if commented:
+            assert 'GCE-REPAIR-LINE:[FIXED]' in proc.stderr
+
 
 # ---------------------------------------------------------------------------
 # TestGrubFixScript
@@ -1343,6 +1399,146 @@ class TestExtractFstabTargets:
         assert 'fstab-uuid' in targets
         assert 'kernel-uuid' not in targets
 
+    def test_extract_device_timeout_from_issue_109_lines(self):
+        """The #109 console lines yield the device and the failed mount."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Timed out waiting for device dev-sdc',
+                'context_lines': [
+                    '[  OK  ] Mounted /boot/efi.',
+                    '[*     ] A start job is running for dev-sdc.device '
+                    '(5s / 1min 30s)',
+                    '[DEPEND] Dependency failed for /datadisk.',
+                ],
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert '/dev/sdc' in targets
+        assert '/datadisk' in targets
+        assert '/boot/efi' not in targets
+
+    def test_extract_escaped_uuid_unit_from_context(self):
+        """A \\x2d-escaped by-uuid unit in context maps to UUID=<uuid>."""
+        orch = self._make_orchestrator()
+        uuid = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d'
+        unit = 'dev-disk-by\\x2duuid-' + uuid.replace('-', '\\x2d')
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Timed out waiting for device dev-disk',
+                'context_lines': [
+                    f'[ ***  ] A start job is running for {unit}.device '
+                    f'(1min 2s / 1min 30s)',
+                    '[DEPEND] Dependency failed for /mnt/data.',
+                ],
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert f'UUID={uuid}' in targets
+        assert '/mnt/data' in targets
+        # The truncated 'dev-disk' must never become a /dev/disk target.
+        assert '/dev/disk' not in targets
+
+    def test_extract_ignores_healthy_and_root_context_lines(self):
+        """Found-device lines, / and /sysroot never become targets."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Timed out waiting for device dev-sdc',
+                'context_lines': [
+                    '[  OK  ] Found device dev-sda1.device - PersistentDisk 1.',
+                    '[DEPEND] Dependency failed for /sysroot.',
+                    '[DEPEND] Dependency failed for /.',
+                ],
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert targets == ['/dev/sdc']
+
+    def test_issue_109_diagnosis_is_fstab_fixable(self):
+        """diagnose output for #109 now gives repair something to fix."""
+        serial = (
+            "[    0.000000] Linux version 4.18.0-553.el8_10.x86_64 "
+            "(mockbuild@x86-vm-07)\n"
+            "[  OK  ] Mounted /boot/efi.\n"
+            "[*     ] A start job is running for dev-sdc.device "
+            "(5s / 1min 30s)\n"
+            "[ TIME ] Timed out waiting for device dev-sdc.device.\n"
+            "[DEPEND] Dependency failed for /datadisk.\n"
+            "[DEPEND] Dependency failed for Local File Systems.\n"
+            "You are in emergency mode. After logging in, type "
+            "\"journalctl -xb\" to view\n"
+        )
+        vm_info = {
+            'status': 'RUNNING',
+            'disks': [{
+                'boot': True,
+                'source': 'projects/p/zones/z/disks/rhel9',
+                'deviceName': 'rhel9',
+                'licenses': [
+                    'projects/rhel-cloud/global/licenses/rhel-8-server'
+                ],
+            }],
+            'metadata': {'items': []},
+        }
+        from gce_rescue_v2.operations import DiagnoseOperation
+        compute = _make_compute(vm_info=vm_info, serial_output=serial)
+        diagnosis = DiagnoseOperation(
+            compute, 'proj', 'zone-a', _make_logger()
+        ).execute('rhel9').rollback_data
+
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'rhel9', logger=_make_logger()
+        )
+        assert 'fstab' in orch.get_fixable_categories(diagnosis)
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert '/dev/sdc' in targets
+        assert '/datadisk' in targets
+
+
+class TestSystemdDeviceUnitToFstabTarget:
+    """systemd device unit names -> fstab identifiers (#109)."""
+
+    @pytest.mark.parametrize('unit,expected', [
+        ('dev-sdc.device', '/dev/sdc'),
+        ('dev-sdc1.device', '/dev/sdc1'),
+        ('dev-nvme0n2p1.device', '/dev/nvme0n2p1'),
+        ('dev-disk-by\\x2duuid-1b2c3d4e\\x2d5f60\\x2d4a7b.device',
+         'UUID=1b2c3d4e-5f60-4a7b'),
+        ('dev-disk-by\\x2dlabel-DATA\\x2dDISK.device', 'LABEL=DATA-DISK'),
+        ('dev-disk-by\\x2dpartuuid-66813b81\\x2d01.device',
+         'PARTUUID=66813b81-01'),
+        ('dev-disk-by\\x2did-google\\x2dpersistent\\x2ddisk\\x2d1.device',
+         '/dev/disk/by-id/google-persistent-disk-1'),
+        ('dev-sdb', '/dev/sdb'),
+    ])
+    def test_maps_unit(self, unit, expected):
+        from gce_rescue_v2.orchestration.repair import (
+            systemd_device_unit_to_fstab_target,
+        )
+        assert systemd_device_unit_to_fstab_target(unit) == expected
+
+    @pytest.mark.parametrize('unit', [
+        # device-mapper/LVM belongs to lvm.yaml, not fstab repair
+        'dev-mapper-vg\\x2droot.device',
+        'dev-mapper.device',
+        # already unescaped: the '-' vs '/' boundary is lost, so refuse
+        'dev-disk-by-uuid-1b2c3d4e-5f60.device',
+        'dev-disk.device',
+        'sys-devices-virtual-net-eth0.device',
+    ])
+    def test_rejects_ambiguous_or_non_disk_units(self, unit):
+        from gce_rescue_v2.orchestration.repair import (
+            systemd_device_unit_to_fstab_target,
+        )
+        assert systemd_device_unit_to_fstab_target(unit) is None
+
 
 # ---------------------------------------------------------------------------
 # TestGenerateRepairScriptTargets
@@ -1529,15 +1725,19 @@ class TestSupportedCategories:
 
     def test_supported_set_is_exactly_the_shipped_scripts(self):
         """The full auto-repairable set — update when a new fix script lands."""
-        assert SUPPORTED_FIX_CATEGORIES == {'fstab', 'grub', 'disk_full', 'initramfs'}
+        assert SUPPORTED_FIX_CATEGORIES == {
+            'fstab', 'grub', 'disk_full', 'initramfs', 'selinux',
+            'windows_boot_manager',
+        }
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""
         fixes_dir = (
             Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
         )
+        from gce_rescue_v2.orchestration.repair import CATEGORY_FIX_SCRIPTS
         for cat in SUPPORTED_FIX_CATEGORIES:
-            script_path = fixes_dir / f'{cat}_fix.sh'
+            script_path = fixes_dir / CATEGORY_FIX_SCRIPTS.get(cat, f'{cat}_fix.sh')
             assert script_path.exists(), (
                 f"Missing fix script for supported category '{cat}': {script_path}"
             )
@@ -2345,8 +2545,8 @@ class TestCustomFixScript:
         assert captured['config'].fix_script == 'echo custom-fix'
         assert captured['startup_script_override'] is None
 
-    def test_validate_windows_blocked_without_fix_script(self):
-        """Windows VMs are blocked unless a custom fix script is supplied."""
+    def test_validate_windows_allowed_without_fix_script(self):
+        """Windows VMs are allowed without --fix-script for diagnosis-driven repair."""
         vm_info = {
             'status': 'RUNNING',
             'disks': [{
@@ -2364,7 +2564,7 @@ class TestCustomFixScript:
         orch._create_tracked_client = lambda label: compute
         with patch('gce_rescue_v2.validators.ValidationRunner') as runner_cls:
             runner_cls.return_value.run_all.return_value.all_passed.return_value = True
-            assert orch.validate() is False
+            assert orch.validate() is True
 
     def test_validate_windows_allowed_with_fix_script(self):
         """Windows VMs pass validation when --fix-script is supplied."""
@@ -2651,4 +2851,97 @@ class TestDiskFullRepair:
         fake_orch.execute.assert_not_called()
         out = capsys.readouterr().out
         assert 'requires explicit --resize-disk-gb' in out
+
+
+class TestWindowsBootVerificationWait:
+    """Boot verification wait budget for windows_boot_manager repairs."""
+
+    def test_windows_boot_manager_in_repair_boot_wait_seconds(self):
+        from gce_rescue_v2.orchestration.repair import (
+            REPAIR_BOOT_WAIT_SECONDS, WINDOWS_BOOT_WAIT_SECONDS,
+        )
+        assert WINDOWS_BOOT_WAIT_SECONDS == 180
+        assert REPAIR_BOOT_WAIT_SECONDS['windows_boot_manager'] == WINDOWS_BOOT_WAIT_SECONDS
+
+    def test_windows_boot_manager_waits_up_to_180s_and_verifies_healthy(self):
+        from gce_rescue_v2.orchestration.repair import WINDOWS_BOOT_WAIT_SECONDS
+
+        compute = _make_compute()
+        port1_booting = (
+            'BdsDxe: loading Boot0003 "Windows Boot Manager"\n'
+            'UEFI: Attempting to start image.\n'
+        )
+        port1_ready = (
+            port1_booting
+            + '2026/11/10 12:00:00 GCEInstanceSetup: Instance setup finished. '
+            'win-vm is ready to use.\n'
+        )
+
+        # Simulate COM1 reaching ready after 60s (poll 1 at 45s -> booting,
+        # poll 2 at 60s -> ready) and COM2 having no Boot Manager errors.
+        calls = {'p1': 0}
+
+        def _get_serial(**kwargs):
+            req = Mock()
+            if kwargs.get('port') == 2:
+                req.execute.return_value = {'contents': ''}
+            else:
+                calls['p1'] += 1
+                req.execute.return_value = {
+                    'contents': port1_booting if calls['p1'] == 1 else port1_ready
+                }
+            return req
+
+        compute.instances.return_value.getSerialPortOutput.side_effect = _get_serial
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'win-vm', logger=_make_logger()
+        )
+        orch._os_type = 'windows'
+        orch._create_tracked_client = lambda label: compute
+
+        sleeps = []
+        with patch('gce_rescue_v2.orchestration.repair.time.sleep',
+                   side_effect=lambda s: sleeps.append(s)), \
+                patch('gce_rescue_v2.orchestration.repair.sys.stdout'):
+            result = orch._verify_boot_after_repair(['windows_boot_manager'])
+
+        assert sum(sleeps) == 60
+        assert sum(sleeps) < WINDOWS_BOOT_WAIT_SECONDS
+        assert result['verified'] is True
+        assert result['errors'] == []
+
+    def test_windows_boot_manager_uses_full_180s_budget_when_quiet(self):
+        from gce_rescue_v2.orchestration.repair import WINDOWS_BOOT_WAIT_SECONDS
+
+        compute = _make_compute()
+        port1_quiet = (
+            'BdsDxe: loading Boot0003 "Windows Boot Manager"\n'
+            'UEFI: Attempting to start image.\n'
+            'GCEGuestAgentManager: Initializing Google Guest Agent...\n'
+        )
+
+        def _get_serial(**kwargs):
+            req = Mock()
+            req.execute.return_value = {
+                'contents': '' if kwargs.get('port') == 2 else port1_quiet
+            }
+            return req
+
+        compute.instances.return_value.getSerialPortOutput.side_effect = _get_serial
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'win-vm', logger=_make_logger()
+        )
+        orch._os_type = 'windows'
+        orch._create_tracked_client = lambda label: compute
+
+        sleeps = []
+        with patch('gce_rescue_v2.orchestration.repair.time.sleep',
+                   side_effect=lambda s: sleeps.append(s)), \
+                patch('gce_rescue_v2.orchestration.repair.sys.stdout'):
+            result = orch._verify_boot_after_repair(['windows_boot_manager'])
+
+        assert sum(sleeps) == WINDOWS_BOOT_WAIT_SECONDS
+        assert result['verified'] is True
+        assert result['errors'] == []
+
 

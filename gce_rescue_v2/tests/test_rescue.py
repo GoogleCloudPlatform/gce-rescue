@@ -773,3 +773,101 @@ class TestFixScriptPremountValidation:
         )
         assert orch.validate() is True
         runner.run_all.assert_called_once()
+
+
+# ===================================================================
+# Original boot attachment record (#170)
+# ===================================================================
+
+_BOOT_ATTACHMENT = {
+    "deviceName": "persistent-disk-0",
+    "autoDelete": True,
+    "mode": "READ_WRITE",
+    "interface": "SCSI",
+}
+
+
+def test_rescue_captures_original_boot_attachment():
+    """_get_original_disk_info records deviceName/autoDelete/mode/interface."""
+    vm = {
+        "machineType": "projects/p/zones/z/machineTypes/e2-medium",
+        "disks": [{
+            "boot": True,
+            "source": "projects/p/zones/z/disks/my-boot",
+            "deviceName": "persistent-disk-0",
+            "autoDelete": True,
+            "mode": "READ_WRITE",
+            "interface": "SCSI",
+        }],
+    }
+    orch = RescueOrchestrator(
+        compute=FakeCompute([vm]), project="p", zone="z", vm_name="vm",
+        config=RescueConfig(create_snapshot=False), logger=None, suppress_progress=True,
+    )
+
+    orch._get_original_disk_info()
+
+    assert orch.original_boot_attachment == _BOOT_ATTACHMENT
+    assert orch._get_checkpoint_context()["original_boot_attachment"] == _BOOT_ATTACHMENT
+
+
+def test_rescue_writes_boot_attachment_record(stub_rescue, monkeypatch):
+    """The attachment is persisted in rescue-backup-boot-disk-attachment metadata."""
+    from gce_rescue_v2.operations.set_metadata import decode_boot_attachment
+
+    captured = {}
+
+    def _capture_set_metadata(self, vm_name, metadata_items, **kwargs):
+        captured["items"] = metadata_items
+        return _success_execute(self)
+
+    def _fake_get_disk_info(self):
+        self.os_type = "linux"
+        self.architecture = "x86_64"
+        self.original_disk_name = "original-boot"
+        self.original_device_name = "persistent-disk-0"
+        self.original_boot_attachment = dict(_BOOT_ATTACHMENT)
+
+    monkeypatch.setattr(SetMetadataOperation, "execute", _capture_set_metadata)
+    monkeypatch.setattr(RescueOrchestrator, "_get_original_disk_info", _fake_get_disk_info)
+
+    assert _make_orch().execute() is True
+
+    items = {i["key"]: i["value"] for i in captured["items"]}
+    assert decode_boot_attachment(items["rescue-backup-boot-disk-attachment"]) == _BOOT_ATTACHMENT
+
+
+def test_rescue_without_attachment_writes_no_record(stub_rescue, monkeypatch):
+    """No captured attachment means no record (restore falls back to defaults)."""
+    captured = {}
+
+    def _capture_set_metadata(self, vm_name, metadata_items, **kwargs):
+        captured["items"] = metadata_items
+        return _success_execute(self)
+
+    monkeypatch.setattr(SetMetadataOperation, "execute", _capture_set_metadata)
+
+    assert _make_orch().execute() is True
+    assert "rescue-backup-boot-disk-attachment" not in {i["key"] for i in captured["items"]}
+
+
+def test_rescue_resume_restores_boot_attachment_from_checkpoint():
+    """A resumed rescue still knows the original attachment after the disk is detached."""
+    from gce_rescue_v2.orchestration.checkpoint import CheckpointData
+
+    checkpoint = CheckpointData(
+        version=1, operation="rescue", session_id="abcd1234",
+        started_at="2026-01-01T00:00:00Z", updated_at="2026-01-01T00:01:00Z",
+        current_step=2, total_steps=9, completed_operations=[],
+        context={
+            "original_disk_name": "my-boot",
+            "original_device_name": "persistent-disk-0",
+            "rescue_disk_name": "rescue-disk-1",
+            "original_boot_attachment": dict(_BOOT_ATTACHMENT),
+        },
+    )
+    orch = _make_orch()
+
+    orch.set_resume_state(checkpoint)
+
+    assert orch.original_boot_attachment == _BOOT_ATTACHMENT

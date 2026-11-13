@@ -6,6 +6,7 @@ stops the VM only if it was previously stopped (TERMINATED) before execution.
 """
 
 import time
+from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, VM_START_TIMEOUT
 
@@ -245,13 +246,16 @@ class StartVMOperation(BaseOperation):
                 error=error_detail
             )
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Stop the VM if it was originally TERMINATED before execution.
 
         Args:
             rollback_data (dict): Data from `execute()` including `vm_name`
                 and `original_status`.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded or was not needed; False on stop
@@ -271,7 +275,8 @@ class StartVMOperation(BaseOperation):
             if original_status == 'TERMINATED':
                 self._log_info(f"  Stopping VM {vm_name}...")
 
-                self.compute.instances().stop(
+                compute = self._rollback_client(tracking_label)
+                compute.instances().stop(
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name

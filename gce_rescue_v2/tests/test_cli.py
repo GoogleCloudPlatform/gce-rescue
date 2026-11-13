@@ -8,6 +8,7 @@ Tests:
 - Command handlers (diagnose, rescue, restore, repair)
 """
 
+import argparse
 import time
 from unittest.mock import Mock
 
@@ -955,6 +956,63 @@ class TestHandleRepair:
         captured = capsys.readouterr()
         assert "rescue" in captured.out.lower()
 
+    def test_handle_repair_selinux_relabel_in_progress(self, monkeypatch, capsys):
+        """A relabel banner alone means wait: no rescue-mode suggestion."""
+        self._setup_repair_base(monkeypatch)
+
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "selinux", "severity": "warning",
+                          "name": "selinux_relabel_required",
+                          "description": "relabel"}],
+            unfixable=["selinux"],
+        )
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        exit_code = cli.handle_repair(_parse_args("repair"))
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "A relabel is in progress and reboots the VM when done." in out
+        assert "not yet available" not in out
+        assert "gce-rescue rescue" not in out
+
+    def test_handle_repair_relabel_with_other_unfixable(self, monkeypatch, capsys):
+        """Other manual categories still get the rescue-mode suggestion."""
+        self._setup_repair_base(monkeypatch)
+
+        Fake = self._make_fake_repair_orch(
+            boot_errors=[{"category": "selinux", "severity": "warning",
+                          "name": "selinux_relabel_required",
+                          "description": "relabel"},
+                         {"category": "kernel", "severity": "critical",
+                          "description": "Missing kernel"}],
+            unfixable=["selinux", "kernel"],
+        )
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+
+        assert cli.handle_repair(_parse_args("repair")) == 0
+        out = capsys.readouterr().out
+        assert "A relabel is in progress" in out
+        assert "[KERNEL] issue but automated fix is not yet available" in out
+        assert "[SELINUX] issue but" not in out
+        assert "gce-rescue rescue" in out
+
+    def test_failed_result_fills_rescue_placeholders(self, capsys):
+        """Fix-script guidance names the real VM, zone and project."""
+        from gce_rescue_v2.cli.repair import _show_repair_results
+        result = {
+            "status": "failed", "fix_lines": [],
+            "error": ("run gce-rescue rescue VM_NAME --zone=ZONE "
+                      "--project=PROJECT first"),
+        }
+        assert _show_repair_results(result, "vm-1", zone="z-1",
+                                    project="p-1") == 1
+        err = capsys.readouterr().err
+        assert "gce-rescue rescue vm-1 --zone=z-1 --project=p-1 first" in err
+
     def test_handle_repair_auth_error(self, monkeypatch):
         """Auth failure returns 1."""
         from gce_rescue_v2.cli import preflight
@@ -1174,6 +1232,66 @@ class TestFixScriptFlag:
         with pytest.raises(ValueError, match="file not found"):
             cli.read_fix_script("/nonexistent/path/to/fix.sh")
 
+    def test_read_fix_script_resolves_bundled_bare_name(self, tmp_path, monkeypatch):
+        """Bare script name falls back to the packaged fixes directory."""
+        monkeypatch.chdir(tmp_path)
+        content = cli.read_fix_script("windows_bcd_fix.ps1")
+        assert "GCE-REPAIR-RESULT:" in content
+        assert "\r\n" not in content
+
+    def test_fix_script_bundled_bare_name_populates_config(self, tmp_path, monkeypatch):
+        """repair --fix-script=<bundled> works from any working directory."""
+        monkeypatch.chdir(tmp_path)
+        args = self.parser.parse_args([
+            "repair", "vm-1", "--zone", "us-central1-a",
+            "--fix-script", "windows_bcd_fix.ps1",
+        ])
+        config = cli.args_to_rescue_config(args)
+        assert config.fix_script is not None
+        assert "bcdboot.exe" in config.fix_script
+
+    def test_read_fix_script_local_file_shadows_bundled_name(self, tmp_path, monkeypatch):
+        """A file in cwd takes precedence over a bundled script with the same name."""
+        monkeypatch.chdir(tmp_path)
+        local_override = tmp_path / "windows_bcd_fix.ps1"
+        local_override.write_text("# local override\nWrite-Log 'custom'\n")
+        assert cli.read_fix_script("windows_bcd_fix.ps1") == (
+            "# local override\nWrite-Log 'custom'\n"
+        )
+
+    def test_read_fix_script_missing_bare_name_lists_bundled_scripts(self, tmp_path, monkeypatch):
+        """Missing bare name raises ValueError listing available bundled scripts."""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError) as exc_info:
+            cli.read_fix_script("does_not_exist.ps1")
+        msg = str(exc_info.value)
+        assert "file not found: does_not_exist.ps1" in msg
+        assert "Available bundled fix scripts:" in msg
+        assert "windows_bcd_fix.ps1" in msg
+        assert "grub_fix.sh" in msg
+
+    def test_read_fix_script_explicit_path_with_separator_does_not_fallback(self, tmp_path, monkeypatch):
+        """Non-existent path with separator does not fall back to bundled dir."""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ValueError) as exc_info:
+            cli.read_fix_script("./windows_bcd_fix.ps1")
+        msg = str(exc_info.value)
+        assert "file not found: ./windows_bcd_fix.ps1" in msg
+        assert "Available bundled fix scripts:" not in msg
+
+    def test_repair_help_lists_bundled_fix_scripts(self):
+        """repair --help lists bundled fix script names for pip users."""
+        repair_subparser = None
+        for action in self.parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                repair_subparser = action.choices["repair"]
+                break
+        assert repair_subparser is not None
+        help_text = repair_subparser.format_help()
+        assert "--fix-script=windows_bcd_fix.ps1" in help_text
+        for name in cli.list_bundled_fix_scripts():
+            assert name in help_text
+
 
 class TestVerificationTimeoutFlag:
     """Tests for --verification-timeout flag and OS-aware timeout resolution."""
@@ -1283,6 +1401,317 @@ class TestEffectiveVerificationTimeout:
         big.write_text("# x\n" * (cli.MAX_FIX_SCRIPT_BYTES // 4 + 1))
         with pytest.raises(ValueError, match="too large"):
             cli.read_fix_script(str(big))
+
+
+class TestRepairIncompleteCheckpoint:
+    """Interrupted-rescue detection in repair, including --quiet (#154)."""
+
+    @staticmethod
+    def _checkpoint():
+        from gce_rescue_v2.orchestration.checkpoint import (
+            CheckpointData, CompletedOperation,
+        )
+        return CheckpointData(
+            version=1, operation='rescue', session_id='abc123',
+            started_at='2026-10-30T09:15:42Z', updated_at='2026-10-30T09:16:10Z',
+            current_step=3, total_steps=9,
+            completed_operations=[
+                CompletedOperation("Stop VM", 1, {'vm_name': 'vm-1'}),
+                CompletedOperation("Detach Boot Disk", 2, {'disk_name': 'disk'}),
+                CompletedOperation("Create Snapshot", 3, {}),
+            ],
+            context={'original_disk_name': 'disk'},
+        )
+
+    def _setup(self, monkeypatch, checkpoint):
+        """Wire repair with a fake checkpoint manager and orchestrator."""
+        base = TestHandleRepair()
+        base._setup_repair_base(monkeypatch)
+        calls = {'detect': [], 'rollback': 0, 'diagnose': 0, 'execute': 0}
+
+        class FakeCheckpointManager:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def detect_incomplete(self, operation_type=None):
+                calls['detect'].append(operation_type)
+                return checkpoint
+
+        Fake = base._make_fake_repair_orch(boot_errors=[])
+        orig_diagnose, orig_execute = Fake.diagnose, Fake.execute
+
+        def diagnose(self):
+            calls['diagnose'] += 1
+            return orig_diagnose(self)
+
+        def execute(self, diagnosis):
+            calls['execute'] += 1
+            return orig_execute(self, diagnosis)
+
+        Fake.diagnose, Fake.execute = diagnose, execute
+
+        def fake_rollback(*args, **kwargs):
+            calls['rollback'] += 1
+            return True
+
+        from gce_rescue_v2.cli import repair as repair_mod
+        monkeypatch.setattr(repair_mod, "CheckpointManager", FakeCheckpointManager)
+        monkeypatch.setattr(repair_mod, "_handle_checkpoint_rollback", fake_rollback)
+        monkeypatch.setattr(
+            "gce_rescue_v2.orchestration.repair.RepairOrchestrator", Fake
+        )
+        return calls
+
+    def test_quiet_with_checkpoint_exits_without_changes(self, monkeypatch, capsys):
+        """--quiet reports the checkpoint and recovery commands, then exits 1."""
+        calls = self._setup(monkeypatch, self._checkpoint())
+
+        def no_input(*args):
+            raise AssertionError("--quiet must not prompt")
+
+        monkeypatch.setattr("builtins.input", no_input)
+
+        exit_code = cli.handle_repair(_parse_args("repair"))
+
+        assert exit_code == 1
+        assert calls['detect'] == ['rescue']
+        assert calls['rollback'] == 0
+        assert calls['diagnose'] == 0
+        assert calls['execute'] == 0
+        err = capsys.readouterr().err
+        assert "incomplete rescue operation" in err
+        assert "[vm-1]" in err
+        assert "2026-10-30 09:15:42" in err
+        assert "3 of 9 steps completed" in err
+        assert "Create Snapshot" in err
+        assert ("gce-rescue repair vm-1 --zone=us-central1-a "
+                "--project=test-proj") in err
+        assert ("gce-rescue rescue vm-1 --zone=us-central1-a "
+                "--project=test-proj") in err
+
+    def test_quiet_without_checkpoint_proceeds(self, monkeypatch):
+        """--quiet with no checkpoint runs detection and continues to diagnose."""
+        calls = self._setup(monkeypatch, None)
+
+        exit_code = cli.handle_repair(_parse_args("repair"))
+
+        assert exit_code == 0
+        assert calls['detect'] == ['rescue']
+        assert calls['diagnose'] == 1
+        assert calls['rollback'] == 0
+
+    @pytest.mark.parametrize('choice,expected_rollbacks', [('1', 1), ('2', 0)])
+    def test_interactive_prompt_unchanged(self, monkeypatch, capsys, choice,
+                                          expected_rollbacks):
+        """Interactive mode still offers Rollback/Abort and acts on the choice."""
+        calls = self._setup(monkeypatch, self._checkpoint())
+        monkeypatch.setattr("builtins.input", lambda *a: choice)
+        args = _parse_args("repair")
+        args.quiet = False
+
+        exit_code = cli.handle_repair(args)
+
+        assert exit_code == 0
+        assert calls['detect'] == ['rescue']
+        assert calls['rollback'] == expected_rollbacks
+        assert calls['diagnose'] == 0
+        out = capsys.readouterr().out
+        assert "[1] Rollback" in out
+        assert "[2] Abort" in out
+
+
+class TestRescueRestoreQuietCheckpoint:
+    """Interrupted-run detection in rescue and restore, including --quiet (#212)."""
+
+    @staticmethod
+    def _checkpoint(operation):
+        from gce_rescue_v2.orchestration.checkpoint import (
+            CheckpointData, CompletedOperation,
+        )
+        if operation == 'rescue':
+            done = [
+                CompletedOperation("Stop VM", 1, {'vm_name': 'vm-1'}),
+                CompletedOperation("Detach Boot Disk", 2, {'disk_name': 'disk'}),
+                CompletedOperation("Create Snapshot", 3, {}),
+            ]
+            total = 9
+        else:
+            done = [
+                CompletedOperation("Stop VM", 1, {'vm_name': 'vm-1'}),
+                CompletedOperation("Detach Rescue Disk", 2, {}),
+                CompletedOperation("Detach Original Disk", 3, {}),
+            ]
+            total = 7
+        return CheckpointData(
+            version=1, operation=operation, session_id='abc123',
+            started_at='2026-10-30T09:15:42Z', updated_at='2026-10-30T09:16:10Z',
+            current_step=3, total_steps=total, completed_operations=done,
+            context={'original_disk_name': 'disk'},
+        )
+
+    def _setup(self, monkeypatch, command, checkpoint):
+        """Wire rescue/restore with a fake checkpoint manager and orchestrator."""
+        from gce_rescue_v2.cli import preflight, checkpoint_ui
+        monkeypatch.setattr(preflight, "get_gcloud_config", lambda key: "test-proj")
+        mock_compute = _mock_auth(monkeypatch)
+        calls = {'detect': [], 'preflight': 0, 'rollback': 0, 'validate': 0,
+                 'execute': 0, 'resume': []}
+
+        class FakeCheckpointManager:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def detect_incomplete(self, operation_type=None):
+                calls['detect'].append(operation_type)
+                return checkpoint
+
+        def fake_preflight(c, p, z, vm, user_agent=None):
+            calls['preflight'] += 1
+            items = [{"key": "rescue-mode", "value": "1"}] if command == 'restore' else []
+            return True, {"disks": [], "status": "RUNNING",
+                          "metadata": {"items": items}}, None
+
+        def fake_rollback(*args, **kwargs):
+            calls['rollback'] += 1
+            return True
+
+        class FakeOrchestrator:
+            def __init__(self, **kwargs):
+                self.os_type = 'linux'
+                self.snapshot_name = None
+                self.verification_succeeded = True
+                self.original_disk_name = "orig-disk"
+
+            def set_resume_state(self, cp):
+                calls['resume'].append(cp.current_step)
+
+            def validate(self):
+                calls['validate'] += 1
+                return True
+
+            def execute(self):
+                calls['execute'] += 1
+                return True
+
+        module = f"gce_rescue_v2.cli.{command}"
+        monkeypatch.setattr(f"{module}.CheckpointManager", FakeCheckpointManager)
+        if command == 'rescue':
+            monkeypatch.setattr(preflight, "_validate_vm_exists", fake_preflight)
+            monkeypatch.setattr(preflight, "_check_local_ssds", lambda vm: [])
+            monkeypatch.setattr(checkpoint_ui, "_handle_checkpoint_rollback", fake_rollback)
+            monkeypatch.setattr(f"{module}.RescueOrchestrator", FakeOrchestrator)
+        else:
+            monkeypatch.setattr(preflight, "_validate_vm_for_restore", fake_preflight)
+            monkeypatch.setattr(checkpoint_ui, "_handle_restore_checkpoint_rollback",
+                                fake_rollback)
+            monkeypatch.setattr(f"{module}.RestoreOrchestrator", FakeOrchestrator)
+            mock_compute.snapshots.return_value.list.return_value.execute.return_value = {
+                "items": []}
+            mock_compute.instances.return_value.get.return_value.execute.return_value = {
+                "disks": [{"boot": True, "source": "disk", "deviceName": "sda"}],
+                "networkInterfaces": [],
+            }
+        return calls, mock_compute
+
+    @staticmethod
+    def _handler(command):
+        return cli.handle_rescue if command == 'rescue' else cli.handle_restore
+
+    @pytest.mark.parametrize('command', ['rescue', 'restore'])
+    def test_quiet_with_checkpoint_exits_without_changes(self, monkeypatch, capsys,
+                                                         command):
+        """--quiet reports the checkpoint and recovery commands, exits 1, changes nothing."""
+        calls, mock_compute = self._setup(monkeypatch, command, self._checkpoint(command))
+
+        def no_input(*args):
+            raise AssertionError("--quiet must not prompt")
+
+        monkeypatch.setattr("builtins.input", no_input)
+
+        exit_code = self._handler(command)(_parse_args(command))
+
+        assert exit_code == 1
+        assert calls['detect'] == [command]
+        assert calls['preflight'] == 0
+        assert calls['rollback'] == 0
+        assert calls['validate'] == 0
+        assert calls['execute'] == 0
+        assert calls['resume'] == []
+        instances = mock_compute.instances.return_value
+        for mutating in ('stop', 'start', 'attachDisk', 'detachDisk', 'setMetadata'):
+            getattr(instances, mutating).assert_not_called()
+        err = capsys.readouterr().err
+        assert f"incomplete {command} operation" in err
+        assert "[vm-1]" in err
+        assert "2026-10-30 09:15:42" in err
+        assert "3 of" in err
+        assert "Create Snapshot" in err if command == 'rescue' else "Detach Original Disk" in err
+        assert "Nothing was changed" in err
+        assert (f"gce-rescue {command} vm-1 --zone=us-central1-a "
+                "--project=test-proj") in err
+        assert "choose Rollback" in err
+        assert f"To resume the interrupted {command} instead" in err
+        assert "choose Continue" in err
+
+    @pytest.mark.parametrize('command', ['rescue', 'restore'])
+    def test_quiet_without_checkpoint_proceeds(self, monkeypatch, command):
+        """--quiet with no checkpoint runs detection and continues as before."""
+        calls, _ = self._setup(monkeypatch, command, None)
+
+        exit_code = self._handler(command)(_parse_args(command))
+
+        assert exit_code == 0
+        assert calls['detect'] == [command]
+        assert calls['preflight'] == 1
+        assert calls['validate'] == 1
+        assert calls['execute'] == 1
+        assert calls['rollback'] == 0
+        assert calls['resume'] == []
+
+    @pytest.mark.parametrize('command', ['rescue', 'restore'])
+    def test_interactive_abort_unchanged(self, monkeypatch, command):
+        calls, _ = self._setup(monkeypatch, command, self._checkpoint(command))
+        monkeypatch.setattr("builtins.input", lambda *a: '3')
+        args = _parse_args(command)
+        args.quiet = False
+
+        assert self._handler(command)(args) == 0
+        assert calls['rollback'] == 0
+        assert calls['execute'] == 0
+
+    @pytest.mark.parametrize('command', ['rescue', 'restore'])
+    def test_interactive_rollback_unchanged(self, monkeypatch, command):
+        calls, _ = self._setup(monkeypatch, command, self._checkpoint(command))
+        monkeypatch.setattr("builtins.input", lambda *a: '2')
+        args = _parse_args(command)
+        args.quiet = False
+
+        assert self._handler(command)(args) == 0
+        assert calls['rollback'] == 1
+        assert calls['execute'] == 0
+
+    @pytest.mark.parametrize('command', ['rescue', 'restore'])
+    def test_interactive_continue_resumes(self, monkeypatch, command):
+        calls, _ = self._setup(monkeypatch, command, self._checkpoint(command))
+        monkeypatch.setattr("builtins.input", lambda *a: '1')
+        args = _parse_args(command)
+        args.quiet = False
+
+        assert self._handler(command)(args) == 0
+        assert calls['resume'] == [3]
+        assert calls['preflight'] == 0
+        assert calls['validate'] == 0
+        assert calls['execute'] == 1
+
+    def test_repair_quiet_block_names_rescue_for_resume(self, capsys):
+        """repair's own block still points the resume at rescue (the checkpoint owner)."""
+        from gce_rescue_v2.cli.checkpoint_ui import _print_quiet_checkpoint_block
+        _print_quiet_checkpoint_block(self._checkpoint('rescue'), 'repair', 'vm-1',
+                                      'z1', 'p1')
+        err = capsys.readouterr().err
+        assert "gce-rescue repair vm-1 --zone=z1 --project=p1" in err
+        assert "To resume the interrupted rescue instead" in err
+        assert "gce-rescue rescue vm-1 --zone=z1 --project=p1" in err
 
 
 class TestFixScriptRepairPath:

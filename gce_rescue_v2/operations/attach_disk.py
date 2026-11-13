@@ -6,6 +6,8 @@ the disk using the provided rollback metadata.
 """
 
 import time
+from typing import Optional
+
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, DISK_ATTACH_FAILED
 
@@ -28,7 +30,10 @@ class AttachDiskOperation(BaseOperation):
         return "Attach Disk"
 
     def execute(self, vm_name: str, disk_name: str, boot: bool = False,
-                auto_delete: bool = False, read_only: bool = False, tracking_label: str = None) -> OperationResult:
+                auto_delete: bool = False, read_only: bool = False,
+                tracking_label: Optional[str] = None,
+                device_name: Optional[str] = None,
+                interface: Optional[str] = None) -> OperationResult:
         """
         Attach a persistent disk to a VM instance.
 
@@ -41,6 +46,11 @@ class AttachDiskOperation(BaseOperation):
             tracking_label (str): Tracking label for usage analytics.
                 Format: '{operation_type}-{action_group}-{action_detail}'
                 Example: 'rescue-disk-attach-rescue'
+            device_name (str): Device name for the attachment. Defaults to
+                the disk name. Restore passes the original boot device name
+                (often 'persistent-disk-0') so the VM matches its config.
+            interface (str): Disk interface (e.g. 'SCSI', 'NVME'). Omitted
+                from the request when None, letting Compute Engine choose.
 
         Returns:
             OperationResult: Result containing success status, message, and
@@ -50,8 +60,12 @@ class AttachDiskOperation(BaseOperation):
             None
         """
 
+        device_name = device_name or disk_name
         self._log_debug(f"Executing {self.name}: {disk_name} to {vm_name}")
-        self._log_debug(f"  Boot: {boot}, AutoDelete: {auto_delete}, ReadOnly: {read_only}")
+        self._log_debug(
+            f"  Boot: {boot}, AutoDelete: {auto_delete}, ReadOnly: {read_only}, "
+            f"DeviceName: {device_name}, Interface: {interface or 'default'}"
+        )
         if tracking_label:
             self._log_debug(f"  Operation tracking: {tracking_label}")
 
@@ -61,9 +75,11 @@ class AttachDiskOperation(BaseOperation):
                 'source': f'projects/{self.project}/zones/{self.zone}/disks/{disk_name}',
                 'boot': boot,
                 'autoDelete': auto_delete,
-                'deviceName': disk_name,  # Use disk name as device name
+                'deviceName': device_name,
                 'mode': 'READ_ONLY' if read_only else 'READ_WRITE'
             }
+            if interface:
+                attach_body['interface'] = interface
 
             self._log_debug(f"Attaching with config: {attach_body}")
 
@@ -101,7 +117,7 @@ class AttachDiskOperation(BaseOperation):
                 message=f"Disk attached",
                 rollback_data={
                     'vm_name': vm_name,
-                    'device_name': disk_name
+                    'device_name': device_name
                 }
             )
 
@@ -125,13 +141,16 @@ class AttachDiskOperation(BaseOperation):
                 error=error_detail
             )
 
-    def rollback(self, rollback_data: dict) -> bool:
+    def rollback(self, rollback_data: dict,
+                 tracking_label: Optional[str] = None) -> bool:
         """
         Detach the disk that was attached by this operation.
 
         Args:
             rollback_data (dict): Data from `execute()` including `vm_name` and
                 `device_name` to identify the attached disk.
+            tracking_label (str, optional): User-Agent for the rollback's
+                API call (see BaseOperation.rollback).
 
         Returns:
             bool: True if rollback succeeded; False if detachment failed.
@@ -147,7 +166,8 @@ class AttachDiskOperation(BaseOperation):
             self._log_debug(f"Rolling back {self.name}: detaching disk")
             self._log_info(f"  Detaching disk...")
 
-            operation = self.compute.instances().detachDisk(
+            compute = self._rollback_client(tracking_label)
+            operation = compute.instances().detachDisk(
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,

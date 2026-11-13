@@ -9,7 +9,11 @@ change):
     - fstab: Comments out invalid UUID/device/label entries
     - filesystem: Repairs the filesystem (fsck) before the mount attempt
     - initramfs: Rebuilds the initramfs inside the target chroot
+    - selinux: Schedules a full relabel, switches SELINUXTYPE= to the
+      installed policy or reinstalls a missing one, removes an autorelabel
+      kernel argument; selinux=0 on the kernel command line as a last resort
     - grub: Reinstalls/regenerates the GRUB configuration
+    - windows_boot_manager: Rebuilds the Windows Boot Configuration Data (BCD) store
 
 Usage:
     orchestrator = RepairOrchestrator(compute, project, zone, vm_name, config, logger)
@@ -35,10 +39,11 @@ from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
 from ..core.diagnosis import initramfs_kernel_versions, is_safe_root_device
 from ..core.fix_catalog import (
     INITRAMFS_REBUILD_PATTERNS, SUPPORTED_FIX_CATEGORIES,
-    grub_findings_only_missing_initrd,
+    grub_findings_only_missing_initrd, selinux_findings_only_relabel,
 )
 from ..operations import DiagnoseOperation
 from ..utils.colors import green, red
+from ..utils.os_detection import detect_boot_mode, detect_os_flavor
 # Composition helpers shared with the rescue orchestrator (re-exported here
 # for backward compatibility; RESCUE_COMPLETE_MARKER is the marker used by
 # the rescue startup script).
@@ -52,6 +57,82 @@ from .restore import RestoreOrchestrator
 REPAIR_LINE_MARKER = 'GCE-REPAIR-LINE:'
 REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
 
+# systemd device units on the console, e.g. 'dev-sdc.device' or
+# 'dev-disk-by\x2duuid-<uuid>.device' (escaped form, before decoding).
+_SYSTEMD_DEVICE_UNIT_RE = re.compile(r'\b(dev-[\w\\.:+-]+?)\.device\b')
+# Truncated form left in detected_pattern by the loose device-timeout rule
+# ('Timed out waiting for device dev-sdc'). Only plain kernel disk names are
+# trusted here; a truncated 'dev-disk' would match every by-* entry.
+_TIMEOUT_KERNEL_DEVICE_RE = re.compile(
+    r'Timed out waiting for device dev-'
+    r'((?:sd|vd|xvd|hd)[a-z]+\d*|nvme\d+n\d+(?:p\d+)?)\b',
+    re.IGNORECASE,
+)
+# 'Dependency failed for /datadisk.' -> /datadisk. Read from full context
+# lines only: the fstab_dependency_failed rule stores just 'for /d'.
+_DEPENDENCY_MOUNT_RE = re.compile(
+    r'Dependency failed for (/\S*?)\.?\s*$', re.IGNORECASE
+)
+# Context lines that report a device that failed to appear. 'Found device'
+# lines name healthy disks and must never produce a target.
+_FAILED_DEVICE_LINE_RE = re.compile(
+    r'start job is running for|timed out|Expecting device|Dependency failed for',
+    re.IGNORECASE,
+)
+# by-* symlink directories that map to an fstab identifier prefix.
+_BY_DIR_FSTAB_PREFIX = {
+    'by-uuid': 'UUID=',
+    'by-label': 'LABEL=',
+    'by-partuuid': 'PARTUUID=',
+}
+
+
+def _systemd_unescape(text: str) -> str:
+    """Decode systemd \\xNN escapes (e.g. '\\x2d' -> '-')."""
+    return re.sub(
+        r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), text
+    )
+
+
+def systemd_device_unit_to_fstab_target(unit: str) -> Optional[str]:
+    """Map a systemd device unit name to the identifier fstab uses.
+
+    systemd names device units after the device path with '/' turned into
+    '-' and a literal '-' escaped as '\\x2d', so the path is recovered by
+    splitting on '-' first and decoding each piece afterwards:
+
+        dev-sdc1.device                  -> /dev/sdc1
+        dev-disk-by\\x2duuid-<U>.device   -> UUID=<U>
+        dev-disk-by\\x2dlabel-<L>.device  -> LABEL=<L>
+        dev-disk-by\\x2did-<ID>.device    -> /dev/disk/by-id/<ID>
+
+    Args:
+        unit: Unit name, with or without the '.device' suffix.
+
+    Returns:
+        The fstab identifier, or None when the unit is not a block device
+        that fstab can reference unambiguously (device-mapper/LVM units, or
+        names that were already unescaped and lost their '-'/'/' boundary).
+    """
+    name = unit[:-len('.device')] if unit.endswith('.device') else unit
+    if not name.startswith('dev-'):
+        return None
+    parts = [_systemd_unescape(p) for p in name.split('-')]
+    if any(not p or '/' in p for p in parts):
+        return None
+    path = '/' + '/'.join(parts)
+
+    if len(parts) == 2:
+        # /dev/<kernel name>; /dev/mapper and /dev/disk are directories.
+        return None if parts[1] in ('mapper', 'disk') else path
+    if len(parts) == 4 and parts[1] == 'disk':
+        prefix = _BY_DIR_FSTAB_PREFIX.get(parts[2])
+        if prefix:
+            return f'{prefix}{parts[3]}'
+        if parts[2].startswith('by-'):
+            return path
+    return None
+
 # Fix scripts must run in dependency order, regardless of the order categories
 # appear in the diagnosis:
 #   1. filesystem — fsck first, so later fixes edit files on a clean
@@ -61,10 +142,22 @@ REPAIR_RESULT_MARKER = 'GCE-REPAIR-RESULT:'
 #      later fixes (initramfs, grub) write new files to the boot disk.
 #   3. fstab — mount-config edits on the now-clean filesystem.
 #   4. initramfs — rebuild the initrd after config changes.
-#   5. grub — last, because GRUB config regeneration must see the rebuilt
-#      initrd to reference the correct images.
+#   5. selinux — a relabel only matters once the disk mounts and the kernel
+#      boots, so it follows the disk, filesystem and initramfs fixes.
+#   6. grub — last on Linux, because GRUB config regeneration must see the
+#      rebuilt initrd to reference the correct images.
+#   7. windows_boot_manager — Windows BCD rebuild via windows_bcd_fix.ps1.
 # Categories not listed here keep their diagnosis order, after the known ones.
-FIX_EXECUTION_ORDER = ['filesystem', 'disk_full', 'fstab', 'initramfs', 'grub']
+FIX_EXECUTION_ORDER = [
+    'filesystem', 'disk_full', 'fstab', 'initramfs', 'selinux', 'grub',
+    'windows_boot_manager',
+]
+
+# Explicit script filename overrides for categories whose fix script does not
+# follow the default '<category>_fix.sh' naming convention (e.g. Windows .ps1).
+CATEGORY_FIX_SCRIPTS = {
+    'windows_boot_manager': 'windows_bcd_fix.ps1',
+}
 
 # Minimum verification timeouts (seconds) per fix category. The OS default
 # (300s Linux) only covers the disk mount; a forced fsck, a tool install, or
@@ -76,6 +169,7 @@ REPAIR_VERIFICATION_FLOOR = {
     'filesystem': 1800,  # e2fsck -f / xfs_repair scale with disk size
     'initramfs': 900,    # rebuild + possible tool install
     'grub': 900,         # grub-install + config regeneration in chroot
+    'selinux': 1200,     # policy reinstall: up to 3 package-manager runs
 }
 
 # Post-restore boot check after an initramfs repair: dracut waits about 180 s
@@ -83,6 +177,26 @@ REPAIR_VERIFICATION_FLOOR = {
 # lacks the disk driver looks "healthy" for the first three minutes. The
 # wait ends early as soon as the boot reaches userspace.
 INITRAMFS_BOOT_WAIT_SECONDS = 270
+
+# Post-restore boot check after an SELinux repair: a scheduled relabel
+# (/.autorelabel) runs before the boot reaches userspace, rewrites the label
+# of every file (minutes on a 10-50 GB root disk) and then reboots once, so
+# the first boot never prints a success marker. The wait ends early as soon
+# as the boot after the relabel reaches userspace.
+SELINUX_BOOT_WAIT_SECONDS = 420
+
+# Post-restore boot check after a Windows Boot Manager (BCD) repair: Windows
+# Server boot plus GCEInstanceSetup ("Instance setup finished") routinely
+# takes longer than 45 s to emit completion markers on serial port 1. The
+# wait ends early once the latest boot reaches userspace.
+WINDOWS_BOOT_WAIT_SECONDS = 180
+
+# Post-restore boot wait per fix category; the longest one applies.
+REPAIR_BOOT_WAIT_SECONDS = {
+    'initramfs': INITRAMFS_BOOT_WAIT_SECONDS,
+    'selinux': SELINUX_BOOT_WAIT_SECONDS,
+    'windows_boot_manager': WINDOWS_BOOT_WAIT_SECONDS,
+}
 
 # Line the base mount script logs at startup-script start. Serial output can
 # span several boots of the same VM within one rescue session; only markers
@@ -142,6 +256,14 @@ class RepairOrchestrator:
         # OS type detected during validate(); 'unknown' until then.
         # Used to OS-scope post-repair boot verification (issue #124).
         self._os_type = 'unknown'
+        # Most recent instance resource fetched from the API (validate() and
+        # _load_base_script() refresh it). The fix script environment
+        # (OS_FLAVOR, BOOT_MODE) is derived from it; None until fetched.
+        self._vm_info: Optional[Dict[str, Any]] = None
+        # Fix set recorded in the User-Agent (fix/fstab+grub, fix/custom)
+        # once execute()/execute_custom() has chosen it; None before that,
+        # so validation and diagnosis calls carry no fix/ field.
+        self._fix_label: Optional[str] = None
 
         # Progress tracking
         self._spinner_thread = None
@@ -177,7 +299,7 @@ class RepairOrchestrator:
         """Build User-Agent string for the given step."""
         return build_user_agent(
             session_id=self.session_id, command='repair',
-            mode=self.mode, step=step
+            mode=self.mode, step=step, fix=self._fix_label
         )
 
     def _create_tracked_client(self, user_agent: str):
@@ -198,7 +320,7 @@ class RepairOrchestrator:
         )
 
     def validate(self) -> bool:
-        """Run pre-flight validation (credentials, IAM, VM state) + Linux-only check."""
+        """Run pre-flight validation (credentials, IAM, VM state) and OS detection."""
         from ..validators import (
             ValidationRunner, CredentialsValidator,
             IAMPermissionsValidator, VMStateValidator,
@@ -220,38 +342,20 @@ class RepairOrchestrator:
             results.print_failures()
             return False
 
-        # Diagnosis-driven repair is Linux-only; Windows is supported only
-        # with a custom fix script (--fix-script)
+        # Detect the target VM's OS for repair composition and post-repair
+        # boot verification.
         from ..utils.os_detection import detect_os_type
         compute = self._create_tracked_client(self._ua('val-os'))
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
+        self._vm_info = vm_info
         os_type = detect_os_type(vm_info)
         # Keep the detected OS for post-repair boot verification, so the
         # diagnosis engine only scores OS-appropriate patterns (issue #124:
         # Windows boots were scored against Linux-only patterns and always
         # verified as healthy).
         self._os_type = os_type
-        if os_type == 'windows' and not self.config.fix_script:
-            self._log_error("Automated repair is only supported for Linux VMs.")
-            print("", file=sys.stderr)
-            print("For Windows VMs, supply a custom fix script:", file=sys.stderr)
-            print(
-                f"  $ gce-rescue repair {self.vm_name} "
-                f"--zone={self.zone} --project={self.project} "
-                f"--fix-script=FIX.ps1",
-                file=sys.stderr
-            )
-            print("", file=sys.stderr)
-            print("Or use rescue mode for manual repair:", file=sys.stderr)
-            print(
-                f"  $ gce-rescue rescue {self.vm_name} "
-                f"--zone={self.zone} --project={self.project}",
-                file=sys.stderr
-            )
-            return False
-
         # Validate a custom fix script's pre-mount markers BEFORE any VM
         # mutation (composition otherwise fails at rescue step 6, after the
         # VM was stopped and disks swapped).
@@ -266,7 +370,7 @@ class RepairOrchestrator:
         # Verify fix scripts exist for all supported categories
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
         for cat in SUPPORTED_FIX_CATEGORIES:
-            script_path = fixes_dir / f'{cat}_fix.sh'
+            script_path = fixes_dir / CATEGORY_FIX_SCRIPTS.get(cat, f'{cat}_fix.sh')
             if not script_path.exists():
                 self._log_error(
                     f"Fix script missing for category '{cat}': {script_path}\n"
@@ -369,9 +473,10 @@ class RepairOrchestrator:
     def get_fixable_categories(self, diagnosis: Dict[str, Any]) -> List[str]:
         """Return list of categories from diagnosis that have fix scripts.
 
-        The list is sorted into FIX_EXECUTION_ORDER (filesystem, fstab,
-        initramfs, grub) so fix scripts always compose in dependency order;
-        unknown categories keep their diagnosis order after the known ones.
+        The list is sorted into FIX_EXECUTION_ORDER (filesystem, disk_full,
+        fstab, initramfs, selinux, grub) so fix scripts always compose in
+        dependency order; unknown categories keep their diagnosis order
+        after the known ones.
         filesystem is excluded when its findings only name non-boot devices
         (see _filesystem_errors_on_boot_disk); initramfs is excluded when a
         rebuild cannot fix any of its findings (see
@@ -413,6 +518,13 @@ class RepairOrchestrator:
                 "grub findings only report a missing initramfs image; "
                 "the initramfs repair rebuilds it and regenerates the "
                 "GRUB config, so GRUB is not reinstalled"
+            )
+        if ('selinux' in categories
+                and not self._selinux_repair_applicable(diagnosis)):
+            categories.remove('selinux')
+            self._log_debug(
+                "selinux findings only show a relabel in progress, which "
+                "resolves itself; excluded from automated repair"
             )
         if ('disk_full' in categories
                 and getattr(self.config, 'resize_disk_gb', None) == 0):
@@ -465,7 +577,25 @@ class RepairOrchestrator:
                 and not self._grub_initrd_only(diagnosis)
                 and not self._initramfs_rebuild_applicable(diagnosis)):
             categories.append('initramfs')
+        if ('selinux' not in categories
+                and any(e.get('category') == 'selinux'
+                        for e in diagnosis.get('boot_errors', []))
+                and not self._selinux_repair_applicable(diagnosis)):
+            categories.append('selinux')
         return categories
+
+    def _selinux_repair_applicable(self, diagnosis: Dict[str, Any]) -> bool:
+        """Return True if a selinux finding needs more than waiting.
+
+        The relabel banner alone marks a normal relabel that reboots the VM
+        when done; repairing then would stop the VM mid-relabel. Only a
+        finding other than the banner (the policy failed to load) is
+        repaired. The diagnose report uses the same check
+        (selinux_findings_only_relabel), so both agree.
+        """
+        boot_errors = diagnosis.get('boot_errors', [])
+        return (any(e.get('category') == 'selinux' for e in boot_errors)
+                and not selinux_findings_only_relabel(boot_errors))
 
     def execute(self, diagnosis: Dict[str, Any]) -> Dict[str, Any]:
         """Execute the full repair: rescue (with fix script) -> parse results -> restore.
@@ -481,6 +611,9 @@ class RepairOrchestrator:
         if not fixable:
             return {'status': 'no_fix', 'fixed_count': 0, 'fix_lines': [],
                     'error': None, 'snapshot_name': None, 'duration_seconds': 0}
+        # From here on every repair API call records the fix set applied.
+        # get_fixable_categories() already returns FIX_EXECUTION_ORDER order.
+        self._fix_label = '+'.join(fixable)
 
         # Destructive-fix guard: filesystem repair runs fsck/xfs_repair on
         # the user's original disk - the pre-rescue snapshot is the ONLY
@@ -496,7 +629,17 @@ class RepairOrchestrator:
                              '(--no-snapshot was given)',
                     'snapshot_name': None, 'duration_seconds': 0}
 
-        # Generate repair startup script
+        # Windows diagnosis-driven fixes delegate composition to RescueOrchestrator
+        # via fix_script (same path as execute_custom) so rescue_mount_windows.ps1
+        # placeholders (disk name, RDP password) are resolved cleanly.
+        if self._os_type == 'windows':
+            win_fix = '\n\n'.join(self._get_fix_script(cat) for cat in fixable)
+            self._log_debug(f"Loaded Windows repair fix script ({len(win_fix)} bytes)")
+            return self._run_repair_flow(
+                fix_script=win_fix, fixable_categories=fixable
+            )
+
+        # Generate repair startup script (Linux)
         repair_script = self._generate_repair_script(diagnosis)
         self._log_debug(f"Generated repair script ({len(repair_script)} bytes)")
 
@@ -517,6 +660,7 @@ class RepairOrchestrator:
             Dict with keys: status, fixed_count, fix_lines, error,
             snapshot_name, duration_seconds
         """
+        self._fix_label = 'custom'
         return self._run_repair_flow(fix_script=self.config.fix_script)
 
     def _run_repair_flow(self, repair_script: Optional[str] = None,
@@ -587,7 +731,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Rescue", RESCUE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             # Skip validation (already done)
             if not rescue.execute():
@@ -707,7 +852,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -953,7 +1099,8 @@ class RepairOrchestrator:
                 progress_callback=self._make_progress_callback(
                     "Restore", RESTORE_SUBSTEP_LABELS
                 ),
-                session_id=self.session_id, mode=self.mode
+                session_id=self.session_id, mode=self.mode,
+                fix_label=self._fix_label
             )
             if not restore.execute():
                 self._finish_progress(False)
@@ -1059,12 +1206,65 @@ class RepairOrchestrator:
                         seen.add(value)
                         targets.append(value)
 
+            for value in self._extract_systemd_unit_targets(err):
+                if value not in seen:
+                    seen.add(value)
+                    targets.append(value)
+
         if not targets:
             self._log_debug(
                 "No fstab repair targets extracted from diagnosis patterns"
             )
         else:
             self._log_debug(f"Extracted fstab repair targets: {targets}")
+
+        return targets
+
+    @staticmethod
+    def _extract_systemd_unit_targets(err: Dict[str, Any]) -> List[str]:
+        """Targets named by systemd device units and failed mount points.
+
+        A device-timeout finding often carries only a truncated unit name
+        ('Timed out waiting for device dev-sdc'), while the lines around it
+        name the full unit and the mount that depended on it:
+
+            [*     ] A start job is running for dev-sdc.device (5s / 1min 30s)
+            [DEPEND] Dependency failed for /datadisk.
+
+        Those context lines are read with narrow patterns only, so a healthy
+        neighbour ('Mounted /boot/efi.', 'Found device ...') never becomes a
+        target. The root and /sysroot mounts are never returned.
+        """
+        targets: List[str] = []
+        pattern_text = err.get('detected_pattern', '') or ''
+        lines = [pattern_text] + [
+            line for line in (err.get('context_lines') or [])
+            if isinstance(line, str)
+        ]
+
+        match = _TIMEOUT_KERNEL_DEVICE_RE.search(pattern_text)
+        if match:
+            targets.append(f'/dev/{match.group(1)}')
+
+        for line in lines:
+            if not _FAILED_DEVICE_LINE_RE.search(line):
+                continue
+            for unit in _SYSTEMD_DEVICE_UNIT_RE.findall(line):
+                value = systemd_device_unit_to_fstab_target(unit)
+                if value:
+                    targets.append(value)
+
+        for line in err.get('context_lines') or []:
+            if not isinstance(line, str):
+                continue
+            match = _DEPENDENCY_MOUNT_RE.search(line)
+            if not match:
+                continue
+            mount_point = match.group(1).rstrip('/')
+            if (not mount_point or mount_point == '/sysroot'
+                    or mount_point.startswith('/sysroot/')):
+                continue
+            targets.append(mount_point)
 
         return targets
 
@@ -1090,6 +1290,7 @@ class RepairOrchestrator:
         vm_info = compute.instances().get(
             project=self.project, zone=self.zone, instance=self.vm_name
         ).execute()
+        self._vm_info = vm_info
         original_disk = None
         for disk in vm_info.get('disks', []):
             if disk.get('boot'):
@@ -1138,9 +1339,44 @@ class RepairOrchestrator:
             failing_kernel = self._extract_failing_kernel(diagnosis)
             root_device = self._extract_root_device(diagnosis)
 
+        # Fix script environment: where the affected disk came from and how
+        # it boots, both taken from the instance resource fetched above so
+        # scripts need not re-detect the distribution or probe the rescue
+        # VM's firmware. Empty when no instance data is available.
+        vm_info = self._vm_info or {}
+        os_flavor = detect_os_flavor(vm_info)
+        boot_mode = detect_boot_mode(vm_info)
+        self._log_debug(
+            f"Fix script environment: OS_FLAVOR={os_flavor} BOOT_MODE={boot_mode}"
+        )
+        # selinux repair tells a relabel that already ran (and did not let
+        # the VM boot) from a policy load failure by the finding names.
+        selinux_findings = None
+        if 'selinux' in fixable:
+            selinux_findings = self._extract_selinux_findings(diagnosis)
+
         return compose_startup_script(base_script, fix_scripts, targets,
                                       failing_kernel=failing_kernel,
-                                      root_device=root_device)
+                                      root_device=root_device,
+                                      os_flavor=os_flavor,
+                                      boot_mode=boot_mode,
+                                      selinux_findings=selinux_findings)
+
+    def _extract_selinux_findings(self, diagnosis: Dict[str, Any]) -> List[str]:
+        """Return the distinct selinux pattern names in the diagnosis.
+
+        compose_startup_script re-validates the names before they are
+        injected into the startup script as GCE_SELINUX_FINDINGS.
+        """
+        names: List[str] = []
+        for err in diagnosis.get('boot_errors', []):
+            if err.get('category') != 'selinux':
+                continue
+            name = err.get('name') or ''
+            if name and name not in names:
+                names.append(name)
+        self._log_debug(f"selinux findings from diagnosis: {names}")
+        return names
 
     def _extract_failing_kernel(self, diagnosis: Dict[str, Any]) -> str:
         """Return the version of the kernel that failed to boot, or ''.
@@ -1203,7 +1439,7 @@ class RepairOrchestrator:
             ValueError: If the fix script file is empty.
         """
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
-        script_path = fixes_dir / f'{category}_fix.sh'
+        script_path = fixes_dir / CATEGORY_FIX_SCRIPTS.get(category, f'{category}_fix.sh')
 
         if not script_path.exists():
             raise FileNotFoundError(
@@ -1385,6 +1621,10 @@ class RepairOrchestrator:
         initramfs repair the budget is longer: an initramfs that still lacks
         the disk driver only fails after dracut's device-wait timeout
         (about three minutes), which a fixed 45 s wait would call healthy.
+        After an SELinux repair it is longer still: the scheduled relabel
+        runs, then reboots (see REPAIR_BOOT_WAIT_SECONDS). After a Windows
+        Boot Manager repair it waits longer for Windows startup and
+        GCEInstanceSetup to emit completion markers on serial port 1.
 
         Args:
             categories: Fix categories that were applied (None for custom
@@ -1397,9 +1637,10 @@ class RepairOrchestrator:
 
         BOOT_WAIT_SECONDS = 45
         POLL_SECONDS = 15
-        deadline = BOOT_WAIT_SECONDS
-        if categories and 'initramfs' in categories:
-            deadline = INITRAMFS_BOOT_WAIT_SECONDS
+        deadline = max(
+            [BOOT_WAIT_SECONDS]
+            + [REPAIR_BOOT_WAIT_SECONDS.get(c, 0) for c in categories or []]
+        )
         self._log_debug(
             f"Waiting up to {deadline}s for VM to boot before verification"
         )

@@ -549,10 +549,9 @@ class TestShippedFixInfo:
     def test_selinux_fix_guidance_loaded(self):
         assert 'selinux' in CATEGORY_FIX_GUIDANCE
 
-    def test_selinux_is_not_auto_repairable(self):
-        """selinux stays auto_repair: false until selinux_fix.sh lands
-        (future fix: touch /.autorelabel on the mounted root)."""
-        assert 'selinux' not in SUPPORTED_FIX_CATEGORIES
+    def test_selinux_is_auto_repairable(self):
+        """selinux_fix.sh repairs the policy or schedules a relabel."""
+        assert 'selinux' in SUPPORTED_FIX_CATEGORIES
 
     def test_selinux_patterns_have_fixes(self):
         from gce_rescue_v2.core.diagnosis import BOOT_ERROR_PATTERNS
@@ -636,8 +635,9 @@ class TestShippedFixInfo:
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
+        from gce_rescue_v2.orchestration.repair import CATEGORY_FIX_SCRIPTS
         for cat in SUPPORTED_FIX_CATEGORIES:
-            script_path = fixes_dir / f'{cat}_fix.sh'
+            script_path = fixes_dir / CATEGORY_FIX_SCRIPTS.get(cat, f'{cat}_fix.sh')
             assert script_path.exists(), (
                 f"Missing fix script for supported category '{cat}': {script_path}"
             )
