@@ -15,6 +15,7 @@ Current standalone usage:
 import argparse
 import sys
 from pathlib import Path
+from typing import List
 from ..core.config import RescueConfig, RestoreConfig, VERSION
 from ..utils.colors import error_prefix
 from ..utils.version_check import VersionChecker
@@ -292,6 +293,7 @@ NOTES
     _add_common_args(diagnose_parser)
 
     # REPAIR COMMAND
+    bundled_scripts = ', '.join(list_bundled_fix_scripts()) or 'none'
     repair_parser = subparsers.add_parser(
         'repair',
         help='Diagnose and auto-fix boot issues',
@@ -299,7 +301,7 @@ NOTES
                     ' diagnose, rescue (with embedded fix), and restore into a'
                     ' single command.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 EXAMPLES
     Repair a VM with boot issues:
         $ gce-rescue repair my-vm --zone=us-central1-a
@@ -321,14 +323,18 @@ SUPPORTED FIXES
       removes an autorelabel kernel argument that relabels every boot (Linux)
     - disk_full: Resizes the boot disk, expands the root filesystem, and
       reports the largest directories (no files are deleted) (Linux)
-    - Custom fix scripts via --fix-script (Linux and Windows), e.g. the
-      bundled Windows BCD repair script (startup_scripts/fixes/windows_bcd_fix.ps1)
+    - windows_boot_manager: Rebuilds the Windows Boot Configuration Data (BCD)
+      store (Windows)
+    - Custom fix scripts via --fix-script (Linux and Windows), e.g.
+      --fix-script=windows_bcd_fix.ps1 (bare names resolve to bundled
+      scripts; explicit file paths also work)
+      Bundled fix scripts: {bundled_scripts}
 
 NOTES
-    Diagnosis-driven repair is Linux-only. Windows VMs are supported with
-    --fix-script (e.g. startup_scripts/fixes/windows_bcd_fix.ps1), which skips
-    diagnosis and runs the supplied PowerShell script, or use 'rescue' to fix
-    manually.
+    Diagnosis-driven repair supports Linux and Windows Boot Manager (BCD)
+    failures. Other Windows failure modes can use --fix-script (e.g.
+    --fix-script=windows_bcd_fix.ps1), which skips diagnosis and runs the
+    supplied PowerShell script, or use 'rescue' to fix manually.
     The VM will be stopped during repair and restarted when complete.
         """
     )
@@ -478,8 +484,9 @@ def _add_rescue_args(parser: argparse.ArgumentParser):
         dest='fix_script',
         default=None,
         help=(
-            'Path to a custom fix script to run against the affected (broken)'
-            ' disk after it is mounted in rescue mode. The disk is mounted at'
+            'Path or bundled script name (e.g. windows_bcd_fix.ps1) to run'
+            ' against the affected (broken) disk after it is mounted in'
+            ' rescue mode. The disk is mounted at'
             ' /mnt/sysroot on Linux (bash script); on Windows (PowerShell'
             ' script) partitions greater than 1 GB receive the first available'
             ' drive letter starting from D: onward (locate the target volume'
@@ -533,8 +540,9 @@ def _add_repair_args(parser: argparse.ArgumentParser):
         dest='fix_script',
         default=None,
         help=(
-            'Path to a custom fix script to run against the affected (broken)'
-            ' disk after it is mounted in rescue mode. The disk is mounted at'
+            'Path or bundled script name (e.g. windows_bcd_fix.ps1) to run'
+            ' against the affected (broken) disk after it is mounted in'
+            ' rescue mode. The disk is mounted at'
             ' /mnt/sysroot (Linux, bash script); on Windows (PowerShell'
             ' script) partitions greater than 1 GB receive the first available'
             ' drive letter starting from D: onward (locate the target volume'
@@ -592,12 +600,56 @@ def validate_args(args: argparse.Namespace) -> bool:
 # at 256 KB. Leave headroom for the mount script and composition overhead.
 MAX_FIX_SCRIPT_BYTES = 200 * 1024
 
+BUNDLED_FIXES_DIR = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
+BUNDLED_FIX_SUFFIXES = ('.sh', '.ps1')
+
+
+def list_bundled_fix_scripts() -> List[str]:
+    """Return sorted filenames of fix scripts bundled with the package."""
+    if not BUNDLED_FIXES_DIR.is_dir():
+        return []
+    return sorted(
+        p.name for p in BUNDLED_FIXES_DIR.iterdir()
+        if p.is_file() and p.suffix in BUNDLED_FIX_SUFFIXES
+    )
+
+
+def resolve_fix_script_path(path: str) -> Path:
+    """Resolve --fix-script path against local files or bundled scripts.
+
+    Existing files in the current directory and explicit paths (containing a
+    path separator or drive/root prefix) resolve as-is. Bare filenames that do
+    not exist locally fall back to ``BUNDLED_FIXES_DIR``.
+    """
+    script_path = Path(path)
+    if script_path.is_file():
+        return script_path
+
+    is_bare_name = (
+        bool(path)
+        and '/' not in path
+        and '\\' not in path
+        and not script_path.is_absolute()
+        and path not in ('.', '..')
+    )
+    if is_bare_name:
+        bundled_path = BUNDLED_FIXES_DIR / path
+        if bundled_path.is_file():
+            return bundled_path
+        available = ', '.join(list_bundled_fix_scripts()) or 'none'
+        raise ValueError(
+            f"--fix-script: file not found: {path}. "
+            f"Available bundled fix scripts: {available}"
+        )
+
+    raise ValueError(f"--fix-script: file not found: {path}")
+
 
 def read_fix_script(path: str) -> str:
     """Read and validate a custom fix script file, returning its content.
 
     Args:
-        path: Filesystem path to the fix script (from --fix-script).
+        path: Filesystem path or bare bundled script name (from --fix-script).
 
     Returns:
         The script content.
@@ -606,9 +658,7 @@ def read_fix_script(path: str) -> str:
         ValueError: If the file does not exist, cannot be read, is empty, or
             exceeds the metadata size budget.
     """
-    script_path = Path(path)
-    if not script_path.is_file():
-        raise ValueError(f"--fix-script: file not found: {path}")
+    script_path = resolve_fix_script_path(path)
     try:
         content = script_path.read_text(encoding='utf-8')
     except OSError as e:
