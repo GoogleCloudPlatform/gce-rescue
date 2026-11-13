@@ -13,6 +13,7 @@ change):
       installed policy or reinstalls a missing one, removes an autorelabel
       kernel argument; selinux=0 on the kernel command line as a last resort
     - grub: Reinstalls/regenerates the GRUB configuration
+    - windows_boot_manager: Rebuilds the Windows Boot Configuration Data (BCD) store
 
 Usage:
     orchestrator = RepairOrchestrator(compute, project, zone, vm_name, config, logger)
@@ -143,12 +144,20 @@ def systemd_device_unit_to_fstab_target(unit: str) -> Optional[str]:
 #   4. initramfs — rebuild the initrd after config changes.
 #   5. selinux — a relabel only matters once the disk mounts and the kernel
 #      boots, so it follows the disk, filesystem and initramfs fixes.
-#   6. grub — last, because GRUB config regeneration must see the rebuilt
-#      initrd to reference the correct images.
+#   6. grub — last on Linux, because GRUB config regeneration must see the
+#      rebuilt initrd to reference the correct images.
+#   7. windows_boot_manager — Windows BCD rebuild via windows_bcd_fix.ps1.
 # Categories not listed here keep their diagnosis order, after the known ones.
 FIX_EXECUTION_ORDER = [
     'filesystem', 'disk_full', 'fstab', 'initramfs', 'selinux', 'grub',
+    'windows_boot_manager',
 ]
+
+# Explicit script filename overrides for categories whose fix script does not
+# follow the default '<category>_fix.sh' naming convention (e.g. Windows .ps1).
+CATEGORY_FIX_SCRIPTS = {
+    'windows_boot_manager': 'windows_bcd_fix.ps1',
+}
 
 # Minimum verification timeouts (seconds) per fix category. The OS default
 # (300s Linux) only covers the disk mount; a forced fsck, a tool install, or
@@ -176,10 +185,17 @@ INITRAMFS_BOOT_WAIT_SECONDS = 270
 # as the boot after the relabel reaches userspace.
 SELINUX_BOOT_WAIT_SECONDS = 420
 
+# Post-restore boot check after a Windows Boot Manager (BCD) repair: Windows
+# Server boot plus GCEInstanceSetup ("Instance setup finished") routinely
+# takes longer than 45 s to emit completion markers on serial port 1. The
+# wait ends early once the latest boot reaches userspace.
+WINDOWS_BOOT_WAIT_SECONDS = 180
+
 # Post-restore boot wait per fix category; the longest one applies.
 REPAIR_BOOT_WAIT_SECONDS = {
     'initramfs': INITRAMFS_BOOT_WAIT_SECONDS,
     'selinux': SELINUX_BOOT_WAIT_SECONDS,
+    'windows_boot_manager': WINDOWS_BOOT_WAIT_SECONDS,
 }
 
 # Line the base mount script logs at startup-script start. Serial output can
@@ -304,7 +320,7 @@ class RepairOrchestrator:
         )
 
     def validate(self) -> bool:
-        """Run pre-flight validation (credentials, IAM, VM state) + Linux-only check."""
+        """Run pre-flight validation (credentials, IAM, VM state) and OS detection."""
         from ..validators import (
             ValidationRunner, CredentialsValidator,
             IAMPermissionsValidator, VMStateValidator,
@@ -326,8 +342,8 @@ class RepairOrchestrator:
             results.print_failures()
             return False
 
-        # Diagnosis-driven repair is Linux-only; Windows is supported only
-        # with a custom fix script (--fix-script)
+        # Detect the target VM's OS for repair composition and post-repair
+        # boot verification.
         from ..utils.os_detection import detect_os_type
         compute = self._create_tracked_client(self._ua('val-os'))
         vm_info = compute.instances().get(
@@ -340,25 +356,6 @@ class RepairOrchestrator:
         # Windows boots were scored against Linux-only patterns and always
         # verified as healthy).
         self._os_type = os_type
-        if os_type == 'windows' and not self.config.fix_script:
-            self._log_error("Automated repair is only supported for Linux VMs.")
-            print("", file=sys.stderr)
-            print("For Windows VMs, supply a custom fix script:", file=sys.stderr)
-            print(
-                f"  $ gce-rescue repair {self.vm_name} "
-                f"--zone={self.zone} --project={self.project} "
-                f"--fix-script=FIX.ps1",
-                file=sys.stderr
-            )
-            print("", file=sys.stderr)
-            print("Or use rescue mode for manual repair:", file=sys.stderr)
-            print(
-                f"  $ gce-rescue rescue {self.vm_name} "
-                f"--zone={self.zone} --project={self.project}",
-                file=sys.stderr
-            )
-            return False
-
         # Validate a custom fix script's pre-mount markers BEFORE any VM
         # mutation (composition otherwise fails at rescue step 6, after the
         # VM was stopped and disks swapped).
@@ -373,7 +370,7 @@ class RepairOrchestrator:
         # Verify fix scripts exist for all supported categories
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
         for cat in SUPPORTED_FIX_CATEGORIES:
-            script_path = fixes_dir / f'{cat}_fix.sh'
+            script_path = fixes_dir / CATEGORY_FIX_SCRIPTS.get(cat, f'{cat}_fix.sh')
             if not script_path.exists():
                 self._log_error(
                     f"Fix script missing for category '{cat}': {script_path}\n"
@@ -632,7 +629,17 @@ class RepairOrchestrator:
                              '(--no-snapshot was given)',
                     'snapshot_name': None, 'duration_seconds': 0}
 
-        # Generate repair startup script
+        # Windows diagnosis-driven fixes delegate composition to RescueOrchestrator
+        # via fix_script (same path as execute_custom) so rescue_mount_windows.ps1
+        # placeholders (disk name, RDP password) are resolved cleanly.
+        if self._os_type == 'windows':
+            win_fix = '\n\n'.join(self._get_fix_script(cat) for cat in fixable)
+            self._log_debug(f"Loaded Windows repair fix script ({len(win_fix)} bytes)")
+            return self._run_repair_flow(
+                fix_script=win_fix, fixable_categories=fixable
+            )
+
+        # Generate repair startup script (Linux)
         repair_script = self._generate_repair_script(diagnosis)
         self._log_debug(f"Generated repair script ({len(repair_script)} bytes)")
 
@@ -1432,7 +1439,7 @@ class RepairOrchestrator:
             ValueError: If the fix script file is empty.
         """
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
-        script_path = fixes_dir / f'{category}_fix.sh'
+        script_path = fixes_dir / CATEGORY_FIX_SCRIPTS.get(category, f'{category}_fix.sh')
 
         if not script_path.exists():
             raise FileNotFoundError(
@@ -1615,7 +1622,9 @@ class RepairOrchestrator:
         the disk driver only fails after dracut's device-wait timeout
         (about three minutes), which a fixed 45 s wait would call healthy.
         After an SELinux repair it is longer still: the scheduled relabel
-        runs, then reboots (see REPAIR_BOOT_WAIT_SECONDS).
+        runs, then reboots (see REPAIR_BOOT_WAIT_SECONDS). After a Windows
+        Boot Manager repair it waits longer for Windows startup and
+        GCEInstanceSetup to emit completion markers on serial port 1.
 
         Args:
             categories: Fix categories that were applied (None for custom

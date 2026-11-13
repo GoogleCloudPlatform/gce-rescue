@@ -33,6 +33,7 @@ FIX_LABELS = {
     'initramfs': 'Rebuild initramfs',
     'selinux': 'Fix SELinux',
     'grub': 'Fix GRUB',
+    'windows_boot_manager': 'Repair Windows BCD',
 }
 
 
@@ -525,33 +526,6 @@ def handle_repair(args: argparse.Namespace) -> int:
         spinner.stop()
 
     if vm:
-        # Diagnosis-driven repair is Linux-only; Windows requires a custom
-        # fix script (--fix-script). Checked before any spinners or prompts.
-        from ..utils.os_detection import detect_os_type
-        os_type = detect_os_type(vm)
-        if os_type == 'windows' and not config.fix_script:
-            print(f"{error_prefix()} Automated repair is only supported for"
-                  f" Linux VMs.", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("For Windows VMs, supply a custom fix script (PowerShell):",
-                  file=sys.stderr)
-            print(f"  $ gce-rescue repair {args.instance_name} --zone={args.zone}"
-                  f" --project={project} --fix-script=FIX.ps1", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("Or use rescue mode for manual repair:", file=sys.stderr)
-            print(f"  $ gce-rescue rescue {args.instance_name} --zone={args.zone}"
-                  f" --project={project}", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("Or check the serial console output manually:", file=sys.stderr)
-            print(f"  $ gcloud compute instances get-serial-port-output"
-                  f" {args.instance_name} --zone={args.zone} --project={project}",
-                  file=sys.stderr)
-            print("", file=sys.stderr)
-            print(f"  Console: https://console.cloud.google.com/compute/"
-                  f"instancesDetail/zones/{args.zone}/instances/{args.instance_name}"
-                  f"/console?project={project}&port=1", file=sys.stderr)
-            return 1
-
         # Validate --rescue-image BEFORE any destructive ops. Same shared
         # helper used by handle_rescue. Resolved size is mutated onto the
         # orchestrator's config so the inner rescue phase uses it.
@@ -703,7 +677,7 @@ def handle_repair(args: argparse.Namespace) -> int:
             return _show_repair_results(result, args.instance_name,
                                         zone=args.zone, project=project)
 
-    # Validate (credentials, IAM, Shielded/Confidential, Linux-only)
+    # Validate (credentials, IAM, Shielded/Confidential, OS detection)
     spinner = _Spinner("Validating permissions")
     if not debug:
         spinner.start()
@@ -941,6 +915,7 @@ def handle_repair(args: argparse.Namespace) -> int:
             'selinux': ('Repair the SELinux policy or schedule a full '
                         'relabel'),
             'grub': 'Reinstall GRUB and regenerate its configuration',
+            'windows_boot_manager': 'Rebuild Windows Boot Configuration Data (BCD) store',
         }
         if fstab_targets:
             from ..utils.report_formatter import _extract_identifier

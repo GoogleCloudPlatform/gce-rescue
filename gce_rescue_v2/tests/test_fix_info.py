@@ -635,8 +635,9 @@ class TestShippedFixInfo:
     def test_fix_script_exists_for_supported_categories(self):
         """Every auto-repairable category should have a fix script."""
         fixes_dir = Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
+        from gce_rescue_v2.orchestration.repair import CATEGORY_FIX_SCRIPTS
         for cat in SUPPORTED_FIX_CATEGORIES:
-            script_path = fixes_dir / f'{cat}_fix.sh'
+            script_path = fixes_dir / CATEGORY_FIX_SCRIPTS.get(cat, f'{cat}_fix.sh')
             assert script_path.exists(), (
                 f"Missing fix script for supported category '{cat}': {script_path}"
             )

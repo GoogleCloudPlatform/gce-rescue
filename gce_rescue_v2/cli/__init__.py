@@ -323,16 +323,18 @@ SUPPORTED FIXES
       removes an autorelabel kernel argument that relabels every boot (Linux)
     - disk_full: Resizes the boot disk, expands the root filesystem, and
       reports the largest directories (no files are deleted) (Linux)
+    - windows_boot_manager: Rebuilds the Windows Boot Configuration Data (BCD)
+      store (Windows)
     - Custom fix scripts via --fix-script (Linux and Windows), e.g.
       --fix-script=windows_bcd_fix.ps1 (bare names resolve to bundled
       scripts; explicit file paths also work)
       Bundled fix scripts: {bundled_scripts}
 
 NOTES
-    Diagnosis-driven repair is Linux-only. Windows VMs are supported with
-    --fix-script (e.g. --fix-script=windows_bcd_fix.ps1), which skips
-    diagnosis and runs the supplied PowerShell script, or use 'rescue' to fix
-    manually.
+    Diagnosis-driven repair supports Linux and Windows Boot Manager (BCD)
+    failures. Other Windows failure modes can use --fix-script (e.g.
+    --fix-script=windows_bcd_fix.ps1), which skips diagnosis and runs the
+    supplied PowerShell script, or use 'rescue' to fix manually.
     The VM will be stopped during repair and restarted when complete.
         """
     )

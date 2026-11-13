@@ -85,8 +85,8 @@ class TestRepairOrchestrator:
         with patch.object(orch, 'validate', return_value=True):
             assert orch.validate() is True
 
-    def test_validate_windows_rejected(self):
-        """Windows VMs should be rejected by validate()."""
+    def test_validate_windows_allowed(self):
+        """Windows VMs should pass validate() for diagnosis-driven repair."""
         vm_info = {
             'status': 'TERMINATED',
             'disks': [{
@@ -102,13 +102,11 @@ class TestRepairOrchestrator:
         orch = RepairOrchestrator(
             compute, 'proj', 'zone-a', 'vm-1', logger=_make_logger()
         )
-        # Patch out the rescue validation to isolate OS check
-        with patch(
-            'gce_rescue_v2.orchestration.repair.RescueOrchestrator.validate',
-            return_value=True
-        ):
+        # Patch out the pre-flight validators to isolate OS check
+        with patch('gce_rescue_v2.validators.ValidationRunner') as runner_cls:
+            runner_cls.return_value.run_all.return_value.all_passed.return_value = True
             with patch.object(orch, '_create_tracked_client', return_value=compute):
-                assert orch.validate() is False
+                assert orch.validate() is True
 
     def test_diagnose_returns_dict(self):
         """diagnose() should return a diagnosis dict on success."""
@@ -257,9 +255,10 @@ class TestFixExecutionOrdering:
         )
 
     def test_execution_order_constant(self):
-        """filesystem first, disk_full before fstab, selinux before grub."""
+        """filesystem first, disk_full before fstab, selinux before grub, plus windows_boot_manager."""
         assert FIX_EXECUTION_ORDER == [
-            'filesystem', 'disk_full', 'fstab', 'initramfs', 'selinux', 'grub'
+            'filesystem', 'disk_full', 'fstab', 'initramfs', 'selinux', 'grub',
+            'windows_boot_manager',
         ]
 
     def test_categories_sorted_into_execution_order(self):
@@ -1727,15 +1726,18 @@ class TestSupportedCategories:
     def test_supported_set_is_exactly_the_shipped_scripts(self):
         """The full auto-repairable set — update when a new fix script lands."""
         assert SUPPORTED_FIX_CATEGORIES == {
-            'fstab', 'grub', 'disk_full', 'initramfs', 'selinux'}
+            'fstab', 'grub', 'disk_full', 'initramfs', 'selinux',
+            'windows_boot_manager',
+        }
 
     def test_fix_script_exists_for_each_supported_category(self):
         """Every supported category should have a corresponding fix script."""
         fixes_dir = (
             Path(__file__).parent.parent / 'startup_scripts' / 'fixes'
         )
+        from gce_rescue_v2.orchestration.repair import CATEGORY_FIX_SCRIPTS
         for cat in SUPPORTED_FIX_CATEGORIES:
-            script_path = fixes_dir / f'{cat}_fix.sh'
+            script_path = fixes_dir / CATEGORY_FIX_SCRIPTS.get(cat, f'{cat}_fix.sh')
             assert script_path.exists(), (
                 f"Missing fix script for supported category '{cat}': {script_path}"
             )
@@ -2543,8 +2545,8 @@ class TestCustomFixScript:
         assert captured['config'].fix_script == 'echo custom-fix'
         assert captured['startup_script_override'] is None
 
-    def test_validate_windows_blocked_without_fix_script(self):
-        """Windows VMs are blocked unless a custom fix script is supplied."""
+    def test_validate_windows_allowed_without_fix_script(self):
+        """Windows VMs are allowed without --fix-script for diagnosis-driven repair."""
         vm_info = {
             'status': 'RUNNING',
             'disks': [{
@@ -2562,7 +2564,7 @@ class TestCustomFixScript:
         orch._create_tracked_client = lambda label: compute
         with patch('gce_rescue_v2.validators.ValidationRunner') as runner_cls:
             runner_cls.return_value.run_all.return_value.all_passed.return_value = True
-            assert orch.validate() is False
+            assert orch.validate() is True
 
     def test_validate_windows_allowed_with_fix_script(self):
         """Windows VMs pass validation when --fix-script is supplied."""
@@ -2849,4 +2851,97 @@ class TestDiskFullRepair:
         fake_orch.execute.assert_not_called()
         out = capsys.readouterr().out
         assert 'requires explicit --resize-disk-gb' in out
+
+
+class TestWindowsBootVerificationWait:
+    """Boot verification wait budget for windows_boot_manager repairs."""
+
+    def test_windows_boot_manager_in_repair_boot_wait_seconds(self):
+        from gce_rescue_v2.orchestration.repair import (
+            REPAIR_BOOT_WAIT_SECONDS, WINDOWS_BOOT_WAIT_SECONDS,
+        )
+        assert WINDOWS_BOOT_WAIT_SECONDS == 180
+        assert REPAIR_BOOT_WAIT_SECONDS['windows_boot_manager'] == WINDOWS_BOOT_WAIT_SECONDS
+
+    def test_windows_boot_manager_waits_up_to_180s_and_verifies_healthy(self):
+        from gce_rescue_v2.orchestration.repair import WINDOWS_BOOT_WAIT_SECONDS
+
+        compute = _make_compute()
+        port1_booting = (
+            'BdsDxe: loading Boot0003 "Windows Boot Manager"\n'
+            'UEFI: Attempting to start image.\n'
+        )
+        port1_ready = (
+            port1_booting
+            + '2026/11/10 12:00:00 GCEInstanceSetup: Instance setup finished. '
+            'win-vm is ready to use.\n'
+        )
+
+        # Simulate COM1 reaching ready after 60s (poll 1 at 45s -> booting,
+        # poll 2 at 60s -> ready) and COM2 having no Boot Manager errors.
+        calls = {'p1': 0}
+
+        def _get_serial(**kwargs):
+            req = Mock()
+            if kwargs.get('port') == 2:
+                req.execute.return_value = {'contents': ''}
+            else:
+                calls['p1'] += 1
+                req.execute.return_value = {
+                    'contents': port1_booting if calls['p1'] == 1 else port1_ready
+                }
+            return req
+
+        compute.instances.return_value.getSerialPortOutput.side_effect = _get_serial
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'win-vm', logger=_make_logger()
+        )
+        orch._os_type = 'windows'
+        orch._create_tracked_client = lambda label: compute
+
+        sleeps = []
+        with patch('gce_rescue_v2.orchestration.repair.time.sleep',
+                   side_effect=lambda s: sleeps.append(s)), \
+                patch('gce_rescue_v2.orchestration.repair.sys.stdout'):
+            result = orch._verify_boot_after_repair(['windows_boot_manager'])
+
+        assert sum(sleeps) == 60
+        assert sum(sleeps) < WINDOWS_BOOT_WAIT_SECONDS
+        assert result['verified'] is True
+        assert result['errors'] == []
+
+    def test_windows_boot_manager_uses_full_180s_budget_when_quiet(self):
+        from gce_rescue_v2.orchestration.repair import WINDOWS_BOOT_WAIT_SECONDS
+
+        compute = _make_compute()
+        port1_quiet = (
+            'BdsDxe: loading Boot0003 "Windows Boot Manager"\n'
+            'UEFI: Attempting to start image.\n'
+            'GCEGuestAgentManager: Initializing Google Guest Agent...\n'
+        )
+
+        def _get_serial(**kwargs):
+            req = Mock()
+            req.execute.return_value = {
+                'contents': '' if kwargs.get('port') == 2 else port1_quiet
+            }
+            return req
+
+        compute.instances.return_value.getSerialPortOutput.side_effect = _get_serial
+        orch = RepairOrchestrator(
+            compute, 'proj', 'zone-a', 'win-vm', logger=_make_logger()
+        )
+        orch._os_type = 'windows'
+        orch._create_tracked_client = lambda label: compute
+
+        sleeps = []
+        with patch('gce_rescue_v2.orchestration.repair.time.sleep',
+                   side_effect=lambda s: sleeps.append(s)), \
+                patch('gce_rescue_v2.orchestration.repair.sys.stdout'):
+            result = orch._verify_boot_after_repair(['windows_boot_manager'])
+
+        assert sum(sleeps) == WINDOWS_BOOT_WAIT_SECONDS
+        assert result['verified'] is True
+        assert result['errors'] == []
+
 
