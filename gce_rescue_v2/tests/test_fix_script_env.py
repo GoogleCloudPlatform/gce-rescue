@@ -246,7 +246,10 @@ class TestRepairInjectsFixEnv:
         script = orch._generate_repair_script(diagnosis)
         assert f'export BOOT_MODE="{mode}"' in script
 
-    @pytest.mark.parametrize('category', sorted(SUPPORTED_FIX_CATEGORIES))
+    @pytest.mark.parametrize(
+        'category',
+        sorted(c for c in SUPPORTED_FIX_CATEGORIES if not c.startswith('windows_')),
+    )
     def test_present_for_every_category(self, category: str) -> None:
         orch = _repair_orchestrator(
             _vm(features=['UEFI_COMPATIBLE'], license_url=LICENSES['rhel']))

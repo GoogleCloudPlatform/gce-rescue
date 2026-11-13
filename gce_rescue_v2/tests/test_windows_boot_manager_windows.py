@@ -1,4 +1,4 @@
-"""Tests for the windows_boot_manager diagnose category (Windows, detect-only).
+"""Tests for the windows_boot_manager diagnose category (Windows, auto-repairable).
 
 Verifies the YAML loads with the correct OS scope and flags, that every
 regex fires on a realistic Windows Boot Manager failure snippet, and -
@@ -140,10 +140,10 @@ class TestYamlStructure:
         for p in patterns:
             assert len(p.fixes) > 0, f"Pattern '{p.name}' has no inline fixes"
 
-    def test_detect_only(self):
-        # Windows repair is a future branch: detect-only, never auto_repair.
-        assert CATEGORY in DETECT_ONLY_CATEGORIES
-        assert CATEGORY not in fix_catalog.SUPPORTED_FIX_CATEGORIES
+    def test_auto_repair_enabled(self):
+        # windows_boot_manager is wired to windows_bcd_fix.ps1 for auto-repair.
+        assert CATEGORY not in DETECT_ONLY_CATEGORIES
+        assert CATEGORY in fix_catalog.SUPPORTED_FIX_CATEGORIES
 
     def test_not_survives_boot_success(self):
         # A boot-manager failure blocks boot; it is not a runtime condition
