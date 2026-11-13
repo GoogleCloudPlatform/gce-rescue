@@ -49,27 +49,34 @@ def handle_rescue(args: argparse.Namespace) -> int:
         print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
         return 1
 
-    # Check for incomplete operation (interactive mode only)
+    # Check for an incomplete rescue. Detection also runs in --quiet mode:
+    # starting a fresh rescue over a half-finished one fails later on the VM
+    # state and can orphan its disks. Quiet runs only report it and exit
+    # (never resume or roll back on their own), like repair --quiet (#212).
     checkpoint = None
     resuming = False
-    if not args.quiet:
-        checkpoint_mgr = CheckpointManager(compute, project, args.zone, args.instance_name)
-        checkpoint = checkpoint_mgr.detect_incomplete(operation_type='rescue')
+    checkpoint_mgr = CheckpointManager(compute, project, args.zone, args.instance_name)
+    checkpoint = checkpoint_mgr.detect_incomplete(operation_type='rescue')
+    if checkpoint and args.quiet:
+        checkpoint_ui._print_quiet_checkpoint_block(
+            checkpoint, 'rescue', args.instance_name, args.zone, project,
+        )
+        return 1
 
-        if checkpoint:
-            action = checkpoint_ui._prompt_incomplete_operation(checkpoint, 'rescue')
+    if checkpoint:
+        action = checkpoint_ui._prompt_incomplete_operation(checkpoint, 'rescue')
 
-            if action == 'abort':
-                return 0
-            elif action == 'rollback':
-                success = checkpoint_ui._handle_checkpoint_rollback(
-                    compute, project, args.zone, args.instance_name, checkpoint
-                )
-                return 0 if success else 1
-            # action == 'continue': proceed with resume
-            vm_info = None
-            has_local_ssd = False
-            resuming = True
+        if action == 'abort':
+            return 0
+        elif action == 'rollback':
+            success = checkpoint_ui._handle_checkpoint_rollback(
+                compute, project, args.zone, args.instance_name, checkpoint
+            )
+            return 0 if success else 1
+        # action == 'continue': proceed with resume
+        vm_info = None
+        has_local_ssd = False
+        resuming = True
 
     if not resuming:
         # Validate VM exists and state BEFORE confirmation

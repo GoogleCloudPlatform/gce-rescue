@@ -49,24 +49,31 @@ def handle_restore(args: argparse.Namespace) -> int:
         print(f"{error_prefix()} Authentication failed: {e}", file=sys.stderr)
         return 1
 
-    # Check for incomplete restore operation (interactive mode only)
+    # Check for an incomplete restore. Detection also runs in --quiet mode so
+    # automation learns about an interrupted run instead of failing later on
+    # the VM state. Quiet runs only report it and exit (never resume or roll
+    # back on their own), like repair --quiet (#212).
     checkpoint = None
     resuming = False
-    if not args.quiet:
-        checkpoint_mgr = CheckpointManager(compute, project, args.zone, args.instance_name)
-        checkpoint = checkpoint_mgr.detect_incomplete(operation_type='restore')
+    checkpoint_mgr = CheckpointManager(compute, project, args.zone, args.instance_name)
+    checkpoint = checkpoint_mgr.detect_incomplete(operation_type='restore')
+    if checkpoint and args.quiet:
+        checkpoint_ui._print_quiet_checkpoint_block(
+            checkpoint, 'restore', args.instance_name, args.zone, project,
+        )
+        return 1
 
-        if checkpoint:
-            action = checkpoint_ui._prompt_incomplete_operation(checkpoint, 'restore')
+    if checkpoint:
+        action = checkpoint_ui._prompt_incomplete_operation(checkpoint, 'restore')
 
-            if action == 'abort':
-                return 0
-            elif action == 'rollback':
-                success = checkpoint_ui._handle_restore_checkpoint_rollback(
-                    compute, project, args.zone, args.instance_name, checkpoint
-                )
-                return 0 if success else 1
-            resuming = True
+        if action == 'abort':
+            return 0
+        elif action == 'rollback':
+            success = checkpoint_ui._handle_restore_checkpoint_rollback(
+                compute, project, args.zone, args.instance_name, checkpoint
+            )
+            return 0 if success else 1
+        resuming = True
 
     if not resuming:
         # Validate VM exists and is in rescue mode BEFORE confirmation
