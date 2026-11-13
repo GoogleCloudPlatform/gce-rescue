@@ -5,11 +5,12 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.7.0] - 2026-11-14
 
 ### Added
-- `repair`: automatic Windows Boot Manager (BCD) repair. `windows_boot_manager` findings (`0xc000000e`, `0xc000000f`, `0xc0000225`, `0xc000014c`, `BOOTMGR is missing`) are now auto-repaired via `windows_bcd_fix.ps1` without `--fix-script` (#232)
-- `repair` / `rescue`: bare `--fix-script` names (for example `--fix-script=windows_bcd_fix.ps1`) now resolve against the packaged `startup_scripts/fixes/` directory when not found in the current directory, missing bare names list available bundled scripts, and `repair --help` lists the bundled script names (#211)
+- `repair`: automatic Windows Boot Manager (BCD) repair. `windows_boot_manager` findings (`0xc000000e`, `0xc000000f`, `0xc0000225`, `0xc000014c`, `BOOTMGR is missing`) are now auto-repaired via `windows_bcd_fix.ps1` without `--fix-script` (#232, #227, contributed by @rubensalmeida)
+- Windows: packaged BCD repair script `windows_bcd_fix.ps1` for `repair --fix-script`. It finds the offline Windows volume, refuses BitLocker-locked volumes with unlock steps, backs up an existing BCD store and rebuilds it with `bcdboot` on UEFI and BIOS disks (#150, #197, contributed by @rubensalmeida)
+- `repair` / `rescue`: bare `--fix-script` names (for example `--fix-script=windows_bcd_fix.ps1`) now resolve against the packaged `startup_scripts/fixes/` directory when not found in the current directory, missing bare names list available bundled scripts, and `repair --help` lists the bundled script names (#211, #234, contributed by @rubensalmeida)
 - `repair`: automatic SELinux repair on Linux. Schedules a full relabel (`/.autorelabel`) when the policy is installed. A `SELINUXTYPE=` that names a policy that is not installed is switched back to the installed one; a missing policy is reinstalled with the package manager and a relabel is scheduled. If the reinstall is not possible, SELinux is disabled on the kernel command line (`selinux=0`) so the VM boots, and the repair output lists the steps to turn it back on. A relabel loop caused by an `autorelabel` kernel argument is ended by removing the argument. A relabel in progress is left alone. Changed files are backed up to `/var/backups/gce-rescue/` (#174)
 - `repair`: the User-Agent now records the fix categories applied (`fix/<cat1+cat2>`, or `fix/custom` for `--fix-script`) and rollback API calls are tagged with `step/rollback-<step>`, so a session's rollback is visible in usage tracking
 - `repair`: fix scripts receive `OS_FLAVOR` and `BOOT_MODE` environment variables (#92)
@@ -19,9 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `restore` left `enable-guest-attributes=TRUE` on the VM after every rescue, even when the VM never had the key or had it set to `FALSE`. `rescue` now records the key's original value (or that it was absent), and `restore` puts it back or removes it. VMs rescued by an older version keep the current behaviour (#146)
 - `restore` re-attached the boot disk with its disk name as the device name and auto-delete off, so Terraform and other config tools saw drift (the original is usually `persistent-disk-0` with auto-delete on). `rescue` now records the boot disk's device name, auto-delete, mode and interface, and `restore` re-attaches it with those values. Without the record (rescued by an older version), the old behaviour is kept (#170)
 - `repair --quiet` now checks for an interrupted rescue before starting. If one is found it exits with code 1 and prints the step reached and the commands to roll back or resume, instead of starting a second rescue over the first; it never rolls back or resumes on its own (#154)
-- `rescue --quiet` and `restore --quiet` skipped interrupted-run detection, so automation re-running them after a network drop or host reboot failed later on the VM state without saying how to recover. Both now check for an incomplete run of the same command first; if one is found they exit with code 1, change nothing, and print the step reached and the commands to roll back or resume. They never roll back or resume on their own. Interactive behaviour is unchanged (#212)
+- `rescue --quiet` and `restore --quiet` skipped interrupted-run detection, so automation re-running them after a network drop or host reboot failed later on the VM state without saying how to recover. Both now check for an incomplete run of the same command first; if one is found they exit with code 1, change nothing, and print the step reached and the commands to roll back or resume. They never roll back or resume on their own. Interactive behaviour is unchanged (#212, #223, contributed by @kirtxn)
 - `repair`: fstab device timeouts that systemd reports by unit name (`A start job is running for dev-sdc.device`, `dev-disk-by\x2duuid-….device`) or by mount point (`Dependency failed for /datadisk.`) are now repaired; previously `repair` reported that it could not identify the fstab entry. Mount point targets match only the fstab mount point field (#109)
-- `rescue`: resuming a rescue that was interrupted after its metadata step overwrote `rescue-backup-startup-script` with rescue's own script, so the VM's original startup script was lost and `restore` put rescue's script back in its place. The metadata step now keeps an existing `rescue-backup-*` value, and does not create a backup from a script an earlier attempt of the same rescue set. Same for `windows-startup-script-ps1` (#213)
+- `rescue`: resuming a rescue that was interrupted after its metadata step overwrote `rescue-backup-startup-script` with rescue's own script, so the VM's original startup script was lost and `restore` put rescue's script back in its place. The metadata step now keeps an existing `rescue-backup-*` value, and does not create a backup from a script an earlier attempt of the same rescue set. Same for `windows-startup-script-ps1` (#213, #222, contributed by @kirtxn)
+
+### Security
+- `Pipfile.lock`: certifi 2026.10.19 and pyasn1 0.6.5
+
+### Contributors
+Thanks to @kirtxn and @rubensalmeida for the changes in this release.
 
 ## [2.6.0] - 2026-10-16
 
