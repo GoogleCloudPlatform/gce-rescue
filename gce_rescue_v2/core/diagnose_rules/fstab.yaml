@@ -18,6 +18,10 @@ patterns:
       - 'Expecting device.*/dev/disk/by-uuid/'
     fixes:
       - "Comment out or fix the invalid UUID entry"
+      # #194: a copy of the boot disk makes UUID lookups pick either disk.
+      # diagnose names such a copy when it can read the disks; this line
+      # covers runs without compute.disks.get.
+      - "If another attached disk was copied from the boot disk (same snapshot or image), both carry this UUID and the wrong one can be picked: detach the copy instead of editing fstab"
 
   - name: fstab_device_timeout
     severity: critical
