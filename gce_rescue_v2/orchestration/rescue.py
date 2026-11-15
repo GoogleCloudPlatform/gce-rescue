@@ -329,9 +329,9 @@ class RescueOrchestrator:
         """
         try:
             from googleapiclient import discovery
-            import googleapiclient.http
             import google_auth_httplib2
             import httplib2
+            from ..core.auth import RetryingHttpRequest
 
             if not isinstance(getattr(self.compute, '_http', None),
                               google_auth_httplib2.AuthorizedHttp):
@@ -345,7 +345,7 @@ class RescueOrchestrator:
                 auth_http = google_auth_httplib2.AuthorizedHttp(
                     credentials, http=httplib2.Http()
                 )
-                return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+                return RetryingHttpRequest(auth_http, *args, **kwargs)
 
             return discovery.build(
                 'compute', 'v1', credentials=credentials,

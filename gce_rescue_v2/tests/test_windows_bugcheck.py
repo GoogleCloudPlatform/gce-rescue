@@ -22,7 +22,7 @@ from gce_rescue_v2.core import fix_catalog
 
 CATEGORY = 'windows_bugcheck'
 YAML_PATH = (
-    Path(__file__).resolve().parent.parent
+    Path(__file__).parent.parent
     / 'core' / 'diagnose_rules' / 'windows_bugcheck.yaml'
 )
 

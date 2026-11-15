@@ -5,10 +5,43 @@ Starts a Compute Engine VM instance, waiting until it reaches RUNNING. Rollback
 stops the VM only if it was previously stopped (TERMINATED) before execution.
 """
 
+from dataclasses import dataclass
 import time
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, VM_START_TIMEOUT
+
+_MAX_START_RETRIES = 2
+_TERMINATED_POLLS_BEFORE_RETRY = 3
+
+
+@dataclass
+class _StartRetryState:
+    """Tracks VM status transitions while waiting for a start request."""
+
+    saw_stopping: bool = False
+    terminated_polls: int = 0
+    retries: int = 0
+
+    def should_retry(self, status: str) -> bool:
+        """Update state for the latest status and return True if start() should be re-issued."""
+        if status == 'STOPPING':
+            self.saw_stopping = True
+            self.terminated_polls = 0
+            return False
+        if status == 'TERMINATED':
+            self.terminated_polls += 1
+            if (
+                self.saw_stopping
+                or self.terminated_polls >= _TERMINATED_POLLS_BEFORE_RETRY
+            ) and self.retries < _MAX_START_RETRIES:
+                self.retries += 1
+                self.saw_stopping = False
+                self.terminated_polls = 0
+                return True
+            return False
+        self.terminated_polls = 0
+        return False
 
 
 class StartVMOperation(BaseOperation):
@@ -75,6 +108,7 @@ class StartVMOperation(BaseOperation):
 
                 # Wait for VM to start
                 start_time = time.time()
+                retry_state = _StartRetryState()
 
                 def get_status():
                     vm = self.compute.instances().get(
@@ -82,7 +116,19 @@ class StartVMOperation(BaseOperation):
                         zone=self.zone,
                         instance=vm_name
                     ).execute()
-                    return vm['status']
+                    status = vm['status']
+                    if retry_state.should_retry(status):
+                        self._log_debug(
+                            f"VM is TERMINATED after start request "
+                            f"(retry {retry_state.retries}/{_MAX_START_RETRIES}), "
+                            f"re-issuing start..."
+                        )
+                        compute.instances().start(
+                            project=self.project,
+                            zone=self.zone,
+                            instance=vm_name
+                        ).execute()
+                    return status
 
                 if not self._wait_for_status(get_status, 'RUNNING', timeout):
                     error_detail = VM_START_TIMEOUT.format(

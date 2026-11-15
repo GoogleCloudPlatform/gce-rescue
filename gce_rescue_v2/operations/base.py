@@ -17,10 +17,11 @@ import json
 
 from googleapiclient import discovery
 import googleapiclient.errors
-import googleapiclient.http
 import google.auth.exceptions
 import google_auth_httplib2
 import httplib2
+
+from ..core.auth import RetryingHttpRequest
 
 
 def extract_error_message(exception: Exception) -> str:
@@ -267,7 +268,7 @@ class BaseOperation(ABC):
             auth_http = google_auth_httplib2.AuthorizedHttp(
                 credentials, http=httplib2.Http()
             )
-            return googleapiclient.http.HttpRequest(auth_http, *args, **kwargs)
+            return RetryingHttpRequest(auth_http, *args, **kwargs)
 
         return discovery.build(
             'compute', 'v1', credentials=credentials,
@@ -321,11 +322,14 @@ class BaseOperation(ABC):
                 return False
 
             # Check current status
-            current_status = check_func()
-            self._log_debug(f"Current status: {current_status}, Target: {target_status}")
+            try:
+                current_status = check_func()
+                self._log_debug(f"Current status: {current_status}, Target: {target_status}")
 
-            if current_status == target_status:
-                return True
+                if current_status == target_status:
+                    return True
+            except Exception as e:
+                self._log_debug(f"Error checking status: {e}")
 
             # Wait before checking again
             time.sleep(5)

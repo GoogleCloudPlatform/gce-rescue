@@ -355,6 +355,11 @@ def compose_startup_script_windows(base_script: str,
     fix_block += 'Write-Log "=== Starting repair fixes ==="\n\n'
     for fix_script in fix_scripts:
         fix_block += fix_script + '\n\n'
+    fix_block += (
+        "Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveLetter -ne 'C' }"
+        ' | ForEach-Object { Write-VolumeCache -DriveLetter $_.DriveLetter'
+        ' -ErrorAction SilentlyContinue }\n'
+    )
     fix_block += 'Write-Log "=== Repair fixes completed ==="\n\n'
 
     if marker_line in base_script:

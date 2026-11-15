@@ -207,6 +207,7 @@ class TestConfigWindows:
         assert config.windows_rescue_image_family == 'windows-2022'
         assert config.windows_rescue_image_project == 'windows-cloud'
         assert config.windows_rescue_disk_size_gb == 50
+        assert config.disk_create_timeout == 600
 
 
 class TestWindowsGuidCollisionPrevention:

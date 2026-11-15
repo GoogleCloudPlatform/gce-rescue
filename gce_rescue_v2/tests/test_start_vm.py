@@ -83,3 +83,43 @@ class TestStartVMOperation:
         # Assert
         assert success is True
         self.mock_compute.instances().stop.assert_not_called()
+
+    def test_start_vm_retries_when_stopping_then_terminated(self, monkeypatch):
+        """Test that StartVMOperation re-issues start() if VM transitions STOPPING -> TERMINATED."""
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        self.mock_compute.instances().get().execute.side_effect = [
+            {'status': 'TERMINATED'},  # Initial check
+            {'status': 'STOPPING'},    # Poll 1: lingering stop transition
+            {'status': 'TERMINATED'},  # Poll 2: settled in TERMINATED -> triggers retry
+            {'status': 'STAGING'},     # Poll 3: starting
+            {'status': 'RUNNING'},     # Poll 4: running
+        ]
+
+        result = self.operation.execute(vm_name='test-vm', timeout=30)
+
+        assert result.success is True
+        assert self.mock_compute.instances().start.call_count == 2
+
+    def test_start_vm_retries_after_consecutive_terminated_polls_up_to_cap(self, monkeypatch):
+        """Test consecutive TERMINATED polls trigger at most 2 retries (3 start calls total)."""
+        import time
+        monkeypatch.setattr(time, "sleep", lambda *_: None)
+        self.mock_compute.instances().get().execute.side_effect = [
+            {'status': 'TERMINATED'},  # Initial check (start #1)
+            {'status': 'TERMINATED'},  # Poll 1
+            {'status': 'TERMINATED'},  # Poll 2
+            {'status': 'TERMINATED'},  # Poll 3 -> retry 1 (start #2)
+            {'status': 'TERMINATED'},  # Poll 4
+            {'status': 'TERMINATED'},  # Poll 5
+            {'status': 'TERMINATED'},  # Poll 6 -> retry 2 (start #3)
+            {'status': 'TERMINATED'},  # Poll 7
+            {'status': 'TERMINATED'},  # Poll 8
+            {'status': 'TERMINATED'},  # Poll 9 -> cap reached, no start #4
+            {'status': 'RUNNING'},     # Poll 10 -> succeeds
+        ]
+
+        result = self.operation.execute(vm_name='test-vm', timeout=30)
+
+        assert result.success is True
+        assert self.mock_compute.instances().start.call_count == 3

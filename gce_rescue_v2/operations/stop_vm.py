@@ -138,6 +138,44 @@ class StopVMOperation(BaseOperation):
                     }
                 )
 
+            elif original_status == 'STOPPING':
+                self._log_debug("VM is already STOPPING, waiting for TERMINATED...")
+                start_time = time.time()
+
+                def get_status():
+                    vm = self.compute.instances().get(
+                        project=self.project,
+                        zone=self.zone,
+                        instance=vm_name
+                    ).execute()
+                    return vm['status']
+
+                if not self._wait_for_status(get_status, 'TERMINATED', timeout):
+                    error_detail = VM_STOP_TIMEOUT.format(
+                        vm_name=vm_name,
+                        zone=self.zone,
+                        project=self.project
+                    )
+                    self._log_debug(error_detail)
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message=f"Timeout waiting for VM to stop (>{timeout}s)",
+                        error=error_detail
+                    )
+
+                duration = time.time() - start_time
+                self._log_debug(f"VM stopped in {duration:.2f}s")
+                return OperationResult(
+                    operation_name=self.name,
+                    success=True,
+                    message=f"VM stopped ({duration:.0f}s)",
+                    rollback_data={
+                        'vm_name': vm_name,
+                        'original_status': 'RUNNING'
+                    }
+                )
+
             else:
                 # VM is in some other state (STOPPING, SUSPENDING, etc.)
                 return OperationResult(

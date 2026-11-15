@@ -113,3 +113,16 @@ class TestStopVMOperation:
         # Assert
         assert success is True
         self.mock_compute.instances().start.assert_not_called()
+
+    def test_stop_vm_already_stopping(self):
+        """Test stopping a VM that is already in STOPPING state."""
+        self.mock_compute.instances().get().execute.side_effect = [
+            {'status': 'STOPPING'},
+            {'status': 'TERMINATED'},
+        ]
+
+        result = self.operation.execute(vm_name='test-vm', timeout=5)
+
+        assert result.success is True
+        assert result.rollback_data['original_status'] == 'RUNNING'
+        self.mock_compute.instances().stop.assert_not_called()

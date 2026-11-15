@@ -31,7 +31,7 @@ class CreateDiskOperation(BaseOperation):
     def execute(self, disk_name: str, size_gb: int = 10,
                 disk_type: str = 'pd-standard',
                 source_image: str = 'projects/debian-cloud/global/images/family/debian-12',
-                timeout: int = 300, tracking_label: str = None) -> OperationResult:
+                timeout: int = 600, tracking_label: str = None) -> OperationResult:
         """
         Create a new persistent disk from the specified image.
 
