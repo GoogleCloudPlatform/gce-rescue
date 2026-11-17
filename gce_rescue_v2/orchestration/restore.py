@@ -95,7 +95,7 @@ class RestoreOrchestrator:
             vm_name: Name of VM to restore
             config: Optional restore configuration
             logger: Optional logger
-            log_file: Log file path (for checkpoint persistence)
+            log_file: Log file path of this session
             suppress_progress: Suppress progress spinner (for embedding in repair)
             progress_callback: Optional callback(phase_label) invoked on each step
             fix_label: Fix set of the repair run this restore belongs to
@@ -385,7 +385,6 @@ class RestoreOrchestrator:
             'original_disk_name': self.original_disk_name,
             'original_device_name': self.original_device_name,
             'original_boot_attachment': self.original_boot_attachment,
-            'log_file': self.log_file
         }
 
     def validate(self) -> bool:

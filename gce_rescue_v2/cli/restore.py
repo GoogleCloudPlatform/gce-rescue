@@ -57,6 +57,7 @@ def handle_restore(args: argparse.Namespace) -> int:
     resuming = False
     checkpoint_mgr = CheckpointManager(compute, project, args.zone, args.instance_name)
     checkpoint = checkpoint_mgr.detect_incomplete(operation_type='restore')
+    checkpoint_ui._warn_ignored_checkpoint(checkpoint_mgr, args.instance_name)
     if checkpoint and args.quiet:
         checkpoint_ui._print_quiet_checkpoint_block(
             checkpoint, 'restore', args.instance_name, args.zone, project,
@@ -130,10 +131,10 @@ def handle_restore(args: argparse.Namespace) -> int:
 
     # Setup logging
     debug = args.verbosity == 'debug'
-    log_file = checkpoint.context.get('log_file') if checkpoint else None
-    if not log_file:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = f"{args.instance_name}-restore-{timestamp}.log"
+    # Always a new local file, also when resuming: the checkpoint comes
+    # from VM metadata and must not choose a path on this machine.
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_file = f"{args.instance_name}-restore-{timestamp}.log"
     logger = setup_logging(
         level='DEBUG' if debug else 'INFO',
         log_file=log_file,

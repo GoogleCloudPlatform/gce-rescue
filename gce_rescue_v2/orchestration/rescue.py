@@ -112,7 +112,7 @@ class RescueOrchestrator:
             vm_name: Name of VM to rescue
             config: Optional rescue configuration
             logger: Optional logger
-            log_file: Log file path (for checkpoint persistence)
+            log_file: Log file path of this session
             startup_script_override: Custom startup script (replaces default)
             suppress_progress: Suppress progress spinner (for embedding in repair)
             progress_callback: Optional callback(phase_label) invoked on each step
@@ -539,7 +539,6 @@ class RescueOrchestrator:
             'rescue_disk_name': self.rescue_disk_name,
             'os_type': self.os_type,
             'architecture': self.architecture,
-            'log_file': self.log_file
         }
         if self.original_disk_size_gb is not None:
             ctx['original_disk_size_gb'] = self.original_disk_size_gb

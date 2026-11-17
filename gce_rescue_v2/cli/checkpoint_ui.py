@@ -4,8 +4,31 @@ import sys
 from typing import Optional, TextIO
 from ..orchestration.checkpoint import CheckpointManager, CheckpointData
 from ..utils.colors import error_prefix, warning_prefix, clear_lines
+from ..utils.safe_text import safe_text
 from .output import _Spinner
 from .preflight import _create_tracked_client
+
+
+def _warn_ignored_checkpoint(checkpoint_mgr: CheckpointManager, vm_name: str,
+                             file: Optional[TextIO] = None) -> None:
+    """Tell the user a checkpoint was found in metadata but not used.
+
+    Args:
+        checkpoint_mgr: Manager that just loaded the checkpoint.
+        vm_name: VM name
+        file: Stream to write to (stderr by default)
+    """
+    reason = getattr(checkpoint_mgr, "invalid_reason", None)
+    if not reason:
+        return
+    file = file or sys.stderr
+    print(f"{warning_prefix()} Ignoring the gce-rescue checkpoint on instance"
+          f" [{vm_name}]: {safe_text(reason)}.",
+          file=file)
+    print("  It was changed after gce-rescue wrote it, or was not written by"
+          " gce-rescue.", file=file)
+    print("  If an earlier run was interrupted, check the instance's disks"
+          " before you continue.", file=file)
 
 
 def _prompt_incomplete_operation(checkpoint: CheckpointData, operation_type: str) -> str:
@@ -27,7 +50,10 @@ def _prompt_incomplete_operation(checkpoint: CheckpointData, operation_type: str
         7: "Start VM", 8: "Attach Original Disk", 9: "Verify Startup"
     }
     next_step_name = step_names.get(next_step, f"Step {next_step}")
-    last_step_name = checkpoint.get_last_completed_operation() or "None"
+    # Checkpoint fields come from VM metadata: escape before printing.
+    last_step_name = safe_text(
+        checkpoint.get_last_completed_operation() or "None", max_len=64)
+    started = safe_text(checkpoint.started_at[:19].replace('T', ' '))
 
     # Track lines for clearing after continue
     lines_printed = 0
@@ -37,11 +63,10 @@ def _prompt_incomplete_operation(checkpoint: CheckpointData, operation_type: str
     lines_printed += 2  # includes leading newline
     print("")
     lines_printed += 1
-    print(f"  Started:    {checkpoint.started_at[:19].replace('T', ' ')}"
-          f" ({checkpoint.get_age_display()})")
+    print(f"  Started:    {started} ({checkpoint.get_age_display()})")
     lines_printed += 1
-    print(f"  Progress:   {checkpoint.current_step} of {checkpoint.total_steps}"
-          f" steps completed")
+    print(f"  Progress:   {safe_text(checkpoint.current_step)} of"
+          f" {safe_text(checkpoint.total_steps)} steps completed")
     lines_printed += 1
     print(f"  Last step:  {last_step_name}")
     lines_printed += 1
@@ -98,16 +123,17 @@ def _print_quiet_checkpoint_block(checkpoint: CheckpointData, command: str,
         file: Stream to write to (stderr by default)
     """
     file = file or sys.stderr
-    last_step = checkpoint.get_last_completed_operation() or "None"
-    started = checkpoint.started_at[:19].replace('T', ' ')
+    last_step = safe_text(
+        checkpoint.get_last_completed_operation() or "None", max_len=64)
+    started = safe_text(checkpoint.started_at[:19].replace('T', ' '))
     flags = f"--zone={zone} --project={project}"
 
     print(f"{error_prefix()} An incomplete {checkpoint.operation} operation was "
           f"detected for instance [{vm_name}].", file=file)
     print("", file=file)
     print(f"  Started:    {started} ({checkpoint.get_age_display()})", file=file)
-    print(f"  Progress:   {checkpoint.current_step} of {checkpoint.total_steps}"
-          f" steps completed", file=file)
+    print(f"  Progress:   {safe_text(checkpoint.current_step)} of"
+          f" {safe_text(checkpoint.total_steps)} steps completed", file=file)
     print(f"  Last step:  {last_step}", file=file)
     print("", file=file)
     print(f"{command} --quiet does not resume or roll back an interrupted "
