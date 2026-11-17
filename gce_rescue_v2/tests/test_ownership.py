@@ -449,3 +449,43 @@ class TestRestoreResume:
 
         assert orch.rescue_disk_name == 'rescue-disk-55'
         assert orch._rescue_disk_owned is True
+
+
+class TestWindowsKeysRecord:
+    """reset-windows-password adds a rescue_admin key; restore must undo it."""
+
+    @staticmethod
+    def _rescue_then_restore(before, during, record=('windows-keys',)):
+        from gce_rescue_v2.operations.set_metadata import (
+            SetMetadataOperation, restore_pre_rescue_items)
+        op = SetMetadataOperation(Mock(), PROJECT, ZONE, None)
+        rescue_items = [{'key': 'windows-startup-script-ps1', 'value': 'script'},
+                        {'key': 'rescue-mode', 'value': '1'}]
+        merged = op._merge_with_backup(before, rescue_items, record)
+        # The user runs reset-windows-password during the rescue session.
+        merged = [i for i in merged if i['key'] != 'windows-keys']
+        merged.append({'key': 'windows-keys', 'value': during})
+        restored = restore_pre_rescue_items(merged)
+        return {i['key']: i['value'] for i in restored}
+
+    def test_key_added_during_rescue_is_removed(self):
+        restored = self._rescue_then_restore(
+            before=[{'key': 'ssh-keys', 'value': 'k'}], during='{"userName":"rescue_admin"}')
+        assert 'windows-keys' not in restored
+        assert restored == {'ssh-keys': 'k'}
+
+    def test_existing_keys_are_put_back(self):
+        restored = self._rescue_then_restore(
+            before=[{'key': 'windows-keys', 'value': '{"userName":"alice"}'}],
+            during='{"userName":"alice"}\n{"userName":"rescue_admin"}')
+        assert restored['windows-keys'] == '{"userName":"alice"}'
+
+    def test_linux_rescue_records_nothing(self):
+        from gce_rescue_v2.operations.set_metadata import SetMetadataOperation
+        op = SetMetadataOperation(Mock(), PROJECT, ZONE, None)
+        merged = op._merge_with_backup(
+            [{'key': 'windows-keys', 'value': 'x'}],
+            [{'key': 'startup-script', 'value': 's'}])
+        keys = {i['key'] for i in merged}
+        assert 'rescue-backup-windows-keys' not in keys
+        assert 'rescue-backup-absent-keys' not in keys

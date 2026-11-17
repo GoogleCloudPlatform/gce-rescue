@@ -34,8 +34,16 @@ RESCUE_RESTORABLE_KEYS = [
     'enable-guest-attributes',
 ]
 
-# Comma-separated list of RESCUE_RESTORABLE_KEYS that did not exist before
-# rescue added them.
+# Keys rescue does not set, but which can change during a rescue session
+# and must be put back on restore. `gcloud compute reset-windows-password`,
+# which gives access to a Windows rescue, adds the rescue_admin entry to
+# windows-keys; left there, the guest agent of the restored OS would create
+# that account too. Their pre-rescue state is recorded like
+# RESCUE_RESTORABLE_KEYS (backup, or listed as absent).
+WINDOWS_KEYS_KEY = 'windows-keys'
+
+# Comma-separated list of RESCUE_RESTORABLE_KEYS (and recorded keys) that did
+# not exist before rescue.
 RESCUE_ABSENT_KEYS_KEY = f'{RESCUE_BACKUP_PREFIX}absent-keys'
 
 # JSON record of the original boot disk attachment (deviceName, autoDelete,
@@ -219,7 +227,9 @@ class SetMetadataOperation(BaseOperation):
         """
         return "Set Metadata"
 
-    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True, tracking_label: str = None) -> OperationResult:
+    def execute(self, vm_name: str, metadata_items: list, preserve_existing: bool = True,
+                tracking_label: str = None,
+                record_keys: Iterable[str] = ()) -> OperationResult:
         """
         Set metadata on the specified VM instance, preserving existing metadata.
 
@@ -264,7 +274,8 @@ class SetMetadataOperation(BaseOperation):
 
             if preserve_existing:
                 # Build final metadata: existing + backup conflicting + new items
-                final_items = self._merge_with_backup(original_items, metadata_items)
+                final_items = self._merge_with_backup(original_items, metadata_items,
+                                                      record_keys)
             else:
                 final_items = metadata_items
 
@@ -333,7 +344,8 @@ class SetMetadataOperation(BaseOperation):
                 error=error_detail
             )
 
-    def _merge_with_backup(self, original_items: list, new_items: list) -> list:
+    def _merge_with_backup(self, original_items: list, new_items: list,
+                           record_keys: Iterable[str] = ()) -> list:
         """
         Merge new metadata items with existing ones, backing up conflicts.
 
@@ -344,6 +356,8 @@ class SetMetadataOperation(BaseOperation):
         Args:
             original_items: Existing metadata items from VM
             new_items: New items to set (rescue metadata)
+            record_keys: Keys rescue does not set whose current state
+                (value or absence) is recorded so restore puts it back.
 
         Returns:
             List of merged metadata items with backups
@@ -405,10 +419,19 @@ class SetMetadataOperation(BaseOperation):
             elif key not in new_keys:
                 # Keep original key as-is (not being overwritten)
                 result[key] = value
+                backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
+                if (key in record_keys and key not in absent_keys
+                        and backup_key not in original_keys):
+                    result[backup_key] = value
+                    self._log_debug(f"  Recording '{key}' as '{backup_key}'")
 
         # Record restorable keys that rescue is adding, so restore removes them
         for key in RESCUE_RESTORABLE_KEYS:
             if key in new_keys and key not in original_keys:
+                absent_keys.add(key)
+        for key in record_keys:
+            if (key not in original_keys
+                    and f"{RESCUE_BACKUP_PREFIX}{key}" not in original_keys):
                 absent_keys.add(key)
         if absent_keys:
             result[RESCUE_ABSENT_KEYS_KEY] = ','.join(sorted(absent_keys))

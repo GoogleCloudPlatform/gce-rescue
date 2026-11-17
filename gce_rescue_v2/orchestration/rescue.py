@@ -40,6 +40,7 @@ from ..operations import (
 )
 from ..operations.set_metadata import (
     RESCUE_BOOT_ATTACHMENT_KEY,
+    WINDOWS_KEYS_KEY,
     capture_boot_attachment,
     encode_boot_attachment,
 )
@@ -169,7 +170,6 @@ class RescueOrchestrator:
         self.original_disk_size_gb = None
 
         # Windows rescue credentials (generated for RDP access)
-        self.windows_rescue_password = None
 
         # Verification status (set after startup verification)
         self.verification_succeeded = None
@@ -917,27 +917,23 @@ class RescueOrchestrator:
                 result = set_metadata.execute(
                     vm_name=self.vm_name,
                     metadata_items=metadata_items,
-                    tracking_label=self._ua('meta-set-rescue-keys')
+                    tracking_label=self._ua('meta-set-rescue-keys'),
+                    # RDP access adds a rescue_admin key; restore must
+                    # put windows-keys back as it was before rescue.
+                    record_keys=([WINDOWS_KEYS_KEY]
+                                 if self.os_type == OS_TYPE_WINDOWS else ())
                 )
                 self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data, step_number=6)
                 if not result.success:
                     self._finish_progress(False, error=result.error)
                     self._rollback()
                     return False
-                # Update checkpoint - include Windows password if set
-                context_updates = {}
-                if self.os_type == OS_TYPE_WINDOWS and self.windows_rescue_password:
-                    context_updates['windows_rescue_password'] = self.windows_rescue_password
                 self.checkpoint_manager.update_checkpoint(
                     step=6, operation_name="Set Metadata",
-                    rollback_data=result.rollback_data,
-                    context_updates=context_updates if context_updates else None
+                    rollback_data=result.rollback_data
                 )
             else:
                 self._log_debug("Skipping Step 6 (Set Metadata) - already completed")
-                # Restore Windows password from checkpoint context if resuming
-                if self._resumed_context and self.os_type == OS_TYPE_WINDOWS:
-                    self.windows_rescue_password = self._resumed_context.get('windows_rescue_password')
 
             # Step 7: Start VM in rescue mode
             if not self._should_skip_step(7):
@@ -1284,8 +1280,6 @@ class RescueOrchestrator:
     def _generate_startup_script(self) -> str:
         """Generate startup script for rescue mode based on OS type."""
         import re
-        import secrets
-        import string
         from pathlib import Path
 
         # Use override if provided (e.g., repair command injects fix scripts)
@@ -1302,11 +1296,6 @@ class RescueOrchestrator:
         if self.os_type == OS_TYPE_WINDOWS:
             script_file = Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount_windows.ps1'
             fallback_script = self._get_windows_fallback_script()
-
-            # Generate secure password for Windows rescue admin account
-            # 16 chars: uppercase, lowercase, digits, special chars (Windows complexity)
-            alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-            self.windows_rescue_password = ''.join(secrets.choice(alphabet) for _ in range(16))
         else:
             script_file = Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount.sh'
             fallback_script = self._get_linux_fallback_script()
@@ -1316,9 +1305,6 @@ class RescueOrchestrator:
                 script = f.read()
                 # Replace disk name placeholder
                 script = script.replace('DISK_NAME_PLACEHOLDER', self.original_disk_name)
-                # Replace password placeholder for Windows
-                if self.os_type == OS_TYPE_WINDOWS and self.windows_rescue_password:
-                    script = script.replace('PASSWORD_PLACEHOLDER', self.windows_rescue_password)
                 # Combine with the custom fix script (--fix-script) so the
                 # fix runs after the mount part, and verification only
                 # succeeds after the fix has run.

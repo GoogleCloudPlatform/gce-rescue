@@ -3,15 +3,17 @@
 #
 # Placeholders (replaced by Python code):
 #   DISK_NAME_PLACEHOLDER - Name of the affected disk
-#   PASSWORD_PLACEHOLDER - Pre-generated password for rescue_admin account
+#
+# The RDP account is not created here. The user runs
+# `gcloud compute reset-windows-password` for the rescue_admin user: the
+# guest agent then creates the account and returns its password encrypted
+# to the user, so no password is ever in metadata or serial output.
 
 $ErrorActionPreference = "Continue"
 $diskName = "DISK_NAME_PLACEHOLDER"
 $logFile = "C:\gce-rescue.log"
 $mountLetter = "D"
 $rescueUser = "rescue_admin"
-$rescuePassword = "PASSWORD_PLACEHOLDER"
-$credentialsFile = "C:\rescue_credentials.txt"
 
 function Write-Log {
     param([string]$Message)
@@ -24,51 +26,6 @@ function Write-Log {
 Write-Log "=== GCE Rescue Mode - Windows ==="
 Write-Log "Affected disk: $diskName"
 Write-Log "Target drive letter: $mountLetter`:"
-
-# Create rescue admin account for RDP access
-Write-Log ""
-Write-Log "=== Creating Rescue Admin Account ==="
-try {
-    $securePassword = ConvertTo-SecureString $rescuePassword -AsPlainText -Force
-
-    # Check if user already exists
-    $userExists = Get-LocalUser -Name $rescueUser -ErrorAction SilentlyContinue
-
-    if ($userExists) {
-        # Update password if user exists
-        Set-LocalUser -Name $rescueUser -Password $securePassword
-        Write-Log "Updated password for existing user: $rescueUser"
-    } else {
-        # Create new user
-        New-LocalUser -Name $rescueUser -Password $securePassword -FullName "GCE Rescue Admin" -Description "Temporary rescue mode admin account" -PasswordNeverExpires
-        Write-Log "Created new user: $rescueUser"
-    }
-
-    # Add to Administrators group
-    Add-LocalGroupMember -Group "Administrators" -Member $rescueUser -ErrorAction SilentlyContinue
-    Write-Log "Added $rescueUser to Administrators group"
-
-    # Save credentials to file (for reference inside the VM)
-    $credContent = @"
-========================================
-GCE Rescue Mode - Login Credentials
-========================================
-Username: $rescueUser
-Password: $rescuePassword
-
-Use these credentials to connect via RDP.
-
-This file will be deleted when you restore the VM.
-========================================
-"@
-    $credContent | Out-File -FilePath $credentialsFile -Encoding UTF8
-    Write-Log "Credentials saved to: $credentialsFile"
-    Write-Log "Account setup complete for: $rescueUser"
-
-} catch {
-    Write-Log "ERROR creating rescue admin account: $_"
-    Write-Log "You may need to use 'gcloud compute reset-windows-password' instead"
-}
 
 # Wait for disk to appear
 Write-Log "Waiting for affected disk to be available..."
@@ -263,10 +220,10 @@ Write-Log "=== GCE Rescue Ready ==="
 Write-Log "Connect via RDP and access your affected disk at the mounted drive letter(s)"
 Write-Log ""
 Write-Log "=========================================="
-Write-Log "RDP CONNECTION CREDENTIALS"
+Write-Log "RDP ACCESS"
 Write-Log "=========================================="
-Write-Log "Username: $rescueUser"
-Write-Log "Password: $rescuePassword"
+Write-Log "Get a password for user $rescueUser with:"
+Write-Log "  gcloud compute reset-windows-password <instance> --user=$rescueUser"
 Write-Log "=========================================="
 Write-Log ""
 Write-Log "Common repair tasks:"
