@@ -1,8 +1,12 @@
 """Checkpoint recovery UI for interrupted operations."""
 
 import sys
-from typing import Optional, TextIO
+from typing import List, Optional, TextIO
 from ..orchestration.checkpoint import CheckpointManager, CheckpointData
+from ..orchestration.ownership import (
+    OwnershipChecker, attach_disk_command, delete_disk_command,
+    delete_snapshot_command,
+)
 from ..utils.colors import error_prefix, warning_prefix, clear_lines
 from ..utils.safe_text import safe_text
 from .output import _Spinner
@@ -150,6 +154,92 @@ def _print_quiet_checkpoint_block(checkpoint: CheckpointData, command: str,
     print(f"  $ gce-rescue {checkpoint.operation} {vm_name} {flags}", file=file)
 
 
+def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
+                             checkpoint: CheckpointData, state_tracker,
+                             logger=None) -> List[str]:
+    """
+    Drop rollback steps that would touch a resource not shown to be this VM's.
+
+    Rollback replays steps recorded in the checkpoint, which is VM metadata
+    that people other than the operator can write. Steps that delete a disk
+    or snapshot, or attach a disk to the VM, only run when the resource is
+    shown to belong to the rescue of this VM (see orchestration.ownership).
+    The others are removed from `state_tracker`, and the command to do the
+    step by hand is returned so the user can run it after checking.
+
+    Args:
+        compute: GCP compute client
+        project: GCP project ID
+        zone: GCP zone
+        vm_name: VM name
+        checkpoint: Checkpoint data
+        state_tracker: StateTracker built from the checkpoint (changed in place)
+        logger: Optional logger
+
+    Returns:
+        Commands for the steps that were skipped, in rollback order.
+    """
+    checker = OwnershipChecker(compute, project, zone, vm_name, logger)
+    context = checkpoint.context or {}
+    rescue_disk = context.get('rescue_disk_name')
+    snapshot = context.get('snapshot_name')
+    for op in state_tracker.operations:
+        if op.operation_name == "Create Snapshot" and op.rollback_data:
+            snapshot = snapshot or op.rollback_data.get('snapshot_name')
+
+    def _disk_from(data):
+        info = data.get('disk_info') or {}
+        return (info.get('source') or '').split('/')[-1] or data.get('disk_name')
+
+    skipped = []
+    kept = []
+    for op in reversed(state_tracker.operations):
+        data = op.rollback_data or {}
+        name = op.operation_name
+        command = None
+        if name == "Create Rescue Disk":
+            disk = data.get('disk_name')
+            if disk and not checker.is_rescue_disk(disk):
+                command = delete_disk_command(disk, zone, project)
+        elif name == "Create Snapshot":
+            snap = data.get('snapshot_name')
+            if (data.get('created_by_operation') and snap
+                    and not checker.is_own_snapshot(snap)):
+                command = delete_snapshot_command(snap, project)
+        elif name in ("Detach Boot Disk", "Detach Original Disk"):
+            disk = _disk_from(data)
+            if disk and not checker.is_original_disk(
+                    disk, rescue_disk=rescue_disk, snapshot=snapshot,
+                    search_snapshots=True):
+                command = attach_disk_command(
+                    vm_name, zone, project, disk,
+                    boot=(name == "Detach Boot Disk"))
+        elif name == "Detach Rescue Disk":
+            disk = _disk_from(data)
+            if disk and not checker.is_rescue_disk(disk):
+                command = attach_disk_command(vm_name, zone, project, disk,
+                                              boot=True)
+        if command:
+            skipped.append(command)
+        else:
+            kept.append(op)
+    state_tracker.operations = list(reversed(kept))
+    return skipped
+
+
+def _print_skipped_rollback(skipped: List[str], vm_name: str) -> None:
+    """List the rollback steps that were skipped, with their commands."""
+    if not skipped:
+        return
+    print(f"{warning_prefix()} Skipped {len(skipped)} rollback step"
+          f"{'s' if len(skipped) != 1 else ''}: gce-rescue could not confirm"
+          f" the disk or snapshot belongs to instance [{vm_name}].",
+          file=sys.stderr)
+    print("  Check it, and if it does, run:", file=sys.stderr)
+    for command in skipped:
+        print(f"  $ {command}", file=sys.stderr)
+
+
 def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
                                         checkpoint: CheckpointData, logger=None) -> bool:
     """
@@ -194,13 +284,20 @@ def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_nam
             step_number=op.step
         )
 
+    skipped = _vet_checkpoint_rollback(compute, project, zone, vm_name,
+                                       checkpoint, state_tracker, logger)
+
     # Check if there's anything to rollback
     rollback_ops = state_tracker.get_rollback_operations()
     if not rollback_ops:
         checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
         checkpoint_mgr.clear_checkpoint()
-        print(f"\nNo changes were made. Checkpoint cleared for instance [{vm_name}].")
-        return True
+        if skipped:
+            _print_skipped_rollback(skipped, vm_name)
+            print(f"Checkpoint cleared for instance [{vm_name}].")
+        else:
+            print(f"\nNo changes were made. Checkpoint cleared for instance [{vm_name}].")
+        return not skipped
 
     # Perform rollback with progress indicator
     print(f"\nRolling back to rescue mode for instance [{vm_name}]:")
@@ -214,7 +311,12 @@ def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_nam
     checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
     checkpoint_mgr.clear_checkpoint()
 
-    if success:
+    _print_skipped_rollback(skipped, vm_name)
+    if success and skipped:
+        print(f"Rollback of instance [{vm_name}] finished except for"
+              f" the skipped steps above.")
+        success = False
+    elif success:
         print(f"Instance [{vm_name}] is back in rescue mode.")
     else:
         print(f"{error_prefix()} Rollback completed with errors."
@@ -427,14 +529,21 @@ def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
             compute, project, zone, vm_name, checkpoint, state_tracker, logger
         )
 
+    skipped = _vet_checkpoint_rollback(compute, project, zone, vm_name,
+                                       checkpoint, state_tracker, logger)
+
     # Check if there's anything to rollback
     rollback_ops = state_tracker.get_rollback_operations()
     if not rollback_ops:
         # Nothing was changed -- just clear the stale checkpoint
         checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
         checkpoint_mgr.clear_checkpoint()
-        print(f"\nNo changes were made. Checkpoint cleared for instance [{vm_name}].")
-        return True
+        if skipped:
+            _print_skipped_rollback(skipped, vm_name)
+            print(f"Checkpoint cleared for instance [{vm_name}].")
+        else:
+            print(f"\nNo changes were made. Checkpoint cleared for instance [{vm_name}].")
+        return not skipped
 
     # Perform rollback with progress indicator
     print(f"\nRolling back instance [{vm_name}]:")
@@ -448,7 +557,12 @@ def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
     checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
     checkpoint_mgr.clear_checkpoint()
 
-    if success:
+    _print_skipped_rollback(skipped, vm_name)
+    if success and skipped:
+        print(f"Rollback of instance [{vm_name}] finished except for"
+              f" the skipped steps above.")
+        success = False
+    elif success:
         print(f"Instance [{vm_name}] has been restored to its original state.")
     else:
         print(f"{error_prefix()} Rollback completed with errors."

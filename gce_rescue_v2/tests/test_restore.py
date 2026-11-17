@@ -133,6 +133,8 @@ def stub_restore(monkeypatch):
         self.rescue_device_name = "disk-rescue"
         self.original_disk_name = "orig-disk"
         self.original_device_name = "sda"
+        # The real method finds the rescue disk attached, which proves it.
+        self._rescue_disk_owned = True
 
     monkeypatch.setattr(RestoreOrchestrator, "_get_disk_info", _fake_get_disk_info)
 
@@ -374,6 +376,8 @@ def test_restore_rollback_clears_checkpoint(stub_restore, monkeypatch):
         self.rescue_device_name = "disk-rescue"
         self.original_disk_name = "orig-disk"
         self.original_device_name = "sda"
+        # The real method finds the rescue disk attached, which proves it.
+        self._rescue_disk_owned = True
 
     monkeypatch.setattr(RestoreOrchestrator, "_get_disk_info", _fake_get_disk_info)
     monkeypatch.setattr(

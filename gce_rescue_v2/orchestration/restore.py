@@ -37,6 +37,10 @@ from ..operations.set_metadata import find_boot_attachment, restore_pre_rescue_i
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
+from .ownership import (
+    RESCUE_DISK_NAME, OwnershipChecker, attach_disk_command,
+    delete_disk_command,
+)
 
 # User-Agent step of each restore operation (the tracking_label passed to its
 # execute()), keyed by its operations_map name. Rollback calls are tagged
@@ -127,6 +131,9 @@ class RestoreOrchestrator:
         # Store disk info
         self.rescue_disk_name = None
         self.rescue_device_name = None
+        # Set once the rescue disk is shown to be gce-rescue's for this VM;
+        # it is only deleted then (see orchestration.ownership).
+        self._rescue_disk_owned = False
         self.original_disk_name = None
         self.original_device_name = None
         # Pre-rescue boot attachment recorded by rescue (#170); None when the
@@ -437,6 +444,9 @@ class RestoreOrchestrator:
             # Get disk info (before progress display) if not resuming
             if not self._resume_from_step or not self.rescue_disk_name:
                 self._get_disk_info()
+            elif not self._verify_resumed_disks():
+                self._finish_progress(False)
+                return False
 
             # Checkpoint from a version that did not carry the boot
             # attachment: read it from rescue metadata while it still exists.
@@ -660,6 +670,13 @@ class RestoreOrchestrator:
                 # Idempotency check: skip if rescue disk doesn't exist
                 if not self._disk_exists(self.rescue_disk_name):
                     self._log_debug("Skipping Step 7 (Delete Rescue Disk) - disk already deleted")
+                elif not self._rescue_disk_owned:
+                    self._log_info(
+                        f"Kept disk [{self.rescue_disk_name}]: gce-rescue could not "
+                        f"confirm it is the rescue disk of [{self.vm_name}]. If it is, "
+                        f"delete it yourself:")
+                    self._log_info("  $ " + delete_disk_command(
+                        self.rescue_disk_name, self.zone, self.project))
                 else:
                     self._log_debug("Deleting rescue disk...")
                     result = delete_rescue.execute(
@@ -750,9 +767,11 @@ class RestoreOrchestrator:
             disk_name = source.split('/')[-1]
             device_name = disk['deviceName']
 
-            if 'rescue-disk' in disk_name:
+            if RESCUE_DISK_NAME.match(disk_name):
                 self.rescue_disk_name = disk_name
                 self.rescue_device_name = device_name
+                # Attached to this VM, so it is this VM's rescue disk.
+                self._rescue_disk_owned = True
                 self._log_debug(f"Rescue disk: {disk_name}")
             elif disk_name == self.original_disk_name:
                 self.original_device_name = device_name
@@ -771,6 +790,59 @@ class RestoreOrchestrator:
             self._log_error("Check attached disks:")
             self._log_error(f"  gcloud compute instances describe {self.vm_name} --zone={self.zone} --format='value(disks)'")
             raise ValueError(f"Original disk '{self.original_disk_name}' not found on VM")
+
+    def _verify_resumed_disks(self) -> bool:
+        """Check the disks named in the checkpoint before resuming.
+
+        Device names come from the VM for disks that are still attached.
+        The original disk must be shown to be this VM's before it is
+        attached as the boot disk; the rescue disk is only deleted if it
+        is shown to be gce-rescue's (otherwise it is kept and the delete
+        command is printed at the end).
+
+        Returns:
+            True to continue. False (nothing changed) if the original disk
+            could not be confirmed.
+        """
+        checker = OwnershipChecker(self.compute, self.project, self.zone,
+                                   self.vm_name, self.logger)
+        try:
+            vm = self.compute.instances().get(
+                project=self.project, zone=self.zone, instance=self.vm_name
+            ).execute()
+        except HttpError as e:
+            self._log_error(f"Could not read instance [{self.vm_name}]: {e}")
+            return False
+        for disk in vm.get('disks', []):
+            name = disk.get('source', '').split('/')[-1]
+            if name and name == self.rescue_disk_name:
+                self.rescue_device_name = disk.get('deviceName')
+            elif name and name == self.original_disk_name:
+                self.original_device_name = disk.get('deviceName')
+
+        self._rescue_disk_owned = checker.is_rescue_disk(self.rescue_disk_name)
+        if not self._rescue_disk_owned:
+            self._log_debug(f"Rescue disk {self.rescue_disk_name} not confirmed")
+
+        if self._should_skip_step(4) or checker.is_original_disk(
+                self.original_disk_name, rescue_disk=self.rescue_disk_name,
+                search_snapshots=True):
+            return True
+
+        flags = f"--zone={self.zone} --project={self.project}"
+        self._log_error(
+            f"Cannot resume: gce-rescue could not confirm that boot disk "
+            f"[{self.original_disk_name}] named in the interrupted run belongs "
+            f"to instance [{self.vm_name}]. Nothing was changed.")
+        self._log_error("Check the instance and its disks:")
+        self._log_error(f"  $ gcloud compute instances describe {self.vm_name} {flags}")
+        self._log_error("If that disk is this instance's boot disk, re-attach it yourself:")
+        self._log_error("  $ " + attach_disk_command(
+            self.vm_name, self.zone, self.project, self.original_disk_name,
+            boot=True))
+        self._log_error("To undo the other completed steps, run the command again "
+                        "and choose Rollback.")
+        return False
 
     def _load_boot_attachment(self) -> None:
         """Read the pre-rescue boot attachment record from VM metadata."""

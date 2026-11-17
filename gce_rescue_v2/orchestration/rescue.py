@@ -46,6 +46,10 @@ from ..operations.set_metadata import (
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
+from .ownership import (
+    RESCUE_DISK_NAME, OwnershipChecker, attach_disk_command,
+    rescue_disk_description, snapshot_description,
+)
 
 # User-Agent step of each rescue operation (the tracking_label passed to its
 # execute()), keyed by its operations_map name. Rollback calls are tagged
@@ -620,9 +624,18 @@ class RescueOrchestrator:
         total_checkpoint_steps = 9  # Stop, Detach, Snapshot, CreateDisk, AttachRescue, SetMeta, Start, AttachOrig, Verify
 
         try:
-            # Get original disk info if not resuming (or if not already set)
-            if not self._resume_from_step or not self.original_disk_name:
+            # Get original disk info from the VM unless it was already
+            # detached in the interrupted run. The checkpoint copy is only
+            # used when the VM can no longer tell us.
+            if (not self._resume_from_step or not self.original_disk_name
+                    or not self._should_skip_step(2)):
                 self._get_original_disk_info()
+
+            # Names from a checkpoint must be shown to belong to this VM
+            # before anything is attached (see orchestration.ownership).
+            if self._resume_from_step and not self._verify_resumed_disks():
+                self._finish_progress(False)
+                return False
 
             # Generate rescue disk name if not resuming
             if not self._resume_from_step or not self.rescue_disk_name:
@@ -715,7 +728,8 @@ class RescueOrchestrator:
                 result = create_snapshot.execute(
                     disk_name=self.original_disk_name,
                     snapshot_name=None,
-                    description=f"Pre-rescue safety snapshot of {self.vm_name}",
+                    description=snapshot_description(self.vm_name,
+                                                     self._instance_id()),
                     timeout=self.config.snapshot_timeout,
                     wait=not self.config.async_snapshot,
                     tracking_label=self._ua('disk-snapshot')
@@ -815,7 +829,9 @@ class RescueOrchestrator:
                         disk_type=self.config.rescue_disk_type,
                         source_image=source_image,
                         timeout=self.config.disk_create_timeout,
-                        tracking_label=self._ua('disk-create-rescue')
+                        tracking_label=self._ua('disk-create-rescue'),
+                        description=rescue_disk_description(
+                            self._instance_id(), self.original_disk_name)
                     )
                     self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data, step_number=4)
                     if not result.success:
@@ -1108,6 +1124,64 @@ class RescueOrchestrator:
             self._log_error(f"Unexpected error during rescue: {str(e)}")
             self._rollback()
             return False
+
+    def _verify_resumed_disks(self) -> bool:
+        """Check the disks named in the checkpoint before resuming.
+
+        Returns:
+            True if every disk the remaining steps would attach belongs to
+            this VM. Otherwise explains what was found and returns False;
+            nothing has been changed at that point.
+        """
+        checker = OwnershipChecker(self.compute, self.project, self.zone,
+                                   self.vm_name, self.logger)
+        context = self._resumed_context or {}
+        flags = f"--zone={self.zone} --project={self.project}"
+        problems = []
+        commands = []
+
+        name = self.rescue_disk_name
+        if name and (not RESCUE_DISK_NAME.match(name)
+                     or (self._disk_exists(name)
+                         and not checker.is_rescue_disk(name))):
+            problems.append(f"rescue disk [{name}]")
+
+        if self._should_skip_step(2) and not checker.is_original_disk(
+                self.original_disk_name, rescue_disk=self.rescue_disk_name,
+                snapshot=context.get('snapshot_name'), search_snapshots=True):
+            problems.append(f"boot disk [{self.original_disk_name}]")
+            commands.append(attach_disk_command(
+                self.vm_name, self.zone, self.project,
+                self.original_disk_name, boot=True))
+
+        if not problems:
+            return True
+        self._log_error(
+            f"Cannot resume: gce-rescue could not confirm that the "
+            f"{' and the '.join(problems)} named in the interrupted run "
+            f"belong to instance [{self.vm_name}]. Nothing was changed.")
+        self._log_error("Check the instance and its disks:")
+        self._log_error(f"  $ gcloud compute instances describe {self.vm_name} {flags}")
+        for command in commands:
+            self._log_error("If that disk is this instance's boot disk, re-attach it yourself:")
+            self._log_error(f"  $ {command}")
+        self._log_error("To undo the other completed steps, run the command again "
+                        "and choose Rollback.")
+        return False
+
+    def _instance_id(self) -> Optional[str]:
+        """Instance ID of the VM, for the ownership marker on new resources."""
+        vm_info = getattr(self, 'vm_info', None) or {}
+        if not vm_info.get('id'):
+            try:
+                vm_info = self.compute.instances().get(
+                    project=self.project, zone=self.zone,
+                    instance=self.vm_name).execute()
+            except Exception as e:  # pylint: disable=broad-except
+                self._log_debug(f"Could not read instance ID: {e}")
+                return None
+        value = vm_info.get('id') if isinstance(vm_info, dict) else None
+        return str(value) if value else None
 
     def _get_original_disk_info(self):
         """Get original boot disk information and detect OS type."""
