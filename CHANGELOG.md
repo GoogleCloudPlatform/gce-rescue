@@ -5,6 +5,19 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2026-11-24
+
+### Security
+- `rescue` / `restore` / `repair`: the saved progress record used to resume or roll back an interrupted run is now checked before use. A record that is malformed, belongs to another VM, zone or project, or contains unexpected fields is ignored with a warning, and its text is never printed unescaped. The log file of a resumed run is always a new file in the current directory
+- `rescue` / `restore`: before resuming or rolling back, gce-rescue now confirms that each disk it would delete, attach or detach belongs to the rescue of this VM. Rescue disks and pre-rescue snapshots record the VM's instance ID, original boot disk and its auto-delete setting in their description for this. When the boot disk cannot be confirmed (for example after `--no-snapshot`), you are shown the disk's details and must type its name before it is used. If the boot disk cannot be put back, a rollback detaches and deletes nothing, so the VM keeps the disk it boots from. Steps that cannot be confirmed are skipped and the command to check the disk is printed. A rollback no longer deletes the safety snapshot; the delete command is printed instead. `restore` only treats a disk named `rescue-disk-<number>` as the rescue disk, and turns auto-delete back on only when the rescue disk recorded it
+- Windows `rescue`: gce-rescue no longer creates the `rescue_admin` account or a password for it. After rescue, get a password with `gcloud compute reset-windows-password VM --user=rescue_admin` (printed in the rescue output). `restore` puts the VM's `windows-keys` metadata back to its state before rescue, so the account is not created on the restored OS
+- `diagnose` / `repair`: control characters from the serial console are escaped in the report and in the debug log instead of being passed to the terminal
+
+### Upgrade notes
+- Disks and snapshots created by 2.7.0 or older carry no ownership record. Resuming or rolling back a run started by an older version may ask you to confirm the boot disk, keep the rescue disk for you to delete, and leave auto-delete off on the boot disk (the command to turn it back on is printed)
+- A resumed `restore` that was interrupted after detaching the rescue disk keeps that disk; the command to check it is printed
+- If you used Windows rescue with 2.7.0 or older, restore the VM with 2.7.1 and delete local `gce-rescue` log files from that rescue
+
 ## [2.7.0] - 2026-11-14
 
 ### Added
