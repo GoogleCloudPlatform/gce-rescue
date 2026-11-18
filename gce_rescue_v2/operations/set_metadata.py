@@ -6,6 +6,7 @@ by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
 import json
+import re
 import logging
 import time
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -59,6 +60,9 @@ RESCUE_BACKUP_RECORD_KEYS = {
 }
 
 _DISK_MODES = ('READ_WRITE', 'READ_ONLY')
+# Device names Compute Engine accepts; the record is in metadata, so
+# anything else is dropped.
+_DEVICE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
 
 # Marker written with the rescue startup script; present while a VM is in
 # rescue mode (or a rescue of it was interrupted after the metadata step).
@@ -138,13 +142,14 @@ def decode_boot_attachment(value: Optional[str]) -> Optional[Dict[str, Any]]:
         return None
 
     attachment: Dict[str, Any] = {}
-    if isinstance(raw.get('deviceName'), str) and raw['deviceName']:
+    if (isinstance(raw.get('deviceName'), str)
+            and _DEVICE_NAME.match(raw['deviceName'])):
         attachment['deviceName'] = raw['deviceName']
     if isinstance(raw.get('autoDelete'), bool):
         attachment['autoDelete'] = raw['autoDelete']
     if raw.get('mode') in _DISK_MODES:
         attachment['mode'] = raw['mode']
-    if isinstance(raw.get('interface'), str) and raw['interface']:
+    if raw.get('interface') in ('SCSI', 'NVME'):
         attachment['interface'] = raw['interface']
     return attachment or None
 

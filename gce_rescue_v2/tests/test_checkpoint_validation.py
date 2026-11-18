@@ -218,6 +218,7 @@ class TestValidateCheckpoint:
         lambda d: d['completed_operations'][0].update(step=12),
         # Resource names.
         lambda d: d['context'].update(rescue_disk_name='Prod Database'),
+        lambda d: d['context'].update(rescue_disk_name='rescue-disk-1\n'),
         lambda d: d['context'].update(original_disk_name='disk/../other'),
         lambda d: d['context'].update(zone=f'us{ESC}'),
         lambda d: d['completed_operations'][3]['rollback_data'].update(

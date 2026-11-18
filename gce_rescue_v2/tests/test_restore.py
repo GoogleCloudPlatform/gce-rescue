@@ -731,10 +731,21 @@ def test_restore_get_disk_info_reads_boot_attachment():
     assert orch._get_checkpoint_context()["original_boot_attachment"] == orch.original_boot_attachment
 
 
+def _rescue_disk_marked(monkeypatch, auto_delete):
+    """Make the rescue disk carry gce-rescue's ownership marker."""
+    from gce_rescue_v2.orchestration import ownership
+
+    match = ownership._MARKER.search(ownership.rescue_disk_description(
+        "1", "my-orig-disk", auto_delete))
+    monkeypatch.setattr(ownership.OwnershipChecker, "rescue_disk_marker",
+                        lambda self, name: match)
+
+
 def test_restore_reattaches_boot_with_original_settings(stub_restore, monkeypatch):
     """The boot re-attach uses the pre-rescue values, not the secondary attachment."""
     # Use the real disk-info lookup so the record is read from VM metadata.
     monkeypatch.setattr(RestoreOrchestrator, "_get_disk_info", _REAL_GET_DISK_INFO)
+    _rescue_disk_marked(monkeypatch, True)
     calls = _capture_attach(monkeypatch)
 
     orch = RestoreOrchestrator(
@@ -749,8 +760,27 @@ def test_restore_reattaches_boot_with_original_settings(stub_restore, monkeypatc
     assert calls[0]["disk_name"] == "my-orig-disk"
     assert calls[0]["device_name"] == "persistent-disk-0"
     assert calls[0]["auto_delete"] is True
-    assert calls[0]["read_only"] is False
+    # A boot disk is always attached read-write.
+    assert "read_only" not in calls[0]
     assert calls[0]["interface"] == "NVME"
+
+
+def test_restore_auto_delete_needs_the_rescue_disk_record(stub_restore, monkeypatch):
+    """autoDelete in metadata alone (writable by others) is not applied."""
+    monkeypatch.setattr(RestoreOrchestrator, "_get_disk_info", _REAL_GET_DISK_INFO)
+    calls = _capture_attach(monkeypatch)
+    from gce_rescue_v2.orchestration import ownership
+    monkeypatch.setattr(ownership.OwnershipChecker, "rescue_disk_marker",
+                        lambda self, name: None)
+
+    orch = RestoreOrchestrator(
+        compute=FakeCompute([_rescued_vm(), {"disks": []}]), project="p", zone="z",
+        vm_name="vm", config=RestoreConfig(delete_rescue_disk=False), logger=None,
+        suppress_progress=True,
+    )
+    assert orch.execute() is True
+    assert "auto_delete" not in calls[0]
+    assert calls[0]["device_name"] == "persistent-disk-0"
 
 
 def test_restore_without_record_uses_default_attach(stub_restore, monkeypatch):
@@ -765,8 +795,9 @@ def test_restore_without_record_uses_default_attach(stub_restore, monkeypatch):
         assert key not in calls[0]
 
 
-def test_restore_boot_attach_kwargs_from_resumed_checkpoint(stub_restore):
+def test_restore_boot_attach_kwargs_from_resumed_checkpoint(stub_restore, monkeypatch):
     """A resumed restore takes the attachment from the checkpoint context."""
+    _rescue_disk_marked(monkeypatch, True)
     from gce_rescue_v2.orchestration.checkpoint import CheckpointData
 
     checkpoint = CheckpointData(

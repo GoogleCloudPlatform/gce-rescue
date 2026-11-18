@@ -199,6 +199,10 @@ class RescueOrchestrator:
         # Resume state (set when resuming from checkpoint)
         self._resume_from_step = 0  # 0 = fresh start, >0 = resume from this step
         self._resumed_context = None  # Context from checkpoint
+        # Asks the operator about a disk named in the checkpoint that
+        # cannot be shown to be this VM's (set by the CLI when resuming
+        # interactively). None: such a resume stops instead.
+        self.confirm_disk = None
 
     def _init_progress(self):
         """Initialize spinner with phases display."""
@@ -617,9 +621,6 @@ class RescueOrchestrator:
         self._log_debug(f"Rescuing instance '{self.vm_name}'...")
         self._log_debug(f"Config: {self.config}")
 
-        # Initialize progress display
-        self._init_progress()
-
         # Total internal steps for checkpoint tracking
         total_checkpoint_steps = 9  # Stop, Detach, Snapshot, CreateDisk, AttachRescue, SetMeta, Start, AttachOrig, Verify
 
@@ -633,9 +634,12 @@ class RescueOrchestrator:
 
             # Names from a checkpoint must be shown to belong to this VM
             # before anything is attached (see orchestration.ownership).
+            # Before the progress display starts: this may ask the operator.
             if self._resume_from_step and not self._verify_resumed_disks():
-                self._finish_progress(False)
                 return False
+
+            # Initialize progress display
+            self._init_progress()
 
             # Generate rescue disk name if not resuming
             if not self._resume_from_step or not self.rescue_disk_name:
@@ -728,8 +732,9 @@ class RescueOrchestrator:
                 result = create_snapshot.execute(
                     disk_name=self.original_disk_name,
                     snapshot_name=None,
-                    description=snapshot_description(self.vm_name,
-                                                     self._instance_id()),
+                    description=snapshot_description(
+                        self.vm_name, self._instance_id(),
+                        self._original_auto_delete()),
                     timeout=self.config.snapshot_timeout,
                     wait=not self.config.async_snapshot,
                     tracking_label=self._ua('disk-snapshot')
@@ -831,7 +836,8 @@ class RescueOrchestrator:
                         timeout=self.config.disk_create_timeout,
                         tracking_label=self._ua('disk-create-rescue'),
                         description=rescue_disk_description(
-                            self._instance_id(), self.original_disk_name)
+                            self._instance_id(), self.original_disk_name,
+                            self._original_auto_delete())
                     )
                     self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data, step_number=4)
                     if not result.success:
@@ -1142,9 +1148,14 @@ class RescueOrchestrator:
                          and not checker.is_rescue_disk(name))):
             problems.append(f"rescue disk [{name}]")
 
-        if self._should_skip_step(2) and not checker.is_original_disk(
-                self.original_disk_name, rescue_disk=self.rescue_disk_name,
-                snapshot=context.get('snapshot_name'), search_snapshots=True):
+        if (self._should_skip_step(2)
+                and not checker.is_original_disk(
+                    self.original_disk_name, rescue_disk=self.rescue_disk_name,
+                    snapshot=context.get('snapshot_name'),
+                    search_snapshots=True)
+                and not checker.confirm_original_disk(
+                    self.original_disk_name, self.confirm_disk,
+                    "Continue the rescue with it")):
             problems.append(f"boot disk [{self.original_disk_name}]")
             commands.append(attach_disk_command(
                 self.vm_name, self.zone, self.project,
@@ -1164,6 +1175,18 @@ class RescueOrchestrator:
         self._log_error("To undo the other completed steps, run the command again "
                         "and choose Rollback.")
         return False
+
+    def _original_auto_delete(self) -> Optional[bool]:
+        """Auto-delete of the boot disk before rescue, if read in this run.
+
+        Recorded in the ownership marker so that restore never has to take
+        it from metadata. Unknown (None) when the boot disk was already
+        detached before this run, since the checkpoint copy is metadata.
+        """
+        if self._resume_from_step and self._should_skip_step(2):
+            return None
+        value = (self.original_boot_attachment or {}).get('autoDelete')
+        return value if isinstance(value, bool) else None
 
     def _instance_id(self) -> Optional[str]:
         """Instance ID of the VM, for the ownership marker on new resources."""

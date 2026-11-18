@@ -161,6 +161,8 @@ def handle_restore(args: argparse.Namespace) -> int:
         # Set resume state if resuming from checkpoint
         if checkpoint:
             orchestrator.set_resume_state(checkpoint)
+            # Resume is interactive: ask about disks that cannot be confirmed.
+            orchestrator.confirm_disk = checkpoint_ui._confirm_disk
             logger.debug(f"Resuming from step {checkpoint.current_step + 1}")
 
         # Validate (skip if resuming)

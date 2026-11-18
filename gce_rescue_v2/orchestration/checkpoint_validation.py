@@ -41,18 +41,19 @@ MAX_STEPS = 20
 MAX_TEXT_LEN = 256
 
 # Compute Engine resource names (instances, disks, snapshots).
-_RESOURCE_NAME = re.compile(r'^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$')
-_ZONE = re.compile(r'^[a-z][-a-z0-9]{1,62}$')
+_RESOURCE_NAME = re.compile(r'^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?\Z')
+_ZONE = re.compile(r'^[a-z][-a-z0-9]{1,62}\Z')
 # Device names are chosen by the user or by Compute Engine; allow the
 # characters Compute Engine accepts, nothing that could reach a terminal.
-_DEVICE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$')
-_SESSION_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
-_SHORT_WORD = re.compile(r'^[A-Za-z0-9_]{1,32}$')
-_METADATA_KEY = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
+_DEVICE_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
+_SESSION_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}\Z')
+_SHORT_WORD = re.compile(r'^[A-Za-z0-9_]{1,32}\Z')
+_METADATA_KEY = re.compile(r'^[A-Za-z0-9_-]{1,128}\Z')
 _DISK_SOURCE = re.compile(
     r'^(?:https://(?:www|compute)\.googleapis\.com/compute/[a-z0-9]+/)?'
-    r'projects/(?P<project>[^/]+)/(?P<scope>zones|regions)/(?P<location>[^/]+)'
-    r'/disks/(?P<name>[^/]+)$')
+    r'projects/(?P<project>[a-z0-9.:-]+)/(?P<scope>zones|regions)'
+    r'/(?P<location>[a-z0-9-]+)'
+    r'/disks/(?P<name>[^/]+)\Z')
 
 _DISK_MODES = ('READ_WRITE', 'READ_ONLY')
 _DISK_INTERFACES = ('SCSI', 'NVME')

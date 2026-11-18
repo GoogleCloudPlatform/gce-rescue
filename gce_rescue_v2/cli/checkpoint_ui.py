@@ -4,8 +4,9 @@ import sys
 from typing import List, Optional, TextIO
 from ..orchestration.checkpoint import CheckpointManager, CheckpointData
 from ..orchestration.ownership import (
-    OwnershipChecker, attach_disk_command, delete_disk_command,
-    delete_snapshot_command,
+    ConfirmDisk, OriginalDiskProof, OwnershipChecker, attach_disk_command,
+    auto_delete_command, delete_snapshot_command, describe_disk_command,
+    detach_disk_command, zonal_disk_name, zonal_disk_source,
 )
 from ..utils.colors import error_prefix, warning_prefix, clear_lines
 from ..utils.safe_text import safe_text
@@ -154,18 +155,48 @@ def _print_quiet_checkpoint_block(checkpoint: CheckpointData, command: str,
     print(f"  $ gce-rescue {checkpoint.operation} {vm_name} {flags}", file=file)
 
 
+def _confirm_disk(question: str, details: List[str]) -> bool:
+    """Ask the operator about a disk gce-rescue could not confirm (y/N)."""
+    print(f"\n{warning_prefix()} {question}", file=sys.stderr)
+    for line in details:
+        print(f"  {line}", file=sys.stderr)
+    try:
+        answer = input("Is this the right disk? (y/N): ").strip().lower()
+    except EOFError:
+        answer = ''
+    return answer in ('y', 'yes')
+
+
 def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
                              checkpoint: CheckpointData, state_tracker,
-                             logger=None) -> List[str]:
+                             logger=None,
+                             confirm: Optional[ConfirmDisk] = None,
+                             notes: Optional[List[str]] = None) -> List[str]:
     """
     Drop rollback steps that would touch a resource not shown to be this VM's.
 
     Rollback replays steps recorded in the checkpoint, which is VM metadata
-    that people other than the operator can write. Steps that delete a disk
-    or snapshot, or attach a disk to the VM, only run when the resource is
-    shown to belong to the rescue of this VM (see orchestration.ownership).
-    The others are removed from `state_tracker`, and the command to do the
-    step by hand is returned so the user can run it after checking.
+    that people other than the operator can write. Every step that deletes,
+    attaches or detaches a disk is checked against what Compute Engine
+    reports (see orchestration.ownership), and the attach settings are
+    rebuilt from trusted values:
+
+    - A rescue disk is deleted only if gce-rescue made it for this VM.
+    - Safety snapshots are never deleted by a rollback; the delete
+      command is listed in `notes`.
+    - A disk is detached only if it is this VM's rescue disk, or its
+      original boot disk.
+    - A disk is re-attached only if it is this VM's rescue disk, or shown
+      to be its original boot disk. When that cannot be shown (a rescue
+      with --no-snapshot, or one made by an older version), `confirm`
+      asks the operator.
+    - Re-attached disks are zonal disks of this project and zone, in
+      read-write mode; auto-delete is turned on only when the ownership
+      marker recorded it.
+
+    Steps that fail these checks are removed from `state_tracker`, and the
+    command to do the step by hand is returned so the user can run it
+    after checking.
 
     Args:
         compute: GCP compute client
@@ -175,50 +206,129 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
         checkpoint: Checkpoint data
         state_tracker: StateTracker built from the checkpoint (changed in place)
         logger: Optional logger
+        confirm: Asks the operator about a disk that could not be
+            confirmed. None skips such steps.
+        notes: If given, other commands for the user are appended (kept
+            snapshots, auto-delete to turn back on).
 
     Returns:
         Commands for the steps that were skipped, in rollback order.
     """
     checker = OwnershipChecker(compute, project, zone, vm_name, logger)
+    notes = notes if notes is not None else []
     context = checkpoint.context or {}
     rescue_disk = context.get('rescue_disk_name')
     snapshot = context.get('snapshot_name')
     for op in state_tracker.operations:
         if op.operation_name == "Create Snapshot" and op.rollback_data:
             snapshot = snapshot or op.rollback_data.get('snapshot_name')
+    confirmed = set()
 
-    def _disk_from(data):
-        info = data.get('disk_info') or {}
-        return (info.get('source') or '').split('/')[-1] or data.get('disk_name')
+    def _original(disk: str, action: str):
+        """Proof (or operator confirmation) that `disk` is the original."""
+        proof = checker.original_disk_proof(
+            disk, rescue_disk=rescue_disk, snapshot=snapshot,
+            search_snapshots=True, allow_attached=False)
+        if proof:
+            return proof
+        if disk in confirmed or checker.confirm_original_disk(
+                disk, confirm, action):
+            confirmed.add(disk)
+            return OriginalDiskProof()
+        return None
 
     skipped = []
     kept = []
     for op in reversed(state_tracker.operations):
-        data = op.rollback_data or {}
+        data = dict(op.rollback_data or {})
         name = op.operation_name
         command = None
         if name == "Create Rescue Disk":
             disk = data.get('disk_name')
             if disk and not checker.is_rescue_disk(disk):
-                command = delete_disk_command(disk, zone, project)
+                notes.append(
+                    f"Disk [{disk}] named in the checkpoint was not deleted:"
+                    f" gce-rescue could not confirm it made it for instance"
+                    f" [{vm_name}]. If it is a leftover rescue disk, check it"
+                    f" and delete it yourself:")
+                notes.append("  $ " + describe_disk_command(disk, zone, project))
+                continue
         elif name == "Create Snapshot":
             snap = data.get('snapshot_name')
-            if (data.get('created_by_operation') and snap
-                    and not checker.is_own_snapshot(snap)):
-                command = delete_snapshot_command(snap, project)
-        elif name in ("Detach Boot Disk", "Detach Original Disk"):
-            disk = _disk_from(data)
-            if disk and not checker.is_original_disk(
-                    disk, rescue_disk=rescue_disk, snapshot=snapshot,
-                    search_snapshots=True):
+            if data.get('created_by_operation') and snap:
+                if checker.is_own_snapshot(snap):
+                    notes.append(
+                        f"Safety snapshot [{snap}] was kept. Delete it when"
+                        f" you no longer need it:")
+                    notes.append(f"  $ {delete_snapshot_command(snap, project)}")
+                else:
+                    notes.append(
+                        f"Snapshot [{snap}] named in the checkpoint was not"
+                        f" taken by gce-rescue for instance [{vm_name}]; it"
+                        f" was left as it is.")
+            continue
+        elif name in ("Attach Rescue Disk", "Attach Original Disk"):
+            device = data.get('device_name')
+            disk = checker.device_disk(device)
+            if not disk:
+                # Nothing attached under that name: nothing to undo.
+                continue
+            if name == "Attach Rescue Disk":
+                ok = checker.is_rescue_disk(disk)
+            else:
+                ok = _original(disk, f"Detach it from [{vm_name}]") is not None
+            if not ok:
+                command = detach_disk_command(vm_name, zone, project, device)
+        elif name in ("Detach Boot Disk", "Detach Original Disk",
+                      "Detach Rescue Disk"):
+            info = data.get('disk_info')
+            if not isinstance(info, dict):
+                kept.append(op)
+                continue
+            disk = zonal_disk_name(info.get('source'), project, zone)
+            boot = name != "Detach Original Disk"
+            auto_delete = False
+            ok = False
+            if not disk:
+                ok = False
+            elif disk in checker.attached_disks() and not any(
+                    k.operation_name in ("Attach Rescue Disk",
+                                         "Attach Original Disk")
+                    and checker.device_disk(
+                        (k.rollback_data or {}).get('device_name')) == disk
+                    for k in kept):
+                # Already attached and nothing in this rollback detaches
+                # it first: re-attaching would fail, so leave it.
+                continue
+            elif name == "Detach Rescue Disk":
+                ok = checker.is_rescue_disk(disk)
+            else:
+                proof = _original(disk, f"Attach it to [{vm_name}]"
+                                  f"{' as the boot disk' if boot else ''}")
+                ok = proof is not None
+                if proof and proof.auto_delete:
+                    auto_delete = True
+                elif ok and boot and info.get('autoDelete') is True:
+                    notes.append(
+                        f"Auto-delete was not turned back on for disk"
+                        f" [{disk}]. If it was on before the rescue, run:")
+                    notes.append("  $ " + auto_delete_command(
+                        vm_name, zone, project, disk))
+            if ok:
+                clean = {
+                    'source': zonal_disk_source(project, zone, disk),
+                    'boot': boot,
+                    'autoDelete': auto_delete,
+                    'deviceName': info.get('deviceName') or disk,
+                    'mode': 'READ_WRITE',
+                }
+                if info.get('interface') in ('SCSI', 'NVME'):
+                    clean['interface'] = info['interface']
+                data['disk_info'] = clean
+                op.rollback_data = data
+            else:
                 command = attach_disk_command(
-                    vm_name, zone, project, disk,
-                    boot=(name == "Detach Boot Disk"))
-        elif name == "Detach Rescue Disk":
-            disk = _disk_from(data)
-            if disk and not checker.is_rescue_disk(disk):
-                command = attach_disk_command(vm_name, zone, project, disk,
-                                              boot=True)
+                    vm_name, zone, project, disk or '<disk>', boot=boot)
         if command:
             skipped.append(command)
         else:
@@ -227,17 +337,19 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
     return skipped
 
 
-def _print_skipped_rollback(skipped: List[str], vm_name: str) -> None:
+def _print_skipped_rollback(skipped: List[str], vm_name: str,
+                            notes: Optional[List[str]] = None) -> None:
     """List the rollback steps that were skipped, with their commands."""
-    if not skipped:
-        return
-    print(f"{warning_prefix()} Skipped {len(skipped)} rollback step"
-          f"{'s' if len(skipped) != 1 else ''}: gce-rescue could not confirm"
-          f" the disk or snapshot belongs to instance [{vm_name}].",
-          file=sys.stderr)
-    print("  Check it, and if it does, run:", file=sys.stderr)
-    for command in skipped:
-        print(f"  $ {command}", file=sys.stderr)
+    if skipped:
+        print(f"{warning_prefix()} Skipped {len(skipped)} rollback step"
+              f"{'s' if len(skipped) != 1 else ''}: gce-rescue could not"
+              f" confirm the disk belongs to instance [{vm_name}].",
+              file=sys.stderr)
+        print("  Check it, and if it does, run:", file=sys.stderr)
+        for command in skipped:
+            print(f"  $ {command}", file=sys.stderr)
+    for line in notes or []:
+        print(line, file=sys.stderr)
 
 
 def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
@@ -284,16 +396,18 @@ def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_nam
             step_number=op.step
         )
 
+    notes: List[str] = []
     skipped = _vet_checkpoint_rollback(compute, project, zone, vm_name,
-                                       checkpoint, state_tracker, logger)
+                                       checkpoint, state_tracker, logger,
+                                       confirm=_confirm_disk, notes=notes)
 
     # Check if there's anything to rollback
     rollback_ops = state_tracker.get_rollback_operations()
     if not rollback_ops:
         checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
         checkpoint_mgr.clear_checkpoint()
-        if skipped:
-            _print_skipped_rollback(skipped, vm_name)
+        if skipped or notes:
+            _print_skipped_rollback(skipped, vm_name, notes)
             print(f"Checkpoint cleared for instance [{vm_name}].")
         else:
             print(f"\nNo changes were made. Checkpoint cleared for instance [{vm_name}].")
@@ -311,7 +425,7 @@ def _handle_restore_checkpoint_rollback(compute, project: str, zone: str, vm_nam
     checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
     checkpoint_mgr.clear_checkpoint()
 
-    _print_skipped_rollback(skipped, vm_name)
+    _print_skipped_rollback(skipped, vm_name, notes)
     if success and skipped:
         print(f"Rollback of instance [{vm_name}] finished except for"
               f" the skipped steps above.")
@@ -529,8 +643,10 @@ def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
             compute, project, zone, vm_name, checkpoint, state_tracker, logger
         )
 
+    notes: List[str] = []
     skipped = _vet_checkpoint_rollback(compute, project, zone, vm_name,
-                                       checkpoint, state_tracker, logger)
+                                       checkpoint, state_tracker, logger,
+                                       confirm=_confirm_disk, notes=notes)
 
     # Check if there's anything to rollback
     rollback_ops = state_tracker.get_rollback_operations()
@@ -538,8 +654,8 @@ def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
         # Nothing was changed -- just clear the stale checkpoint
         checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
         checkpoint_mgr.clear_checkpoint()
-        if skipped:
-            _print_skipped_rollback(skipped, vm_name)
+        if skipped or notes:
+            _print_skipped_rollback(skipped, vm_name, notes)
             print(f"Checkpoint cleared for instance [{vm_name}].")
         else:
             print(f"\nNo changes were made. Checkpoint cleared for instance [{vm_name}].")
@@ -557,7 +673,7 @@ def _handle_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
     checkpoint_mgr = CheckpointManager(compute, project, zone, vm_name, logger)
     checkpoint_mgr.clear_checkpoint()
 
-    _print_skipped_rollback(skipped, vm_name)
+    _print_skipped_rollback(skipped, vm_name, notes)
     if success and skipped:
         print(f"Rollback of instance [{vm_name}] finished except for"
               f" the skipped steps above.")
