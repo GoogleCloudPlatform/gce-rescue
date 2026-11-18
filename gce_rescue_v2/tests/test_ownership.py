@@ -18,6 +18,7 @@ from gce_rescue_v2.orchestration.checkpoint import (
     CheckpointManager,
 )
 from gce_rescue_v2.orchestration.ownership import (
+    OriginalDiskProof,
     OwnershipChecker,
     rescue_disk_description,
     snapshot_description,
@@ -43,8 +44,12 @@ def _disk_url(name):
 
 def _compute(attached=(), disks=None, snapshots=None, instance_id=INSTANCE_ID):
     """A compute mock: an instance, plus disks and snapshots by name."""
-    disks = disks or {}
+    disks = dict(disks or {})
     snapshots = snapshots or {}
+    for snap in snapshots.values():
+        source = snap.get('sourceDisk', '')
+        if snap.get('sourceDiskId') and '/zones/' in source:
+            disks.setdefault(source.split('/')[-1], {'id': snap['sourceDiskId']})
     compute = Mock()
     compute.instances.return_value.get.return_value.execute.return_value = {
         'id': instance_id,
@@ -75,7 +80,8 @@ def _checker(**kwargs):
 
 def _own_snapshot(source_disk, instance_id=INSTANCE_ID):
     return {'description': snapshot_description(VM, instance_id),
-            'sourceDisk': _disk_url(source_disk)}
+            'sourceDisk': _disk_url(source_disk),
+            'sourceDiskId': f'id-{source_disk}'}
 
 
 class TestOwnershipChecker:
@@ -124,7 +130,14 @@ class TestOwnershipChecker:
         assert not checker.is_own_snapshot('missing')
 
     def test_original_disk_attached(self):
-        assert _checker(attached=['orig']).is_original_disk('orig')
+        checker = _checker(attached=['orig'])
+        assert checker.is_original_disk('orig', allow_attached=True)
+        assert not checker.is_original_disk('orig')
+
+    def test_snapshot_of_an_older_disk_with_the_same_name_is_no_proof(self):
+        snapshots = {'pre-rescue-orig-1': _own_snapshot('orig')}
+        checker = _checker(snapshots=snapshots, disks={'orig': {'id': 'id-new'}})
+        assert not checker.is_original_disk('orig', search_snapshots=True)
 
     def test_original_disk_from_own_snapshot(self):
         snapshots = {'pre-rescue-orig-1': _own_snapshot('orig')}
@@ -147,14 +160,37 @@ class TestOwnershipChecker:
         assert checker.is_original_disk('orig', rescue_disk='rescue-disk-1')
         assert not checker.is_original_disk('victim-disk', rescue_disk='rescue-disk-1')
 
-    def test_rescue_disk_record_counts_after_detach(self):
-        # Restore detaches the rescue disk before re-attaching the original;
-        # the record on the (detached) rescue disk still proves it.
+    def test_rescue_disk_record_only_counts_while_attached(self):
+        # Anyone who can create disks can write the marker; only a rescue
+        # disk attached to this VM vouches for the original.
+        disks = {'rescue-disk-1': {
+            'description': rescue_disk_description(INSTANCE_ID, 'victim-disk', True)}}
+        checker = _checker(disks=disks)
+        assert not checker.is_original_disk('victim-disk', rescue_disk='rescue-disk-1')
+
+    def test_a_record_naming_another_original_is_refused(self):
         disks = {'rescue-disk-1': {
             'description': rescue_disk_description(INSTANCE_ID, 'orig')}}
-        checker = _checker(disks=disks)
-        assert checker.is_original_disk('orig', rescue_disk='rescue-disk-1')
-        assert not checker.is_original_disk('victim-disk', rescue_disk='rescue-disk-1')
+        snapshots = {'pre-rescue-data-1': _own_snapshot('data')}
+        checker = _checker(disks=disks, snapshots=snapshots)
+        assert not checker.is_original_disk('data', rescue_disk='rescue-disk-1',
+                                            search_snapshots=True)
+        confirm = Mock(return_value=True)
+        assert not checker.confirm_original_disk('data', confirm, 'x',
+                                                 rescue_disk='rescue-disk-1')
+        confirm.assert_not_called()
+
+    def test_disposable_rescue_disk(self):
+        marked = rescue_disk_description(INSTANCE_ID, 'orig')
+        disks = {
+            'rescue-disk-1': {'description': marked},
+            'rescue-disk-2': {'description': marked,
+                              'lastAttachTimestamp': '2026-11-01T00:00:00Z'},
+        }
+        checker = _checker(attached=['rescue-disk-3'], disks=disks)
+        assert checker.is_disposable_rescue_disk('rescue-disk-1')
+        assert not checker.is_disposable_rescue_disk('rescue-disk-2')
+        assert checker.is_disposable_rescue_disk('rescue-disk-3')
 
     def test_rescue_disk_record_for_another_instance_is_no_proof(self):
         disks = {'rescue-disk-1': {
@@ -164,22 +200,23 @@ class TestOwnershipChecker:
 
     def test_attached_is_no_proof_when_not_allowed(self):
         checker = _checker(attached=['data-disk'])
-        assert checker.is_original_disk('data-disk')
-        assert not checker.is_original_disk('data-disk', allow_attached=False)
+        assert checker.is_original_disk('data-disk', allow_attached=True)
+        assert not checker.is_original_disk('data-disk')
 
     def test_auto_delete_comes_from_the_marker(self):
         disks = {'rescue-disk-1': {
             'description': rescue_disk_description(INSTANCE_ID, 'orig', True)}}
-        proof = _checker(disks=disks).original_disk_proof(
-            'orig', rescue_disk='rescue-disk-1', allow_attached=False)
+        proof = _checker(attached=['rescue-disk-1'], disks=disks).original_disk_proof(
+            'orig', rescue_disk='rescue-disk-1')
         assert proof is not None and proof.auto_delete is True
         snapshots = {'pre-rescue-orig-1': {
             'description': snapshot_description(VM, INSTANCE_ID, False),
-            'sourceDisk': _disk_url('orig')}}
+            'sourceDisk': _disk_url('orig'), 'sourceDiskId': 'id-orig'}}
         proof = _checker(snapshots=snapshots).original_disk_proof(
             'orig', search_snapshots=True, allow_attached=False)
         assert proof is not None and proof.auto_delete is False
-        proof = _checker(attached=['orig']).original_disk_proof('orig')
+        proof = _checker(attached=['orig']).original_disk_proof(
+            'orig', allow_attached=True)
         assert proof is not None and proof.auto_delete is None
 
     def test_regional_disk_does_not_pass_for_zonal(self):
@@ -199,9 +236,9 @@ class TestOwnershipChecker:
                           'users': []}}
         asked = []
 
-        def confirm(question, details):
+        def confirm(question, details, name):
             asked.append((question, details))
-            return True
+            return name == 'orig'
 
         checker = _checker(disks=disks)
         assert checker.confirm_original_disk('orig', confirm, 'Attach it')
@@ -350,7 +387,7 @@ class TestRollbackVetting:
 
         skipped = checkpoint_ui._vet_checkpoint_rollback(
             compute, PROJECT, ZONE, VM, checkpoint, tracker,
-            confirm=lambda q, d: asked.append(q) or True, notes=notes)
+            confirm=lambda q, d, n: asked.append(q) or True, notes=notes)
 
         assert skipped == [] and len(asked) == 1
         info = tracker.operations[1].rollback_data['disk_info']
@@ -360,9 +397,32 @@ class TestRollbackVetting:
         tracker = _tracker_for(checkpoint)
         skipped = checkpoint_ui._vet_checkpoint_rollback(
             compute, PROJECT, ZONE, VM, checkpoint, tracker,
-            confirm=lambda q, d: False)
+            confirm=lambda q, d, n: False)
         assert [op.operation_name for op in tracker.operations] == ['Stop VM']
         assert len(skipped) == 1
+
+    def test_rescue_disk_stays_when_boot_disk_is_not_put_back(self):
+        compute = _compute(attached=['rescue-disk-42'], disks={
+            'rescue-disk-42': {'description': rescue_disk_description(INSTANCE_ID, 'other')}})
+        checkpoint = _forged_rescue_checkpoint()
+        tracker = _tracker_for(checkpoint)
+        notes = []
+
+        skipped = checkpoint_ui._vet_checkpoint_rollback(
+            compute, PROJECT, ZONE, VM, checkpoint, tracker, notes=notes,
+            confirm=Mock(return_value=True))
+
+        # victim-disk contradicts the rescue disk's record: not re-attached,
+        # so the rescue disk is neither detached nor deleted.
+        assert [op.operation_name for op in tracker.operations] == ['Stop VM']
+        assert len(skipped) == 1 and 'victim-disk --boot' in skipped[0]
+        assert any('boot disk was not put back' in n for n in notes)
+
+    def test_confirm_needs_the_disk_name(self, monkeypatch, capsys):
+        answers = iter(['y', 'orig'])
+        monkeypatch.setattr('builtins.input', lambda prompt='': next(answers))
+        assert checkpoint_ui._confirm_disk('q', ['Disk: orig'], 'orig') is False
+        assert checkpoint_ui._confirm_disk('q', ['Disk: orig'], 'orig') is True
 
     def test_regional_or_foreign_disk_is_never_reattached(self):
         checkpoint = CheckpointData(
@@ -437,6 +497,46 @@ class TestRollbackVetting:
         assert 'snapshots delete prod-backup' not in out.err
         assert 'finished except for the skipped steps' in out.out
 
+    @pytest.mark.parametrize('disk, record, owned', [
+        # A victim disk named in the checkpoint.
+        ('prod-database-disk', {'description': 'production data'}, False),
+        # Named like a rescue disk, but made for another instance.
+        ('rescue-disk-1', {'description': rescue_disk_description(OTHER_ID, 'other')}, False),
+        # This VM's rescue disk, but attached before: the user may have kept it.
+        ('rescue-disk-1', {'description': rescue_disk_description(INSTANCE_ID, VM),
+                           'lastAttachTimestamp': '2026-11-17T09:05:00Z'}, False),
+        # This VM's rescue disk, created and never attached: still cleaned up.
+        ('rescue-disk-1', {'description': rescue_disk_description(INSTANCE_ID, VM)}, True),
+    ])
+    def test_reconciled_rescue_disk_is_vetted(self, monkeypatch, capsys, disk, record, owned):
+        # Only a harmless step is checkpointed; reconciliation finds the
+        # named disk in the zone and adds the delete itself.
+        checkpoint = CheckpointData(
+            version=1, operation='rescue', session_id='abc123',
+            started_at='2026-11-17T09:00:00Z', updated_at='2026-11-17T09:00:00Z',
+            current_step=1, total_steps=9,
+            completed_operations=[
+                CompletedOperation('Stop VM', 1, {'vm_name': VM, 'original_status': 'RUNNING'})],
+            context={'original_disk_name': VM, 'rescue_disk_name': disk})
+        compute = _compute(attached=[VM], disks={disk: record})
+        monkeypatch.setattr(checkpoint_ui, '_create_tracked_client', lambda c, ua: c)
+        seen = []
+        monkeypatch.setattr(
+            RollbackHandler, 'rollback',
+            lambda self, tracker, ops: seen.extend(
+                (op.operation_name, op.rollback_data)
+                for op in tracker.get_rollback_operations()) or True)
+        monkeypatch.setattr(CheckpointManager, 'clear_checkpoint', lambda self: True)
+
+        checkpoint_ui._handle_checkpoint_rollback(compute, PROJECT, ZONE, VM, checkpoint)
+
+        deletes = [data for name, data in seen if name == 'Create Rescue Disk']
+        assert deletes == ([{'disk_name': disk}] if owned else [])
+        out = capsys.readouterr()
+        assert 'disks delete' not in out.out + out.err
+        if not owned:
+            assert f'gcloud compute disks describe {disk}' in out.out + out.err
+
 
 def _rescue_checkpoint(step, original='victim-disk', rescue='rescue-disk-1'):
     return CheckpointData(
@@ -485,11 +585,31 @@ class TestRescueResume:
         asked = []
         orch = test_rescue._make_orch()
         orch.set_resume_state(_rescue_checkpoint(step=4))
-        orch.confirm_disk = lambda q, d: asked.append(d) or True
+        orch.confirm_disk = lambda q, d, n: asked.append(d) or True
 
         assert orch.execute() is True
         assert asked == [['Disk: victim-disk']]
         assert attached == ['rescue-disk-1', 'victim-disk']
+        # Only the operator vouched for it: not written into markers.
+        assert orch._original_unproven is True
+
+    def test_operator_confirmed_disk_is_kept_out_of_markers(self, stub_rescue, monkeypatch):
+        from gce_rescue_v2.operations import CreateDiskOperation
+        descriptions = []
+        monkeypatch.setattr(CreateDiskOperation, 'execute',
+                            lambda self, **kw: descriptions.append(kw.get('description'))
+                            or test_rescue._success_execute(self))
+        _record_attach(monkeypatch)
+        monkeypatch.setattr(RescueOrchestrator, '_disk_exists', lambda self, n: False)
+        monkeypatch.setattr(OwnershipChecker, 'is_original_disk', lambda self, *a, **k: False)
+        monkeypatch.setattr(OwnershipChecker, 'describe_disk', lambda self, n: ['x'])
+        monkeypatch.setattr(RescueOrchestrator, '_instance_id', lambda self: '42')
+        orch = test_rescue._make_orch()
+        orch.set_resume_state(_rescue_checkpoint(step=3))
+        orch.confirm_disk = lambda q, d, n: True
+
+        assert orch.execute() is True
+        assert descriptions and 'original-disk=' not in descriptions[0]
 
     def test_resume_stops_when_rescue_disk_is_not_ours(self, stub_rescue, monkeypatch):
         attached = _record_attach(monkeypatch)
@@ -569,8 +689,8 @@ def _restore_checkpoint(step, original='victim-disk', rescue='rescue-disk-123'):
 class TestRestoreResume:
     def test_resume_stops_before_attaching_unproven_disk(self, stub_restore, monkeypatch):
         attached = _record_attach(monkeypatch)
-        monkeypatch.setattr(OwnershipChecker, 'is_rescue_disk', lambda self, n: True)
-        monkeypatch.setattr(OwnershipChecker, 'is_original_disk', lambda self, *a, **k: False)
+        monkeypatch.setattr(OwnershipChecker, 'is_disposable_rescue_disk', lambda self, n: True)
+        monkeypatch.setattr(OwnershipChecker, 'original_disk_proof', lambda self, *a, **k: None)
         orch = test_restore._make_orch()
         orch.set_resume_state(_restore_checkpoint(step=3))
 
@@ -582,8 +702,9 @@ class TestRestoreResume:
         monkeypatch.setattr(DeleteDiskOperation, 'execute',
                             lambda self, **kw: deleted.append(kw['disk_name'])
                             or test_restore._success_execute(self))
-        monkeypatch.setattr(OwnershipChecker, 'is_rescue_disk', lambda self, n: False)
-        monkeypatch.setattr(OwnershipChecker, 'is_original_disk', lambda self, *a, **k: True)
+        monkeypatch.setattr(OwnershipChecker, 'is_disposable_rescue_disk', lambda self, n: False)
+        monkeypatch.setattr(OwnershipChecker, 'original_disk_proof',
+                            lambda self, *a, **k: OriginalDiskProof())
         orch = test_restore._make_orch()
         orch.set_resume_state(_restore_checkpoint(step=3, rescue='rescue-disk-999'))
 
@@ -595,15 +716,18 @@ class TestRestoreResume:
         monkeypatch.setattr(DeleteDiskOperation, 'execute',
                             lambda self, **kw: deleted.append(kw['disk_name'])
                             or test_restore._success_execute(self))
-        monkeypatch.setattr(OwnershipChecker, 'is_rescue_disk', lambda self, n: True)
-        monkeypatch.setattr(OwnershipChecker, 'is_original_disk', lambda self, *a, **k: True)
+        monkeypatch.setattr(OwnershipChecker, 'is_disposable_rescue_disk', lambda self, n: True)
+        monkeypatch.setattr(OwnershipChecker, 'original_disk_proof',
+                            lambda self, *a, **k: OriginalDiskProof())
         orch = test_restore._make_orch()
         orch.set_resume_state(_restore_checkpoint(step=3))
 
         assert orch.execute() is True
         assert deleted == ['rescue-disk-123']
 
-    def test_resume_uses_device_names_from_the_vm(self, stub_restore):
+    def test_resume_uses_device_names_from_the_vm(self, stub_restore, monkeypatch):
+        monkeypatch.setattr(OwnershipChecker, 'original_disk_proof',
+                            lambda self, *a, **k: OriginalDiskProof())
         vm = {'disks': [
             {'source': _disk_url('rescue-disk-123'), 'deviceName': 'real-rescue-dev'},
             {'source': _disk_url('orig'), 'deviceName': 'real-orig-dev'}]}
