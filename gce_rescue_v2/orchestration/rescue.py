@@ -203,6 +203,7 @@ class RescueOrchestrator:
         # cannot be shown to be this VM's (set by the CLI when resuming
         # interactively). None: such a resume stops instead.
         self.confirm_disk = None
+        self._original_unproven = False
 
     def _init_progress(self):
         """Initialize spinner with phases display."""
@@ -733,7 +734,9 @@ class RescueOrchestrator:
                     disk_name=self.original_disk_name,
                     snapshot_name=None,
                     description=snapshot_description(
-                        self.vm_name, self._instance_id(),
+                        self.vm_name,
+                        None if self._original_unproven
+                        else self._instance_id(),
                         self._original_auto_delete()),
                     timeout=self.config.snapshot_timeout,
                     wait=not self.config.async_snapshot,
@@ -836,7 +839,9 @@ class RescueOrchestrator:
                         timeout=self.config.disk_create_timeout,
                         tracking_label=self._ua('disk-create-rescue'),
                         description=rescue_disk_description(
-                            self._instance_id(), self.original_disk_name,
+                            self._instance_id(),
+                            None if self._original_unproven
+                            else self.original_disk_name,
                             self._original_auto_delete())
                     )
                     self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data, step_number=4)
@@ -1148,18 +1153,21 @@ class RescueOrchestrator:
                          and not checker.is_rescue_disk(name))):
             problems.append(f"rescue disk [{name}]")
 
-        if (self._should_skip_step(2)
-                and not checker.is_original_disk(
-                    self.original_disk_name, rescue_disk=self.rescue_disk_name,
-                    snapshot=context.get('snapshot_name'),
-                    search_snapshots=True)
-                and not checker.confirm_original_disk(
+        if self._should_skip_step(2) and not checker.is_original_disk(
+                self.original_disk_name, rescue_disk=self.rescue_disk_name,
+                snapshot=context.get('snapshot_name'), search_snapshots=True):
+            if checker.confirm_original_disk(
                     self.original_disk_name, self.confirm_disk,
-                    "Continue the rescue with it")):
-            problems.append(f"boot disk [{self.original_disk_name}]")
-            commands.append(attach_disk_command(
-                self.vm_name, self.zone, self.project,
-                self.original_disk_name, boot=True))
+                    "Continue the rescue with it",
+                    rescue_disk=self.rescue_disk_name):
+                # Only the operator vouches for it: keep it out of the
+                # ownership markers, which later runs treat as proof.
+                self._original_unproven = True
+            else:
+                problems.append(f"boot disk [{self.original_disk_name}]")
+                commands.append(attach_disk_command(
+                    self.vm_name, self.zone, self.project,
+                    self.original_disk_name, boot=True))
 
         if not problems:
             return True

@@ -155,16 +155,27 @@ def _print_quiet_checkpoint_block(checkpoint: CheckpointData, command: str,
     print(f"  $ gce-rescue {checkpoint.operation} {vm_name} {flags}", file=file)
 
 
-def _confirm_disk(question: str, details: List[str]) -> bool:
-    """Ask the operator about a disk gce-rescue could not confirm (y/N)."""
+def _confirm_disk(question: str, details: List[str], name: str) -> bool:
+    """Ask the operator about a disk gce-rescue could not confirm.
+
+    The operator has to type the disk name: a quick "y" is too easy to
+    give to a prompt that a forged checkpoint can bring up.
+    """
     print(f"\n{warning_prefix()} {question}", file=sys.stderr)
     for line in details:
         print(f"  {line}", file=sys.stderr)
     try:
-        answer = input("Is this the right disk? (y/N): ").strip().lower()
+        answer = input("Type the disk name to use it, or press Enter to skip: ").strip()
     except EOFError:
         answer = ''
-    return answer in ('y', 'yes')
+    return answer == name
+
+
+# Rollback steps whose undo detaches a disk from the VM or deletes the
+# rescue disk. They are dropped when the boot disk cannot be put back, so
+# the VM is never left without a boot disk.
+_UNDO_REMOVES_DISK = ("Attach Rescue Disk", "Attach Original Disk",
+                      "Create Rescue Disk")
 
 
 def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
@@ -181,11 +192,11 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
     reports (see orchestration.ownership), and the attach settings are
     rebuilt from trusted values:
 
-    - A rescue disk is deleted only if gce-rescue made it for this VM.
-    - Safety snapshots are never deleted by a rollback; the delete
-      command is listed in `notes`.
-    - A disk is detached only if it is this VM's rescue disk, or its
-      original boot disk.
+    - A rescue disk is deleted only if gce-rescue made it for this VM and
+      it is attached now or was never attached.
+    - Safety snapshots are never deleted by a rollback.
+    - A disk is detached only if it is this VM's rescue disk, or shown to
+      be its original boot disk.
     - A disk is re-attached only if it is this VM's rescue disk, or shown
       to be its original boot disk. When that cannot be shown (a rescue
       with --no-snapshot, or one made by an older version), `confirm`
@@ -193,6 +204,8 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
     - Re-attached disks are zonal disks of this project and zone, in
       read-write mode; auto-delete is turned on only when the ownership
       marker recorded it.
+    - If the boot disk cannot be put back, nothing is detached or deleted,
+      so the VM keeps the boot disk it has now.
 
     Steps that fail these checks are removed from `state_tracker`, and the
     command to do the step by hand is returned so the user can run it
@@ -208,8 +221,8 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
         logger: Optional logger
         confirm: Asks the operator about a disk that could not be
             confirmed. None skips such steps.
-        notes: If given, other commands for the user are appended (kept
-            snapshots, auto-delete to turn back on).
+        notes: If given, other messages for the user are appended (kept
+            snapshots and disks, auto-delete to turn back on).
 
     Returns:
         Commands for the steps that were skipped, in rollback order.
@@ -222,35 +235,34 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
     for op in state_tracker.operations:
         if op.operation_name == "Create Snapshot" and op.rollback_data:
             snapshot = snapshot or op.rollback_data.get('snapshot_name')
-    confirmed = set()
 
     def _original(disk: str, action: str):
         """Proof (or operator confirmation) that `disk` is the original."""
         proof = checker.original_disk_proof(
             disk, rescue_disk=rescue_disk, snapshot=snapshot,
-            search_snapshots=True, allow_attached=False)
+            search_snapshots=True)
         if proof:
             return proof
-        if disk in confirmed or checker.confirm_original_disk(
-                disk, confirm, action):
-            confirmed.add(disk)
+        if checker.confirm_original_disk(disk, confirm, action,
+                                         rescue_disk=rescue_disk):
             return OriginalDiskProof()
         return None
 
     skipped = []
     kept = []
+    boot_not_restored = False
     for op in reversed(state_tracker.operations):
         data = dict(op.rollback_data or {})
         name = op.operation_name
         command = None
         if name == "Create Rescue Disk":
             disk = data.get('disk_name')
-            if disk and not checker.is_rescue_disk(disk):
+            if disk and not checker.is_disposable_rescue_disk(disk):
                 notes.append(
                     f"Disk [{disk}] named in the checkpoint was not deleted:"
-                    f" gce-rescue could not confirm it made it for instance"
-                    f" [{vm_name}]. If it is a leftover rescue disk, check it"
-                    f" and delete it yourself:")
+                    f" gce-rescue could not confirm it is a rescue disk made"
+                    f" for instance [{vm_name}] in this run. If it is a"
+                    f" leftover rescue disk, check it and delete it yourself:")
                 notes.append("  $ " + describe_disk_command(disk, zone, project))
                 continue
         elif name == "Create Snapshot":
@@ -286,20 +298,26 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
                 kept.append(op)
                 continue
             disk = zonal_disk_name(info.get('source'), project, zone)
+            # The disk this step puts back as the VM's boot disk.
             boot = name != "Detach Original Disk"
             auto_delete = False
             ok = False
-            if not disk:
-                ok = False
-            elif disk in checker.attached_disks() and not any(
+            if disk and disk in checker.attached_disks() and not any(
                     k.operation_name in ("Attach Rescue Disk",
                                          "Attach Original Disk")
                     and checker.device_disk(
                         (k.rollback_data or {}).get('device_name')) == disk
                     for k in kept):
-                # Already attached and nothing in this rollback detaches
-                # it first: re-attaching would fail, so leave it.
+                # Still attached and nothing in this rollback detaches it
+                # first: re-attaching would fail.
+                notes.append(
+                    f"Disk [{disk}] is still attached to instance [{vm_name}],"
+                    f" so it was not re-attached"
+                    f"{' as the boot disk' if boot else ''}.")
+                boot_not_restored = boot_not_restored or boot
                 continue
+            if not disk:
+                ok = False
             elif name == "Detach Rescue Disk":
                 ok = checker.is_rescue_disk(disk)
             else:
@@ -329,10 +347,23 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
             else:
                 command = attach_disk_command(
                     vm_name, zone, project, disk or '<disk>', boot=boot)
+                boot_not_restored = boot_not_restored or boot
         if command:
             skipped.append(command)
         else:
             kept.append(op)
+
+    if boot_not_restored:
+        # Detaching the current boot disk, or deleting the rescue disk,
+        # would leave the VM with no disk to boot from.
+        dropped = [op for op in kept if op.operation_name in _UNDO_REMOVES_DISK]
+        if dropped:
+            kept = [op for op in kept if op not in dropped]
+            notes.append(
+                f"The boot disk was not put back, so no disk was detached"
+                f" from or deleted for instance [{vm_name}]. After you attach"
+                f" the right boot disk, detach and delete the rescue disk"
+                f" yourself.")
     state_tracker.operations = list(reversed(kept))
     return skipped
 

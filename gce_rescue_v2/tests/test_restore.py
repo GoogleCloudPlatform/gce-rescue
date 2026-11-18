@@ -797,7 +797,6 @@ def test_restore_without_record_uses_default_attach(stub_restore, monkeypatch):
 
 def test_restore_boot_attach_kwargs_from_resumed_checkpoint(stub_restore, monkeypatch):
     """A resumed restore takes the attachment from the checkpoint context."""
-    _rescue_disk_marked(monkeypatch, True)
     from gce_rescue_v2.orchestration.checkpoint import CheckpointData
 
     checkpoint = CheckpointData(
@@ -811,7 +810,10 @@ def test_restore_boot_attach_kwargs_from_resumed_checkpoint(stub_restore, monkey
     )
     orch = _make_orch()
     orch.set_resume_state(checkpoint)
-
+    # Auto-delete comes from an ownership marker (set while verifying the
+    # resume), never from the checkpoint alone.
+    assert orch._boot_attach_kwargs() == {"device_name": "persistent-disk-0"}
+    orch._marker_auto_delete = True
     assert orch._boot_attach_kwargs() == {"device_name": "persistent-disk-0", "auto_delete": True}
 
 

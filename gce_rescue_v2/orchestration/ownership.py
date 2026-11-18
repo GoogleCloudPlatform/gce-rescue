@@ -36,8 +36,9 @@ _MARKER = re.compile(
     r'(?: original-disk=(?P<original>[a-z0-9-]+))?'
     r'(?: auto-delete=(?P<auto_delete>[01]))?\]')
 
-# Asks the operator about a disk: (question, detail lines) -> yes/no.
-ConfirmDisk = Callable[[str, List[str]], bool]
+# Asks the operator about a disk: (question, detail lines, disk name)
+# -> yes/no.
+ConfirmDisk = Callable[[str, List[str], str], bool]
 
 
 def _marker_text(instance_id: str, original_disk: Optional[str],
@@ -228,7 +229,14 @@ class OwnershipChecker:
 
     def rescue_disk_marker(self, name: Optional[str]
                            ) -> Optional['re.Match[str]']:
-        """Ownership marker of rescue disk `name`, if it is for this VM."""
+        """Ownership marker of rescue disk `name`, if it is for this VM.
+
+        Anyone who can create disks can write such a marker, so on its own
+        it only shows that a disk is safe to treat as gce-rescue's (to
+        delete it, or to keep it). What it says about the original disk
+        counts only while the rescue disk is attached to this VM (see
+        original_disk_proof).
+        """
         if not name or not RESCUE_DISK_NAME.match(name):
             return None
         return self._marked_for_this_vm(self.get_disk(name))
@@ -244,6 +252,24 @@ class OwnershipChecker:
         if name in self.attached_disks():
             return True
         return self.rescue_disk_marker(name) is not None
+
+    def is_disposable_rescue_disk(self, name: Optional[str]) -> bool:
+        """True if rescue disk `name` may be deleted by a rollback.
+
+        Either it is attached to this VM now, or it is marked for this VM
+        and was never attached (created by the interrupted run before it
+        was attached). A rescue disk that was attached before and is not
+        attached now may be one the user kept (restore --keep-rescue-disk)
+        and is never deleted.
+        """
+        if not name or not RESCUE_DISK_NAME.match(name):
+            return False
+        if name in self.attached_disks():
+            return True
+        disk = self.get_disk(name)
+        return (self._marked_for_this_vm(disk) is not None
+                and not disk.get('lastAttachTimestamp')
+                and not disk.get('users'))
 
     def is_own_snapshot(self, name: Optional[str]) -> bool:
         """True if `name` is a snapshot gce-rescue took for this VM."""
@@ -261,22 +287,32 @@ class OwnershipChecker:
         return [i['name'] for i in items
                 if isinstance(i, dict) and isinstance(i.get('name'), str)]
 
+    def contradicts_record(self, name: Optional[str],
+                           rescue_disk: Optional[str]) -> bool:
+        """True if rescue disk `rescue_disk` records an original other than `name`."""
+        if not name or not rescue_disk:
+            return False
+        match = self.rescue_disk_marker(rescue_disk)
+        recorded = match.group('original') if match else None
+        return bool(recorded) and recorded != name
+
     def original_disk_proof(self, name: Optional[str],
                             rescue_disk: Optional[str] = None,
                             snapshot: Optional[str] = None,
                             search_snapshots: bool = False,
-                            allow_attached: bool = True
+                            allow_attached: bool = False
                             ) -> Optional[OriginalDiskProof]:
         """Proof that `name` is this VM's own boot disk from before rescue.
 
         Shown by any of:
-        - the disk is attached to this VM (only if `allow_attached`; being
-          attached says nothing about which disk should be re-attached as
-          the boot disk);
-        - a snapshot gce-rescue took for this VM was taken from it (the
-          snapshot's source disk is recorded by Compute Engine);
-        - a rescue disk gce-rescue made for this VM records it as the
-          original.
+        - a snapshot gce-rescue took for this VM was taken from this very
+          disk (Compute Engine records the source disk's ID; making a
+          snapshot needs read access to the disk);
+        - the rescue disk attached to this VM records it as the original
+          (attaching needs permissions a metadata writer may not have);
+        - the disk is attached to this VM, only if `allow_attached`.
+
+        Never shown when the rescue disk records a different original.
 
         Args:
             name: Disk to check.
@@ -284,15 +320,17 @@ class OwnershipChecker:
             snapshot: Pre-rescue snapshot name, if known.
             search_snapshots: Also look for pre-rescue snapshots of the
                 disk by name (when the snapshot name is not known).
-            allow_attached: Accept "attached to this VM" as proof.
+            allow_attached: Accept "attached to this VM" as proof. Being
+                attached says nothing about which disk is the boot disk,
+                so callers that attach or re-attach a disk leave it off.
 
         Returns:
             The proof, or None if ownership was not shown.
         """
-        if not name:
+        if not name or self.contradicts_record(name, rescue_disk):
             return None
         proof = None
-        if rescue_disk:
+        if rescue_disk and rescue_disk in self.attached_disks():
             match = self.rescue_disk_marker(rescue_disk)
             if match and match.group('original') == name:
                 proof = OriginalDiskProof(_auto_delete_of(match))
@@ -302,16 +340,23 @@ class OwnershipChecker:
         if search_snapshots:
             candidates += [n for n in self._snapshots_of(name)
                            if n not in candidates]
+        disk_id = None
         for candidate in candidates:
             snap = self._get_snapshot(candidate)
             match = self._marked_for_this_vm(snap)
-            if match and zonal_disk_name(snap.get('sourceDisk'), self.project,
-                                         self.zone) == name:
-                found = OriginalDiskProof(_auto_delete_of(match))
-                if proof is None or found.auto_delete is not None:
-                    proof = found
-                if proof.auto_delete is not None:
-                    return proof
+            if not match or zonal_disk_name(snap.get('sourceDisk'), self.project,
+                                            self.zone) != name:
+                continue
+            if disk_id is None:
+                disk_id = str((self.get_disk(name) or {}).get('id') or '')
+            # Same disk, not a newer one with the same name.
+            if not disk_id or str(snap.get('sourceDiskId') or '') != disk_id:
+                continue
+            found = OriginalDiskProof(_auto_delete_of(match))
+            if proof is None or found.auto_delete is not None:
+                proof = found
+            if proof.auto_delete is not None:
+                return proof
         if proof is None and allow_attached and name in self.attached_disks():
             proof = OriginalDiskProof()
         return proof
@@ -320,7 +365,7 @@ class OwnershipChecker:
                          rescue_disk: Optional[str] = None,
                          snapshot: Optional[str] = None,
                          search_snapshots: bool = False,
-                         allow_attached: bool = True) -> bool:
+                         allow_attached: bool = False) -> bool:
         """True if `name` is shown to be this VM's own boot disk.
 
         See original_disk_proof.
@@ -344,15 +389,20 @@ class OwnershipChecker:
                  if isinstance(u, str)]
         if any(u != self.vm_name for u in users):
             return None
+
         # Shown in a terminal: keep only plain values.
-        def plain(value: Any) -> str:
-            text = str(value) if value is not None else '-'
-            return ''.join(c for c in text if c.isprintable())[:80]
+        def plain(value: Any, limit: int = 80) -> str:
+            text = str(value) if value not in (None, '') else '-'
+            return ''.join(c for c in text if c.isprintable())[:limit]
+
+        labels = disk.get('labels') if isinstance(disk.get('labels'), dict) else {}
         lines = [
             f"Disk:          {plain(name)}",
+            f"Description:   {plain(disk.get('description'), 120)}",
+            f"Labels:        {plain(', '.join(f'{k}={v}' for k, v in labels.items()), 120)}",
             f"Created:       {plain(disk.get('creationTimestamp'))}",
             f"Size:          {plain(disk.get('sizeGb'))} GB",
-            f"Source image:  {plain(_disk_name(disk.get('sourceImage') or '') or None)}",
+            f"Source image:  {plain(_disk_name(disk.get('sourceImage') or ''))}",
             f"Last attached: {plain(disk.get('lastAttachTimestamp'))}",
             f"Last detached: {plain(disk.get('lastDetachTimestamp'))}",
             f"Attached to:   {plain(', '.join(users) or 'nothing')}",
@@ -361,28 +411,35 @@ class OwnershipChecker:
 
     def confirm_original_disk(self, name: Optional[str],
                               confirm: Optional[ConfirmDisk],
-                              action: str) -> bool:
+                              action: str,
+                              rescue_disk: Optional[str] = None) -> bool:
         """Ask the operator whether `name` is this VM's boot disk.
 
         Used when ownership cannot be shown, for example after a rescue
         with --no-snapshot or one made by an older version. Returns False
-        without asking when there is no one to ask, or when the disk is
-        missing or in use by another instance.
+        without asking when there is no one to ask, when the disk is
+        missing or in use by another instance, or when the rescue disk
+        records a different original.
 
         Args:
             name: The disk.
             confirm: Callback that asks the operator, or None.
             action: What will be done with the disk, for the question.
+            rescue_disk: Rescue disk name, if known.
         """
         if not name or confirm is None:
+            return False
+        if self.contradicts_record(name, rescue_disk):
             return False
         details = self.describe_disk(name)
         if details is None:
             return False
         question = (f"gce-rescue could not confirm that disk [{name}] is the "
                     f"boot disk of instance [{self.vm_name}] from before the "
-                    f"rescue. Only continue if you know it is. {action}?")
-        return bool(confirm(question, details))
+                    f"rescue. The name comes from instance metadata, which "
+                    f"others can change. {action} only if you know it is "
+                    f"this instance's boot disk.")
+        return bool(confirm(question, details, name))
 
 
 def attach_disk_command(vm_name: str, zone: str, project: str, disk: str,

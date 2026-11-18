@@ -144,6 +144,9 @@ class RestoreOrchestrator:
         # interactively). None: such a resume stops instead.
         self.confirm_disk = None
         self._checker = None
+        # Auto-delete of the boot disk before rescue, from an ownership
+        # marker (never from metadata); None when no marker records it.
+        self._marker_auto_delete = None
 
         # Progress tracking for spinner with phases
         import threading
@@ -678,8 +681,8 @@ class RestoreOrchestrator:
                 elif not self._rescue_disk_owned:
                     self._log_info(
                         f"Kept disk [{self.rescue_disk_name}]: gce-rescue could not "
-                        f"confirm it is the rescue disk of [{self.vm_name}]. Check it, "
-                        f"and if it is, delete it yourself:")
+                        f"confirm it is the rescue disk of [{self.vm_name}] from this "
+                        f"run. Check it, and if it is, delete it yourself:")
                     self._log_info("  $ " + describe_disk_command(
                         self.rescue_disk_name, self.zone, self.project))
                 else:
@@ -761,19 +764,24 @@ class RestoreOrchestrator:
             self._log_error("Look for a disk that is NOT the rescue disk (doesn't contain 'rescue-disk' in name)")
             raise ValueError("Missing 'rescue-original-disk' metadata - cannot identify original boot disk")
 
-        # The rescue disk records the original disk when gce-rescue made it;
-        # that record cannot be changed, unlike 'rescue-original-disk'.
-        for disk in vm.get('disks', []):
-            name = (disk.get('source') or '').split('/')[-1]
-            if disk.get('type') != 'SCRATCH' and RESCUE_DISK_NAME.match(name):
-                match = self._ownership().rescue_disk_marker(name)
-                recorded = match.group('original') if match else None
-                if recorded and recorded != self.original_disk_name:
-                    self._log_debug(
-                        "Original disk in metadata does not match the rescue "
-                        "disk's record; using the record")
-                    self.original_disk_name = recorded
-                break
+        # The attached rescue disk records the original disk and its
+        # auto-delete setting when gce-rescue made it; that record cannot
+        # be changed, unlike 'rescue-original-disk'. Same disk as the loop
+        # below picks (the last one named like a rescue disk).
+        rescue_names = [
+            (d.get('source') or '').split('/')[-1] for d in vm.get('disks', [])
+            if d.get('type') != 'SCRATCH'
+            and RESCUE_DISK_NAME.match((d.get('source') or '').split('/')[-1])]
+        if rescue_names:
+            match = self._ownership().rescue_disk_marker(rescue_names[-1])
+            recorded = match.group('original') if match else None
+            if recorded and recorded != self.original_disk_name:
+                self._log_debug(
+                    "Original disk in metadata does not match the rescue "
+                    "disk's record; using the record")
+                self.original_disk_name = recorded
+            if match and match.group('auto_delete') is not None:
+                self._marker_auto_delete = match.group('auto_delete') == '1'
 
         # Find rescue and original disks
         for disk in vm.get('disks', []):
@@ -838,15 +846,25 @@ class RestoreOrchestrator:
             elif name and name == self.original_disk_name:
                 self.original_device_name = disk.get('deviceName')
 
-        self._rescue_disk_owned = checker.is_rescue_disk(self.rescue_disk_name)
+        # Deleted at the end only if it is attached now or was never
+        # attached: a detached rescue disk may be one the user kept.
+        self._rescue_disk_owned = checker.is_disposable_rescue_disk(
+            self.rescue_disk_name)
         if not self._rescue_disk_owned:
             self._log_debug(f"Rescue disk {self.rescue_disk_name} not confirmed")
 
-        if self._should_skip_step(4) or checker.is_original_disk(
-                self.original_disk_name, rescue_disk=self.rescue_disk_name,
-                search_snapshots=True) or checker.confirm_original_disk(
-                    self.original_disk_name, self.confirm_disk,
-                    "Attach it as the boot disk"):
+        if self._should_skip_step(4):
+            return True
+        proof = checker.original_disk_proof(
+            self.original_disk_name, rescue_disk=self.rescue_disk_name,
+            search_snapshots=True)
+        if proof:
+            self._marker_auto_delete = proof.auto_delete
+            return True
+        if checker.confirm_original_disk(
+                self.original_disk_name, self.confirm_disk,
+                "Attach it as the boot disk",
+                rescue_disk=self.rescue_disk_name):
             return True
 
         flags = f"--zone={self.zone} --project={self.project}"
@@ -896,8 +914,7 @@ class RestoreOrchestrator:
         # only turned on when the rescue disk's ownership marker recorded
         # it, and a boot disk is always attached read-write.
         if attachment.get('autoDelete') is True:
-            match = self._ownership().rescue_disk_marker(self.rescue_disk_name)
-            if match and match.group('auto_delete') == '1':
+            if self._marker_auto_delete is True:
                 kwargs['auto_delete'] = True
             else:
                 self._log_info(
