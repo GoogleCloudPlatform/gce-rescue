@@ -43,6 +43,31 @@ RESCUE_RESTORABLE_KEYS = [
 # RESCUE_RESTORABLE_KEYS (backup, or listed as absent).
 WINDOWS_KEYS_KEY = 'windows-keys'
 
+# Other startup and Sysprep script keys. The rescue OS would run them
+# (a Windows rescue disk runs Sysprep specialize on its first boot), so
+# rescue backs them up as rescue-backup-<key>, removes them while the VM
+# is in rescue mode, and restore puts them back. The key rescue sets for
+# its own script is handled as a RESCUE_CONFLICT_KEYS entry instead.
+RESCUE_SUPPRESSED_KEYS = [
+    'startup-script-url',
+    'windows-startup-script-cmd',
+    'windows-startup-script-bat',
+    'windows-startup-script-url',
+    'sysprep-specialize-script-ps1',
+    'sysprep-specialize-script-cmd',
+    'sysprep-specialize-script-bat',
+    'sysprep-specialize-script-url',
+]
+
+# Keys restore may bring back from rescue-backup-<key>. Metadata can be
+# written by others, so any other rescue-backup-* key is left as it is.
+RESCUE_BACKED_UP_KEYS = frozenset(
+    RESCUE_CONFLICT_KEYS + RESCUE_RESTORABLE_KEYS + [WINDOWS_KEYS_KEY]
+    + RESCUE_SUPPRESSED_KEYS)
+
+# Keys restore may remove because the record says rescue added them.
+RESCUE_ADDED_KEYS = frozenset(RESCUE_RESTORABLE_KEYS + [WINDOWS_KEYS_KEY])
+
 # Comma-separated list of RESCUE_RESTORABLE_KEYS (and recorded keys) that did
 # not exist before rescue.
 RESCUE_ABSENT_KEYS_KEY = f'{RESCUE_BACKUP_PREFIX}absent-keys'
@@ -168,9 +193,12 @@ def restore_pre_rescue_items(items: List[Dict[str, str]],
     """Rebuild the pre-rescue metadata items from rescue-mode metadata.
 
     - Keys in `strip_keys` (rescue session keys) are dropped.
-    - rescue-backup-<key> is restored as <key>, replacing rescue's value.
+    - rescue-backup-<key> is restored as <key>, replacing rescue's value,
+      for the keys rescue backs up (RESCUE_BACKED_UP_KEYS). Other
+      rescue-backup-* keys are kept as they are.
     - Keys listed in RESCUE_ABSENT_KEYS_KEY did not exist before rescue and
-      are dropped, unless a backup for them exists.
+      are dropped, unless a backup for them exists. Only keys rescue can
+      add (RESCUE_ADDED_KEYS) are dropped this way.
     - Bookkeeping records (RESCUE_BACKUP_RECORD_KEYS) are dropped.
     - Everything else is kept as-is.
 
@@ -190,8 +218,9 @@ def restore_pre_rescue_items(items: List[Dict[str, str]],
     for item in items:
         key = item['key']
         if key == RESCUE_ABSENT_KEYS_KEY:
-            absent = parse_absent_keys(item.get('value'))
-        elif key.startswith(RESCUE_BACKUP_PREFIX) and key not in RESCUE_BACKUP_RECORD_KEYS:
+            absent = parse_absent_keys(item.get('value')) & RESCUE_ADDED_KEYS
+        elif (key.startswith(RESCUE_BACKUP_PREFIX)
+              and key[len(RESCUE_BACKUP_PREFIX):] in RESCUE_BACKED_UP_KEYS):
             backups[key[len(RESCUE_BACKUP_PREFIX):]] = item['value']
 
     result: Dict[str, str] = {}
@@ -201,7 +230,8 @@ def restore_pre_rescue_items(items: List[Dict[str, str]],
 
         if key in strip or key in RESCUE_BACKUP_RECORD_KEYS:
             continue
-        if key.startswith(RESCUE_BACKUP_PREFIX):
+        if (key.startswith(RESCUE_BACKUP_PREFIX)
+                and key[len(RESCUE_BACKUP_PREFIX):] in RESCUE_BACKED_UP_KEYS):
             original_key = key[len(RESCUE_BACKUP_PREFIX):]
             result[original_key] = value
             _logger.debug("  Restoring '%s' as '%s'", key, original_key)
@@ -421,6 +451,14 @@ class SetMetadataOperation(BaseOperation):
                 else:
                     result[backup_key] = value
                     self._log_debug(f"  Backing up '{key}' as '{backup_key}'")
+            elif key in RESCUE_SUPPRESSED_KEYS:
+                # Not run by the rescue OS: back it up and leave it out.
+                backup_key = f"{RESCUE_BACKUP_PREFIX}{key}"
+                if backup_key in original_keys:
+                    self._log_debug(f"  '{backup_key}' already exists, keeping existing backup")
+                else:
+                    result[backup_key] = value
+                    self._log_debug(f"  Backing up '{key}' as '{backup_key}' (paused during rescue)")
             elif key not in new_keys:
                 # Keep original key as-is (not being overwritten)
                 result[key] = value
@@ -497,8 +535,11 @@ class SetMetadataOperation(BaseOperation):
                 body=restore_metadata
             ).execute()
 
-            # Wait for operation to complete
-            self._wait_for_operation(operation)
+            # Wait for operation to complete; a failed operation must not
+            # be reported as rolled back.
+            if not self._wait_for_operation(operation):
+                self._log_error(f"Rollback failed: {self.name} did not complete")
+                return False
 
             self._log_info(f"  [OK] Metadata restored")
             return True

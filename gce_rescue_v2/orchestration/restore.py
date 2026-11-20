@@ -839,12 +839,31 @@ class RestoreOrchestrator:
         except HttpError as e:
             self._log_error(f"Could not read instance [{self.vm_name}]: {e}")
             return False
+        rescue_attachment = None
         for disk in vm.get('disks', []):
             name = disk.get('source', '').split('/')[-1]
             if name and name == self.rescue_disk_name:
                 self.rescue_device_name = disk.get('deviceName')
+                rescue_attachment = disk
             elif name and name == self.original_disk_name:
                 self.original_device_name = disk.get('deviceName')
+
+        # Step 2 detaches the rescue disk while it is attached. Only this
+        # VM's rescue disk, attached as its boot disk, may be detached; the
+        # name comes from the checkpoint.
+        if (not self._should_skip_step(2) and rescue_attachment is not None
+                and not (rescue_attachment.get('boot') is True
+                         and checker.is_rescue_disk(self.rescue_disk_name))):
+            flags = f"--zone={self.zone} --project={self.project}"
+            self._log_error(
+                f"Cannot resume: disk [{self.rescue_disk_name}] named as the "
+                f"rescue disk in the interrupted run is not the rescue disk "
+                f"attached to instance [{self.vm_name}] as its boot disk. "
+                f"Nothing was changed.")
+            self._log_error("Check the instance and its disks:")
+            self._log_error(
+                f"  $ gcloud compute instances describe {self.vm_name} {flags}")
+            return False
 
         # Deleted at the end only if it is attached now or was never
         # attached: a detached rescue disk may be one the user kept.
@@ -856,8 +875,7 @@ class RestoreOrchestrator:
         if self._should_skip_step(4):
             return True
         proof = checker.original_disk_proof(
-            self.original_disk_name, rescue_disk=self.rescue_disk_name,
-            search_snapshots=True)
+            self.original_disk_name, rescue_disk=self.rescue_disk_name)
         if proof:
             self._marker_auto_delete = proof.auto_delete
             return True

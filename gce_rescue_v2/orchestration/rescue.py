@@ -9,6 +9,7 @@ Coordinates the rescue workflow:
 5. Rolls back on failure
 """
 
+import secrets
 import time
 import uuid
 from typing import Optional
@@ -643,8 +644,14 @@ class RescueOrchestrator:
             self._init_progress()
 
             # Generate rescue disk name if not resuming
-            if not self._resume_from_step or not self.rescue_disk_name:
+            new_rescue_disk = not self._resume_from_step or not self.rescue_disk_name
+            if new_rescue_disk:
                 rescue_disk_name = f"rescue-disk-{int(time.time())}"
+                if self._disk_exists(rescue_disk_name):
+                    # Another rescue in this zone started in the same second,
+                    # or someone created a disk with this name. Never reuse it.
+                    rescue_disk_name = (f"rescue-disk-{int(time.time())}"
+                                        f"{secrets.randbelow(10**6):06d}")
                 self.rescue_disk_name = rescue_disk_name
             else:
                 rescue_disk_name = self.rescue_disk_name
@@ -768,8 +775,10 @@ class RescueOrchestrator:
             # Step 4: Create rescue disk
             if not self._should_skip_step(4):
                 self._update_progress("Creating rescue disk")
-                # Idempotency check: skip if rescue disk already exists
-                if self._disk_exists(rescue_disk_name):
+                # Idempotency check: skip if rescue disk already exists. Only
+                # when resuming: a disk this run did not create is never used
+                # (creating it then fails, and the rescue rolls back).
+                if not new_rescue_disk and self._disk_exists(rescue_disk_name):
                     self._log_debug("Skipping Step 4 (Create Rescue Disk) - disk already exists")
                     # Update checkpoint to record this step as done
                     self.checkpoint_manager.update_checkpoint(
@@ -1154,12 +1163,12 @@ class RescueOrchestrator:
             problems.append(f"rescue disk [{name}]")
 
         if self._should_skip_step(2) and not checker.is_original_disk(
-                self.original_disk_name, rescue_disk=self.rescue_disk_name,
-                snapshot=context.get('snapshot_name'), search_snapshots=True):
+                self.original_disk_name, rescue_disk=self.rescue_disk_name):
             if checker.confirm_original_disk(
                     self.original_disk_name, self.confirm_disk,
                     "Continue the rescue with it",
-                    rescue_disk=self.rescue_disk_name):
+                    rescue_disk=self.rescue_disk_name,
+                    snapshot=context.get('snapshot_name')):
                 # Only the operator vouches for it: keep it out of the
                 # ownership markers, which later runs treat as proof.
                 self._original_unproven = True

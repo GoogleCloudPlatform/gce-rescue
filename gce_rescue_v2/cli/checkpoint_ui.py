@@ -1,5 +1,6 @@
 """Checkpoint recovery UI for interrupted operations."""
 
+import re
 import sys
 from typing import List, Optional, TextIO
 from ..orchestration.checkpoint import CheckpointManager, CheckpointData
@@ -177,6 +178,10 @@ def _confirm_disk(question: str, details: List[str], name: str) -> bool:
 _UNDO_REMOVES_DISK = ("Attach Rescue Disk", "Attach Original Disk",
                       "Create Rescue Disk")
 
+# A Compute Engine resource name, for a disk named in rollback data that
+# is printed in a command.
+_GCE_NAME = re.compile(r'^[a-z]([-a-z0-9]{0,61}[a-z0-9])?\Z')
+
 
 def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
                              checkpoint: CheckpointData, state_tracker,
@@ -238,13 +243,12 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
 
     def _original(disk: str, action: str):
         """Proof (or operator confirmation) that `disk` is the original."""
-        proof = checker.original_disk_proof(
-            disk, rescue_disk=rescue_disk, snapshot=snapshot,
-            search_snapshots=True)
+        proof = checker.original_disk_proof(disk, rescue_disk=rescue_disk)
         if proof:
             return proof
         if checker.confirm_original_disk(disk, confirm, action,
-                                         rescue_disk=rescue_disk):
+                                         rescue_disk=rescue_disk,
+                                         snapshot=snapshot):
             return OriginalDiskProof()
         return None
 
@@ -294,12 +298,18 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
         elif name in ("Detach Boot Disk", "Detach Original Disk",
                       "Detach Rescue Disk"):
             info = data.get('disk_info')
+            boot = name != "Detach Original Disk"
             if not isinstance(info, dict):
-                kept.append(op)
+                # Nothing says how the disk was attached, so it cannot be
+                # put back (and DetachDiskOperation.rollback needs it).
+                recorded = data.get('disk_name')
+                skipped.append(attach_disk_command(
+                    vm_name, zone, project,
+                    recorded if isinstance(recorded, str)
+                    and _GCE_NAME.match(recorded) else '<disk>', boot=boot))
+                boot_not_restored = boot_not_restored or boot
                 continue
             disk = zonal_disk_name(info.get('source'), project, zone)
-            # The disk this step puts back as the VM's boot disk.
-            boot = name != "Detach Original Disk"
             auto_delete = False
             ok = False
             if disk and disk in checker.attached_disks() and not any(
@@ -352,6 +362,20 @@ def _vet_checkpoint_rollback(compute, project: str, zone: str, vm_name: str,
             skipped.append(command)
         else:
             kept.append(op)
+
+    # Undoing an attach that detaches the current boot disk is only safe
+    # when a checked step puts a boot disk back. A forged checkpoint can
+    # list such an attach with no detach step at all.
+    current_boot = checker.boot_disk()
+    detaches_boot = bool(current_boot) and any(
+        k.operation_name in ("Attach Rescue Disk", "Attach Original Disk")
+        and checker.device_disk((k.rollback_data or {}).get('device_name'))
+        == current_boot for k in kept)
+    restores_boot = any(
+        k.operation_name in ("Detach Boot Disk", "Detach Rescue Disk")
+        for k in kept)
+    if detaches_boot and not restores_boot:
+        boot_not_restored = True
 
     if boot_not_restored:
         # Detaching the current boot disk, or deleting the rescue disk,
