@@ -29,6 +29,30 @@ class TestStartVMOperation:
             self.logger
         )
 
+        self.mock_compute.instances().start.return_value.execute.return_value = {'name': 'start-op'}
+        self.mock_compute.zoneOperations().get.return_value.execute.return_value = {'status': 'DONE'}
+
+    @pytest.mark.parametrize("statuses, operation_results", [
+        (['TERMINATED'], ['error']),
+        (['STOPPING', 'TERMINATED'], ['error']),
+        (['TERMINATED', 'STOPPING', 'TERMINATED'], ['ok', 'error']),
+    ])
+    def test_failed_start_reports_operation_error(self, statuses, operation_results, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        self.mock_compute.instances().get.return_value.execute.side_effect = [
+            {'status': status} for status in statuses + ['RUNNING']
+        ]
+        self.mock_compute.zoneOperations().get.return_value.execute.side_effect = [
+            {'status': 'DONE'} if outcome == 'ok' else
+            {'status': 'DONE', 'error': {'errors': [{'message': 'Insufficient zone capacity'}]}}
+            for outcome in operation_results
+        ]
+        result = self.operation.execute('test-vm', timeout=5)
+        assert not result.success
+        assert 'Insufficient zone capacity' in result.message
+        assert self.mock_compute.instances().start.call_count == len(operation_results)
+        assert self.mock_compute.instances().get.return_value.execute.call_count == len(statuses)
+
     def test_start_vm_success(self):
         """Test successful start VM."""
         # Arrange
