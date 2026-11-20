@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import re
+import socket
 import time
 import json
 
@@ -328,7 +329,12 @@ class BaseOperation(ABC):
 
                 if current_status == target_status:
                     return True
-            except Exception as e:
+            except googleapiclient.errors.HttpError as e:
+                if e.resp.status != 429 and not 500 <= e.resp.status < 600:
+                    raise
+                self._log_debug(f"Error checking status: {e}")
+            except (TimeoutError, ConnectionError, socket.gaierror,
+                    httplib2.ServerNotFoundError) as e:
                 self._log_debug(f"Error checking status: {e}")
 
             # Wait before checking again
