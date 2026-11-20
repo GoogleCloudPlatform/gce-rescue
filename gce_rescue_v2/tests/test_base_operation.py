@@ -12,6 +12,8 @@ import time
 from unittest.mock import Mock
 
 import pytest
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 
 from gce_rescue_v2.operations.base import BaseOperation
 
@@ -126,12 +128,34 @@ class TestWaitForStatus:
         result = self.op._wait_for_status(check_func, "STOPPED", timeout=5)
         assert result is False
 
-    def test_status_polling_retries(self):
-        """Test that status polling retries on transient errors."""
-        check_func = Mock(side_effect=[Exception("Transient 503"), "STOPPED"])
-        result = self.op._wait_for_status(check_func, "STOPPED")
-        assert result is True
+    @pytest.mark.parametrize("error", [
+        HttpError(Response({"status": "503"}), b"unavailable"),
+        HttpError(Response({"status": "429"}), b"rate limited"),
+        ConnectionResetError("connection reset"),
+        TimeoutError("timed out"),
+    ])
+    def test_status_polling_retries(self, error, monkeypatch):
+        sleep = Mock()
+        monkeypatch.setattr(time, "sleep", sleep)
+        check_func = Mock(side_effect=[error, "STOPPED"])
+        assert self.op._wait_for_status(check_func, "STOPPED") is True
+        sleep.assert_called_once()
         assert check_func.call_count == 2
+
+    @pytest.mark.parametrize("error", [
+        HttpError(Response({"status": "403"}), b"forbidden"),
+        HttpError(Response({"status": "404"}), b"not found"),
+        KeyError("status"),
+    ])
+    def test_status_polling_propagates_permanent_error(self, error, monkeypatch):
+        sleep = Mock()
+        monkeypatch.setattr(time, "sleep", sleep)
+        check_func = Mock(side_effect=[error, "STOPPED"])
+        with pytest.raises(type(error)) as exc:
+            self.op._wait_for_status(check_func, "STOPPED")
+        assert exc.value is error
+        check_func.assert_called_once()
+        sleep.assert_not_called()
 
 
 class TestRetryingHttpRequest:
