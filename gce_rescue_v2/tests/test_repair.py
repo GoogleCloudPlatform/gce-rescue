@@ -1,5 +1,6 @@
 """Tests for the repair command: orchestrator, CLI, script generation, result parsing."""
 
+from unittest.mock import ANY
 import os
 import shutil
 import subprocess
@@ -2619,6 +2620,7 @@ class TestDiskFullRepair:
         assert result.rollback_data['previous_size_gb'] == 10
         assert result.rollback_data['new_size_gb'] == 15
         compute.disks.return_value.resize.assert_called_once_with(
+            requestId=ANY,
             project='proj',
             zone='zone-a',
             disk='boot-disk',

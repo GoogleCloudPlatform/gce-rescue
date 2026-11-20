@@ -5,6 +5,7 @@ Creates a new Compute Engine persistent disk from an image. Rollback deletes
 the disk that was created by this operation.
 """
 
+from uuid import uuid4
 import time
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
@@ -78,6 +79,7 @@ class CreateDiskOperation(BaseOperation):
             start_time = time.time()
             # Create the disk (returns an async zone operation)
             operation = compute.disks().insert(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 body=disk_body
@@ -176,6 +178,7 @@ class CreateDiskOperation(BaseOperation):
 
             compute = self._rollback_client(tracking_label)
             compute.disks().delete(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 disk=disk_name
