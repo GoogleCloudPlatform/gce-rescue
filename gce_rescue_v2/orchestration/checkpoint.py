@@ -5,6 +5,7 @@ Manages operation checkpoints for resumable rescue/restore operations.
 Checkpoints are stored in VM metadata to enable recovery from interrupted sessions.
 """
 
+from uuid import uuid4
 import json
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -242,6 +243,7 @@ class CheckpointManager:
         for attempt in range(self.MAX_RETRIES):
             try:
                 operation = self.compute.instances().setMetadata(
+                    requestId=str(uuid4()),
                     project=self.project,
                     zone=self.zone,
                     instance=self.vm_name,

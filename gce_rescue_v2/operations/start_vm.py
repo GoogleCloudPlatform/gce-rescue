@@ -5,6 +5,7 @@ Starts a Compute Engine VM instance, waiting until it reaches RUNNING. Rollback
 stops the VM only if it was previously stopped (TERMINATED) before execution.
 """
 
+from uuid import uuid4
 from dataclasses import dataclass
 import time
 from typing import Optional
@@ -101,6 +102,7 @@ class StartVMOperation(BaseOperation):
                 # Use tracked client if tracking_label provided
                 compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
                 compute.instances().start(
+                    requestId=str(uuid4()),
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name
@@ -124,6 +126,7 @@ class StartVMOperation(BaseOperation):
                             f"re-issuing start..."
                         )
                         compute.instances().start(
+                            requestId=str(uuid4()),
                             project=self.project,
                             zone=self.zone,
                             instance=vm_name
@@ -234,6 +237,7 @@ class StartVMOperation(BaseOperation):
                 self._log_debug("VM stopped, now starting...")
                 compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
                 compute.instances().start(
+                    requestId=str(uuid4()),
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name
@@ -323,6 +327,7 @@ class StartVMOperation(BaseOperation):
 
                 compute = self._rollback_client(tracking_label)
                 compute.instances().stop(
+                    requestId=str(uuid4()),
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name

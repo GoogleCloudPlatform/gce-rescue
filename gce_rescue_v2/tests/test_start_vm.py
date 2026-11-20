@@ -9,6 +9,7 @@ Tests:
 - test_start_vm_rollback: Rollback (stop) works correctly
 """
 
+from unittest.mock import ANY
 import pytest
 from unittest.mock import Mock, patch
 from gce_rescue_v2.operations.start_vm import StartVMOperation
@@ -69,6 +70,7 @@ class TestStartVMOperation:
         # Assert
         assert success is True
         self.mock_compute.instances().stop.assert_called_with(
+            requestId=ANY,
             project=self.project, zone=self.zone, instance='test-vm'
         )
 

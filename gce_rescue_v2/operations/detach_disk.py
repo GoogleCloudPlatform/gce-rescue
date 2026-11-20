@@ -5,6 +5,7 @@ Detaches a Compute Engine persistent disk from a VM instance. Rollback re-
 attaches the disk using the captured original configuration.
 """
 
+from uuid import uuid4
 import time
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
@@ -87,6 +88,7 @@ class DetachDiskOperation(BaseOperation):
             compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
             # Detach the disk
             operation = compute.instances().detachDisk(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
@@ -179,6 +181,7 @@ class DetachDiskOperation(BaseOperation):
 
             compute = self._rollback_client(tracking_label)
             operation = compute.instances().attachDisk(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
