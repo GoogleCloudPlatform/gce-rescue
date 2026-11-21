@@ -36,14 +36,23 @@ import httplib2
 
 from ..core.auth import RetryingHttpRequest
 from ..core.config import RescueConfig, RestoreConfig, VERSION, build_user_agent
-from ..core.diagnosis import initramfs_kernel_versions, is_safe_root_device
+from ..core.diagnosis import (
+    initramfs_kernel_versions, is_safe_root_device, latest_boot_output,
+    oom_kills_only_memcg,
+)
 from ..core.fix_catalog import (
     INITRAMFS_REBUILD_PATTERNS, SUPPORTED_FIX_CATEGORIES,
     grub_findings_only_missing_initrd, selinux_findings_only_relabel,
 )
-from ..operations import DiagnoseOperation
+from ..core.machine_types import machine_type_name, next_larger_machine_type
+from ..operations import (
+    DiagnoseOperation, SetMachineTypeOperation, StartVMOperation,
+    StopVMOperation,
+)
 from ..utils.colors import green, red
-from ..utils.os_detection import detect_boot_mode, detect_os_flavor
+from ..utils.os_detection import (
+    detect_boot_mode, detect_os_flavor, managed_by_mig,
+)
 # Composition helpers shared with the rescue orchestrator (re-exported here
 # for backward compatibility; RESCUE_COMPLETE_MARKER is the marker used by
 # the rescue startup script).
@@ -662,6 +671,144 @@ class RepairOrchestrator:
         """
         self._fix_label = 'custom'
         return self._run_repair_flow(fix_script=self.config.fix_script)
+
+    def oom_resize_blocker(self, diagnosis: Dict[str, Any]) -> Optional[str]:
+        """Return why a larger machine type cannot fix the oom findings.
+
+        Returns None when the machine type repair applies: the diagnosis
+        has an oom finding, at least one kill was VM-wide (not a memory
+        cgroup hitting its own limit), and no managed instance group would
+        revert the change from its template.
+        """
+        if not any(e.get('category') == 'oom'
+                   for e in diagnosis.get('boot_errors', [])):
+            return "no out-of-memory kill was detected"
+        if managed_by_mig(self._vm_info or {}):
+            return (
+                "the VM belongs to a managed instance group, which recreates "
+                "it from its instance template; change the machine type in "
+                "the template instead"
+            )
+        compute = self._create_tracked_client(self._ua('oom-serial'))
+        serial_output = compute.instances().getSerialPortOutput(
+            project=self.project, zone=self.zone, instance=self.vm_name
+        ).execute().get('contents', '')
+        if oom_kills_only_memcg(serial_output):
+            return (
+                "every kill hit a memory cgroup limit (container or service), "
+                "not the VM's memory; raise that limit instead"
+            )
+        return None
+
+    def propose_machine_type(self) -> Dict[str, Any]:
+        """Return the current machine type and the proposed larger one.
+
+        Returns:
+            Dict with 'current' (machine type name) and 'proposed' (the
+            machineTypes item, or None for custom types and types already
+            at the largest size of their series).
+        """
+        current = machine_type_name((self._vm_info or {}).get('machineType', ''))
+        compute = self._create_tracked_client(self._ua('machine-types'))
+        machine_types = []
+        request = compute.machineTypes().list(project=self.project, zone=self.zone)
+        while request is not None:
+            response = request.execute()
+            machine_types.extend(response.get('items', []))
+            request = compute.machineTypes().list_next(
+                previous_request=request, previous_response=response
+            )
+        return {
+            'current': current,
+            'proposed': next_larger_machine_type(current, machine_types),
+        }
+
+    def execute_machine_type_change(self, machine_type: str) -> Dict[str, Any]:
+        """Repair oom findings by moving the VM to a larger machine type.
+
+        API-only flow, no rescue mode: stop -> set machine type -> start ->
+        boot verification on the latest boot only (the serial buffer can
+        still hold the kills of earlier boots). If the type change fails,
+        the VM is started again unchanged; if the VM fails to start with the
+        new type (e.g. no capacity in the zone), the original type is set
+        back and the VM started with it.
+
+        Returns:
+            Dict with the same keys as execute(), plus
+            previous_machine_type and new_machine_type.
+        """
+        self._fix_label = 'oom'
+        start_time = time.time()
+
+        def result(status: str, error: Optional[str] = None, **extra):
+            return {
+                'status': status,
+                'fixed_count': 1 if status == 'success' else 0,
+                'fix_lines': extra.pop('fix_lines', []),
+                'error': error,
+                'snapshot_name': None,
+                'duration_seconds': time.time() - start_time,
+                'new_machine_type': machine_type,
+                **extra,
+            }
+
+        stop_vm = StopVMOperation(self.compute, self.project, self.zone, self.logger)
+        set_type = SetMachineTypeOperation(self.compute, self.project, self.zone, self.logger)
+        start_vm = StartVMOperation(self.compute, self.project, self.zone, self.logger)
+
+        stopped = stop_vm.execute(
+            vm_name=self.vm_name, timeout=self.config.vm_stop_timeout,
+            discard_local_ssd=self.config.force,
+            tracking_label=self._ua('vm-stop')
+        )
+        if not stopped.success:
+            return result('failed', stopped.error or stopped.message)
+
+        changed = set_type.execute(
+            vm_name=self.vm_name, machine_type=machine_type,
+            tracking_label=self._ua('set-machine-type')
+        )
+        if not changed.success:
+            stop_vm.rollback(stopped.rollback_data,
+                             tracking_label=self._ua('rollback-vm-stop'))
+            return result('failed', changed.error or changed.message)
+        previous_type = changed.rollback_data['previous_machine_type']
+
+        started = start_vm.execute(
+            vm_name=self.vm_name, timeout=self.config.vm_start_timeout,
+            tracking_label=self._ua('vm-start')
+        )
+        if not started.success:
+            self._log_error(
+                f"VM did not start with {machine_type}; restoring "
+                f"{previous_type}"
+            )
+            restored = (
+                set_type.rollback(changed.rollback_data,
+                                  tracking_label=self._ua('rollback-set-machine-type'))
+                and start_vm.execute(
+                    vm_name=self.vm_name, timeout=self.config.vm_start_timeout,
+                    tracking_label=self._ua('vm-start-original')
+                ).success
+            )
+            if not restored:
+                self._log_error(
+                    f"Could not start the VM with its original machine type "
+                    f"{previous_type}. Check it with: gcloud compute instances "
+                    f"describe {self.vm_name} --zone={self.zone} "
+                    f"--project={self.project}"
+                )
+            return result('failed', started.error or started.message,
+                          previous_machine_type=previous_type)
+
+        boot_check = self._verify_boot_after_repair(latest_boot_only=True)
+        return result(
+            'success',
+            fix_lines=[f"Machine type changed {previous_type} -> {machine_type}"],
+            previous_machine_type=previous_type,
+            boot_verified=boot_check.get('verified'),
+            boot_errors_after=boot_check.get('errors', []),
+        )
 
     def _run_repair_flow(self, repair_script: Optional[str] = None,
                          fix_script: Optional[str] = None,
@@ -1612,7 +1759,8 @@ class RepairOrchestrator:
         return serial_output
 
     def _verify_boot_after_repair(
-            self, categories: Optional[List[str]] = None) -> Dict[str, Any]:
+            self, categories: Optional[List[str]] = None,
+            latest_boot_only: bool = False) -> Dict[str, Any]:
         """Check if the VM boots successfully after repair.
 
         Waits for the VM to generate new serial console output after restore,
@@ -1629,6 +1777,9 @@ class RepairOrchestrator:
         Args:
             categories: Fix categories that were applied (None for custom
                 fix scripts).
+            latest_boot_only: Analyze only the latest boot, for findings
+                that survive a successful boot (e.g. oom kills of the
+                boots before the repair).
 
         Returns:
             Dict with: verified (bool/None), errors (list of error descriptions)
@@ -1698,6 +1849,8 @@ class RepairOrchestrator:
                         )
                         break
 
+            if latest_boot_only:
+                serial_output = latest_boot_output(serial_output)
             if not serial_output or len(serial_output.strip()) < 50:
                 sys.stdout.write("\r" + " " * 60 + "\r")
                 sys.stdout.flush()
