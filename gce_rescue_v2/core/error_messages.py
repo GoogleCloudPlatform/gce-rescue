@@ -216,6 +216,23 @@ DISK_CREATE_FAILED = ErrorSuggestion(
     ]
 )
 
+MACHINE_TYPE_CHANGE_FAILED = ErrorSuggestion(
+    message="Failed to change the machine type",
+    causes=[
+        "CPU or memory quota exceeded for the new machine type",
+        "Machine type does not exist in this zone",
+        "Machine type not compatible with the VM (architecture, GPUs, reservation)",
+    ],
+    suggestions=[
+        "Check the region's CPU quota",
+        "Pick another machine type available in the zone with --machine-type",
+    ],
+    commands=[
+        "gcloud compute machine-types list --zones={zone}",
+        "gcloud compute project-info describe --format='value(quotas)'",
+    ]
+)
+
 TRUSTED_IMAGE_BLOCKED = ErrorSuggestion(
     message="Rescue image blocked by org policy (compute.trustedImageProjects)",
     causes=[
@@ -436,6 +453,12 @@ def get_error_suggestion(error_msg: str, operation: str = None) -> Optional[Erro
     # Authentication errors
     if 'credential' in error_lower or 'token' in error_lower:
         return CREDENTIALS_INVALID
+
+    # Machine type change: quota or unknown/incompatible type (check before
+    # the generic not-found and quota checks, which describe VMs and disks)
+    if operation == 'set_machine_type' and (
+            'quota' in error_lower or 'machinetype' in error_lower):
+        return MACHINE_TYPE_CHANGE_FAILED
 
     # Disk resize cooldown / rate limit (check before generic 'limit' quota check)
     if 'cannot be resized' in error_lower or 'rate limit' in error_lower:

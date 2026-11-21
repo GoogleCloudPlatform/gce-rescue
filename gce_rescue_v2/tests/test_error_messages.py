@@ -4,6 +4,9 @@ from gce_rescue_v2.core.error_messages import (
     get_error_suggestion,
     TRUSTED_IMAGE_BLOCKED,
     PERMISSION_DENIED,
+    MACHINE_TYPE_CHANGE_FAILED,
+    DISK_CREATE_FAILED,
+    VM_NOT_FOUND,
 )
 
 
@@ -36,3 +39,26 @@ class TestTrustedImagePolicyMapping:
     def test_plain_permission_error_unaffected(self):
         """A normal permission error still maps to PERMISSION_DENIED (no regression)."""
         assert get_error_suggestion("Permission denied", operation='create_disk') is PERMISSION_DENIED
+
+
+class TestMachineTypeChangeMapping:
+    """Issue #204: machine type change errors are not reported as disk errors."""
+
+    def test_cpu_quota(self):
+        err = "Quota 'CPUS' exceeded. Limit: 24.0 in region us-central1."
+        assert (get_error_suggestion(err, operation='set_machine_type')
+                is MACHINE_TYPE_CHANGE_FAILED)
+
+    def test_unknown_machine_type(self):
+        err = ("The resource 'projects/p/zones/us-central1-a/machineTypes/"
+               "e2-huge' was not found")
+        assert (get_error_suggestion(err, operation='set_machine_type')
+                is MACHINE_TYPE_CHANGE_FAILED)
+
+    def test_missing_vm_still_maps_to_vm_not_found(self):
+        err = "The resource 'projects/p/zones/z/instances/vm-1' was not found"
+        assert get_error_suggestion(err, operation='set_machine_type') is VM_NOT_FOUND
+
+    def test_other_operations_unaffected(self):
+        err = "Quota 'CPUS' exceeded. Limit: 24.0 in region us-central1."
+        assert get_error_suggestion(err, operation='create_disk') is DISK_CREATE_FAILED
