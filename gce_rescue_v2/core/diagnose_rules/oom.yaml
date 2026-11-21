@@ -12,11 +12,13 @@
 # anything.
 category: oom
 os: linux
-fix_guidance: "Identify the killed process in the serial output, then reduce its memory usage, add swap, or resize the VM: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
+fix_guidance: "Move the VM to a larger machine type: gce-rescue repair VM_NAME --zone=ZONE proposes the next size and asks for confirmation (with --quiet, pass --machine-type=NEW_TYPE)"
 auto_repair: false
 # detect_only: there is nothing on the rescued disk to edit - OOM is a
 # workload/sizing condition; the remedy is a bigger machine type, swap, or
-# fixing the memory-hungry process. Rescue mode does not apply.
+# fixing the memory-hungry process. Rescue mode does not apply. 'repair'
+# offers the bigger machine type through the Compute API instead (stop,
+# set machine type, start), outside the rescue flow (#204).
 detect_only: true
 # Runtime kills persist past boot: a long-running VM that OOM-killed a
 # process last week still has the evidence in its serial buffer, and a
@@ -54,5 +56,5 @@ patterns:
     fixes:
       - "Find the OOM report block in the serial output - it names the killed process and the per-process memory table"
       - "If the line says 'Memory cgroup out of memory' or constraint=CONSTRAINT_MEMCG, a container/cgroup hit its OWN memory limit - raise the container/pod limit instead of resizing the VM"
-      - "Resize the VM to a larger machine type: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
+      - "Or resize manually: gcloud compute instances set-machine-type VM_NAME --zone=ZONE --machine-type=NEW_TYPE (VM must be stopped)"
       - "Or reduce the workload's memory usage / add swap; if a critical service was killed, restart it or reboot the VM"

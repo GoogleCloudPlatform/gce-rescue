@@ -312,6 +312,9 @@ EXAMPLES
     Repair in automation (no prompts):
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
+    Repair out-of-memory kills in automation:
+        $ gce-rescue repair my-vm --zone=us-central1-a --quiet --machine-type=e2-medium
+
 SUPPORTED FIXES
     - fstab: Comments out invalid UUID, device, or label entries (Linux)
     - grub: Reinstalls GRUB and regenerates its configuration (Linux)
@@ -325,6 +328,9 @@ SUPPORTED FIXES
       reports the largest directories (no files are deleted) (Linux)
     - windows_boot_manager: Rebuilds the Windows Boot Configuration Data (BCD)
       store (Windows)
+    - oom: Moves the VM to a larger machine type after confirmation
+      (--machine-type with --quiet); stop and start only, no rescue mode.
+      Not applied to memory cgroup kills or managed instance group VMs (Linux)
     - Custom fix scripts via --fix-script (Linux and Windows), e.g.
       --fix-script=windows_bcd_fix.ps1 (bare names resolve to bundled
       scripts; explicit file paths also work)
