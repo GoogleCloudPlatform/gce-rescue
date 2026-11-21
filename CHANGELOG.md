@@ -5,7 +5,7 @@ All notable changes to GCE Rescue will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.7.1] - 2026-11-24
+## [2.7.1] - 2026-11-23
 
 ### Security
 - `rescue` / `restore` / `repair`: the saved progress record used to resume or roll back an interrupted run is now checked before use. A record that is malformed, belongs to another VM, zone or project, or contains unexpected fields is ignored with a warning, and its text is never printed unescaped. The log file of a resumed run is always a new file in the current directory
