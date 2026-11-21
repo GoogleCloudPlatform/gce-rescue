@@ -444,6 +444,272 @@ def _run_custom_fix_script(args: argparse.Namespace, orchestrator,
                                 zone=args.zone, project=project)
 
 
+def _memory_gb(machine_type: Optional[Dict[str, Any]]) -> str:
+    """Format a machineTypes item's memory, e.g. '4 GB'."""
+    memory_mb = (machine_type or {}).get('memoryMb')
+    return f"{memory_mb / 1024:g} GB" if memory_mb else "unknown memory"
+
+
+def _check_machine_type(oom: Dict[str, Any], machine_type: str,
+                        zone: str) -> Tuple[Optional[str], Optional[str]]:
+    """Validate a requested machine type against the zone's types.
+
+    Returns:
+        (error, warning): error when the type cannot be used, warning
+        when it has no more memory than the current one.
+    """
+    if machine_type == oom['current']:
+        return f"The VM already uses machine type {machine_type}.", None
+    target = oom['machine_types'].get(machine_type)
+    if target is None:
+        return (f"Machine type {machine_type} is not available in zone "
+                f"{zone}. List the available types with: gcloud compute "
+                f"machine-types list --zones={zone}"), None
+    current = oom['machine_types'].get(oom['current'])
+    if current and target.get('memoryMb', 0) <= current.get('memoryMb', 0):
+        return None, (f"{machine_type} ({_memory_gb(target)}) has no more "
+                      f"memory than {oom['current']} ({_memory_gb(current)}).")
+    return None, None
+
+
+def _prepare_oom_repair(args: argparse.Namespace, orchestrator,
+                        diagnosis: Dict[str, Any], config, project: str,
+                        has_other_fixes: bool
+                        ) -> Tuple[Optional[Dict[str, Any]], Optional[int]]:
+    """Decide the machine type repair for oom findings, before any change.
+
+    Returns:
+        (oom, exit_code). oom is None when the repair does not apply;
+        otherwise a dict with 'current', 'proposed', 'machine_types',
+        'target' (None until the interactive prompt) and 'skipped'
+        (--quiet without --machine-type). exit_code is set when the
+        command must stop here.
+    """
+    has_oom = any(err.get('category') == 'oom'
+                  for err in diagnosis.get('boot_errors', []))
+    if not has_oom:
+        if config.machine_type:
+            print(f"  {warning_prefix()} --machine-type ignored: no "
+                  f"out-of-memory kill was detected.")
+        return None, None
+
+    blocker = orchestrator.oom_resize_blocker(diagnosis)
+    if blocker:
+        print(f"  {warning_prefix()} [OOM] machine type not changed: {blocker}.")
+        return None, None
+
+    oom = orchestrator.propose_machine_type()
+    oom.update(target=None, skipped=False)
+
+    if config.machine_type:
+        error, warning = _check_machine_type(oom, config.machine_type,
+                                             args.zone)
+        if error:
+            print(f"{error_prefix()} {error}", file=sys.stderr)
+            return None, 1
+        if warning:
+            print(f"  {warning_prefix()} {warning}")
+        oom['target'] = config.machine_type
+    elif args.quiet:
+        oom['skipped'] = True
+        proposed = oom['proposed']['name'] if oom['proposed'] else 'TYPE'
+        print(f"  {warning_prefix()} Skipping [OOM] repair: changing the "
+              f"machine type requires explicit --machine-type=<TYPE> when "
+              f"using --quiet.")
+        if oom['proposed']:
+            print(f"  Suggested: {proposed} ({_memory_gb(oom['proposed'])}, "
+                  f"currently {oom['current']})")
+        print("  Re-run with an explicit machine type:")
+        print(f"    $ gce-rescue repair {args.instance_name} "
+              f"--zone={args.zone} --project={project} "
+              f"--quiet --machine-type={proposed}")
+        if not has_other_fixes:
+            return oom, 1
+    return oom, None
+
+
+def _prompt_machine_type(oom: Dict[str, Any],
+                         zone: str) -> Tuple[Optional[str], int]:
+    """Prompt for the machine type of the oom repair.
+
+    Returns:
+        Tuple of (machine_type, '' to skip, or None on abort;
+        lines_printed_to_terminal).
+    """
+    current = oom['machine_types'].get(oom['current'])
+    proposed = oom['proposed']
+    print("")
+    print(f"  Out of memory: [{oom['current']}] ({_memory_gb(current)}) is "
+          f"too small for the workload.")
+    lines_printed = 2
+    if proposed:
+        prompt = (f"  Change machine type? Enter a type, 'y' for "
+                  f"{proposed['name']} ({_memory_gb(proposed)}), or 'n' to "
+                  f"skip [default: {proposed['name']}]: ")
+    else:
+        print("  No larger machine type of the same series in this zone.")
+        lines_printed += 1
+        prompt = "  Change machine type? Enter a type, or 'n' to skip: "
+
+    while True:
+        try:
+            raw = input(prompt).strip().lower()
+            lines_printed += 1
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return None, lines_printed
+
+        if raw in ('n', 'no'):
+            return '', lines_printed
+        if raw in ('', 'y', 'yes'):
+            if proposed:
+                return proposed['name'], lines_printed
+            print("  Please enter a machine type, or 'n' to skip.")
+            lines_printed += 1
+            continue
+        error, warning = _check_machine_type(oom, raw, zone)
+        if error:
+            print(f"  {error}")
+            lines_printed += 1
+            continue
+        if warning:
+            print(f"  {warning_prefix()} {warning}")
+            lines_printed += 1
+        return raw, lines_printed
+
+
+def _show_machine_type_results(result: Dict[str, Any], vm_name: str,
+                               zone: str = '', project: str = '') -> int:
+    """Display the oom machine type repair result and return exit code."""
+    new_type = result.get('new_machine_type')
+    if result.get('status') == 'success':
+        print("")
+        print("Repair results:")
+        for line in result.get('fix_lines', []):
+            print(f"  {green('[FIXED]')} {line}")
+        print("")
+        completion = f"Repair complete. Instance [{vm_name}] is now running."
+        duration = result.get('duration_seconds')
+        if duration:
+            completion += f" ({_format_duration(duration)})"
+        print(completion)
+        boot_errors = result.get('boot_errors_after', [])
+        if result.get('boot_verified') is False and any(
+                err.startswith('oom:') for err in boot_errors):
+            print("")
+            print(f"{warning_prefix()} Out-of-memory kills still occur with "
+                  f"{new_type}. Run repair again to move to a larger type.")
+        else:
+            _show_boot_verification(result.get('boot_verified'), boot_errors,
+                                    vm_name, zone)
+        return 0
+
+    print("", file=sys.stderr)
+    print(f"{error_prefix()} Machine type change to {new_type} failed: "
+          f"{result.get('error')}", file=sys.stderr)
+    previous_type = result.get('previous_machine_type')
+    if previous_type is None:
+        print("The machine type was not changed.", file=sys.stderr)
+    elif result.get('restored'):
+        print(f"Instance [{vm_name}] runs again with its original machine "
+              f"type {previous_type}.", file=sys.stderr)
+    else:
+        print("Check the instance state:", file=sys.stderr)
+        print(f"  $ gcloud compute instances describe {vm_name} "
+              f"--zone={zone} --project={project} "
+              f"--format='value(status,machineType)'", file=sys.stderr)
+    return 1
+
+
+def _run_oom_only_repair(args: argparse.Namespace, orchestrator,
+                         oom: Dict[str, Any], project: str,
+                         local_ssds: List[str]) -> int:
+    """Repair a diagnosis whose only repairable finding is oom."""
+    if not args.quiet:
+        intro_block = [
+            f"Repair: {args.instance_name} ({args.zone})",
+            "",
+            "  Found out-of-memory kills (oom)",
+            "  Run 'diagnose' for details.",
+        ]
+        for line in intro_block:
+            print(line)
+        total_printed_lines = len(intro_block)
+        if oom['target'] is None:
+            target, prompt_lines = _prompt_machine_type(oom, args.zone)
+            total_printed_lines += prompt_lines
+            if target is None:
+                return 0
+            if not target:
+                print("")
+                print("  Skipped machine type change.")
+                return 0
+            oom['target'] = target
+
+        plan_block = [
+            "",
+            "  Repair plan:",
+            "    1. Stop VM",
+            f"    2. Change machine type {oom['current']} -> {oom['target']}",
+            "    3. Start VM and verify boot",
+        ]
+        if local_ssds:
+            plan_block.append(
+                f"  {warning_prefix()} Data on Local SSDs"
+                f" ({', '.join(local_ssds)}) will be permanently lost."
+            )
+        plan_block.append("")
+        for line in plan_block:
+            print(line)
+        total_printed_lines += len(plan_block)
+
+        try:
+            response = input("  Proceed? [y/N]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nAborted.")
+            return 0
+        if response not in ('y', 'yes'):
+            print("\nAborted by user.")
+            return 0
+        clear_lines(total_printed_lines + 1)
+
+    print(f"Repairing instance [{args.instance_name}]:")
+    print("  Issue:  [OOM] The kernel out-of-memory killer terminated a process")
+    print(f"  Plan:   Stop -> Change machine type ({oom['current']} -> "
+          f"{oom['target']}) -> Start")
+    print("")
+    result = orchestrator.execute_machine_type_change(oom['target'])
+    return _show_machine_type_results(result, args.instance_name,
+                                      zone=args.zone, project=project)
+
+
+def _run_oom_after_repair(result: Dict[str, Any], args: argparse.Namespace,
+                          orchestrator, oom: Dict[str, Any],
+                          project: str) -> int:
+    """Run the machine type repair once the rescue-based repair is done.
+
+    Skipped when that repair did not finish: the VM may still be in rescue
+    mode, and stopping or starting it then would get in the way.
+    """
+    if result.get('status') not in ('success', 'no_issues'):
+        print("", file=sys.stderr)
+        print(f"{warning_prefix()} [OOM] machine type change not attempted "
+              f"because the repair above did not complete. Once the VM "
+              f"boots, change it with:", file=sys.stderr)
+        print(f"  $ gcloud compute instances stop {args.instance_name} "
+              f"--zone={args.zone} --project={project}", file=sys.stderr)
+        print(f"  $ gcloud compute instances set-machine-type "
+              f"{args.instance_name} --zone={args.zone} --project={project} "
+              f"--machine-type={oom['target']}", file=sys.stderr)
+        return 1
+    print("")
+    print(f"Changing machine type of [{args.instance_name}]: "
+          f"{oom['current']} -> {oom['target']}")
+    oom_result = orchestrator.execute_machine_type_change(oom['target'])
+    return _show_machine_type_results(oom_result, args.instance_name,
+                                      zone=args.zone, project=project)
+
+
 def handle_repair(args: argparse.Namespace) -> int:
     """Handle repair command."""
     from ..core.auth import AuthManager
@@ -717,6 +983,21 @@ def handle_repair(args: argparse.Namespace) -> int:
         print("  Run 'diagnose' for details.")
         return 0
 
+    oom, oom_exit = _prepare_oom_repair(
+        args, orchestrator, diagnosis, config, project,
+        has_other_fixes=bool(fixable)
+    )
+    if oom_exit is not None:
+        return oom_exit
+    oom_blocked = oom is None and 'oom' in unfixable
+    if oom_blocked or (oom is not None and not oom['skipped']):
+        unfixable = [c for c in unfixable if c != 'oom']
+        if oom is not None and not fixable:
+            return _run_oom_only_repair(args, orchestrator, oom, project,
+                                        local_ssds)
+    if oom_blocked and not fixable and not unfixable:
+        return 0
+
     # The relabel banner alone is a relabel in progress, not a fault:
     # repair leaves it alone and rescue mode would interrupt it.
     relabel_in_progress = ('selinux' in unfixable
@@ -850,10 +1131,12 @@ def handle_repair(args: argparse.Namespace) -> int:
         intro_block.append("  Run 'diagnose' for details.")
 
         total_printed_lines = 0
+        intro_printed = False
         if 'disk_full' in fixable and config.resize_disk_gb is None:
             for line in intro_block:
                 print(line)
             total_printed_lines += len(intro_block)
+            intro_printed = True
             chosen_gb, prompt_lines = _prompt_disk_resize_gb(
                 boot_disk_name, current_size_gb
             )
@@ -879,6 +1162,21 @@ def handle_repair(args: argparse.Namespace) -> int:
             plan_block: List[str] = ["", "  Repair plan:"]
         else:
             plan_block = intro_block + ["", "  Repair plan:"]
+
+        if oom is not None and oom['target'] is None and not oom['skipped']:
+            if not intro_printed:
+                for line in intro_block:
+                    print(line)
+                total_printed_lines += len(intro_block)
+                plan_block = ["", "  Repair plan:"]
+            target, prompt_lines = _prompt_machine_type(oom, args.zone)
+            total_printed_lines += prompt_lines
+            if target is None:
+                return 0
+            if target:
+                oom['target'] = target
+            else:
+                oom = None
 
         step = 1
         if snapshot_enabled:
@@ -946,6 +1244,11 @@ def handle_repair(args: argparse.Namespace) -> int:
         plan_block.append(
             f"    {step}. Restore original boot disk and start VM"
         )
+        if oom is not None and oom['target']:
+            plan_block.append(
+                f"    {step + 1}. Stop VM, change machine type "
+                f"{oom['current']} -> {oom['target']}, start VM"
+            )
         if local_ssds:
             plan_block.append(
                 f"  {warning_prefix()} Data on Local SSDs"
@@ -990,11 +1293,20 @@ def handle_repair(args: argparse.Namespace) -> int:
     for cat in fixable:
         plan_parts.append(FIX_LABELS.get(cat, f'Fix {cat}'))
     plan_parts.append("Restore")
+    if oom is not None and oom['target']:
+        plan_parts.append("Change machine type")
     print(f"  Plan:   {' -> '.join(plan_parts)}")
     print("")
 
     # Execute repair (concise header already printed)
     orchestrator._suppress_header = True
     result = orchestrator.execute(diagnosis)
-    return _show_repair_results(result, args.instance_name,
-                                zone=args.zone, project=project)
+    exit_code = _show_repair_results(result, args.instance_name,
+                                     zone=args.zone, project=project)
+    if oom is None:
+        return exit_code
+    if oom['skipped']:
+        return 1
+    oom_exit_code = _run_oom_after_repair(result, args, orchestrator, oom,
+                                          project)
+    return exit_code or oom_exit_code

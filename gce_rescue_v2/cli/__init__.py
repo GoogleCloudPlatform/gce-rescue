@@ -568,6 +568,18 @@ def _add_repair_args(parser: argparse.ArgumentParser):
     )
 
 
+    machine_type_group = parser.add_argument_group('MACHINE TYPE FLAGS')
+    machine_type_group.add_argument(
+        '--machine-type',
+        metavar='TYPE',
+        dest='machine_type',
+        default=None,
+        help=(
+            'Machine type to move the VM to when repairing out-of-memory'
+            ' kills (oom), e.g. e2-medium. Required with --quiet.'
+        )
+    )
+
     _add_verification_timeout_arg(parser)
 
 
@@ -700,6 +712,10 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # Boot disk resize increment for disk_full auto-repair
     if getattr(args, 'resize_disk_gb', None) is not None:
         config.resize_disk_gb = args.resize_disk_gb
+
+    # Machine type for the oom repair
+    if getattr(args, 'machine_type', None):
+        config.machine_type = args.machine_type
 
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):

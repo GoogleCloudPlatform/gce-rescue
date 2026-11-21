@@ -704,9 +704,10 @@ class RepairOrchestrator:
         """Return the current machine type and the proposed larger one.
 
         Returns:
-            Dict with 'current' (machine type name) and 'proposed' (the
+            Dict with 'current' (machine type name), 'proposed' (the
             machineTypes item, or None for custom types and types already
-            at the largest size of their series).
+            at the largest size of their series) and 'machine_types' (the
+            zone's machineTypes items by name).
         """
         current = machine_type_name((self._vm_info or {}).get('machineType', ''))
         compute = self._create_tracked_client(self._ua('machine-types'))
@@ -721,6 +722,7 @@ class RepairOrchestrator:
         return {
             'current': current,
             'proposed': next_larger_machine_type(current, machine_types),
+            'machine_types': {mt.get('name'): mt for mt in machine_types},
         }
 
     def execute_machine_type_change(self, machine_type: str) -> Dict[str, Any]:
@@ -734,8 +736,10 @@ class RepairOrchestrator:
         back and the VM started with it.
 
         Returns:
-            Dict with the same keys as execute(), plus
-            previous_machine_type and new_machine_type.
+            Dict with the same keys as execute(), plus new_machine_type,
+            previous_machine_type once the type was changed, and restored
+            (whether the VM runs again with its original type) when it
+            failed to start with the new one.
         """
         self._fix_label = 'oom'
         start_time = time.time()
@@ -799,7 +803,8 @@ class RepairOrchestrator:
                     f"--project={self.project}"
                 )
             return result('failed', started.error or started.message,
-                          previous_machine_type=previous_type)
+                          previous_machine_type=previous_type,
+                          restored=restored)
 
         boot_check = self._verify_boot_after_repair(latest_boot_only=True)
         return result(

@@ -127,6 +127,7 @@ class TestProposeMachineType:
 
         assert proposal['current'] == 'e2-small'
         assert proposal['proposed']['name'] == 'e2-medium'
+        assert set(proposal['machine_types']) == {'e2-small', 'e2-medium'}
 
     def test_no_larger_type(self):
         orch = _orchestrator()
@@ -256,3 +257,299 @@ class TestVerifyLatestBootOnly:
         result = self._verify(self.NEW_BOOT + GLOBAL_KILL, latest_boot_only=True)
         assert result['verified'] is False
         assert any(e.startswith('oom:') for e in result['errors'])
+
+
+MICRO, SMALL, MEDIUM, STANDARD_2 = (
+    {'name': 'e2-micro', 'memoryMb': 1024},
+    {'name': 'e2-small', 'memoryMb': 2048},
+    {'name': 'e2-medium', 'memoryMb': 4096},
+    {'name': 'e2-standard-2', 'memoryMb': 8192},
+)
+OOM_ERROR = {
+    'category': 'oom', 'severity': 'warning', 'name': 'oom_killed_process',
+    'description': 'The kernel out-of-memory killer terminated a process',
+    'detected_pattern': 'Out of memory: Killed process 812', 'suggested_fixes': [],
+}
+GRUB_ERROR = {
+    'category': 'grub', 'severity': 'critical', 'name': 'grub_rescue',
+    'description': 'GRUB rescue prompt', 'detected_pattern': 'grub rescue>',
+    'suggested_fixes': [],
+}
+SUCCESS = {'status': 'success', 'fixed_count': 1, 'fix_lines': [], 'error': None,
+           'snapshot_name': None, 'duration_seconds': 60, 'boot_verified': True,
+           'boot_errors_after': []}
+
+
+def _cli_args(quiet=False, machine_type=None):
+    import argparse
+    return argparse.Namespace(
+        instance_name='vm-1', zone='us-central1-a', project='proj',
+        verbosity='info', format='disable', quiet=quiet, force=False,
+        snapshot=True, rescue_image=None, fix_script=None,
+        resize_disk_gb=None, verification_timeout=None,
+        machine_type=machine_type,
+    )
+
+
+class TestRepairCliOom:
+    """handle_repair with oom findings (issue #204)."""
+
+    def _run(self, args, boot_errors=(OOM_ERROR,), fixable=(), inputs=(),
+             blocker=None, proposed=MEDIUM, repair_result=SUCCESS):
+        from gce_rescue_v2.cli.repair import handle_repair
+        from gce_rescue_v2.core.config import RescueConfig
+
+        vm_info = {
+            'status': 'RUNNING',
+            'machineType': 'zones/us-central1-a/machineTypes/e2-small',
+            'disks': [{'boot': True, 'deviceName': 'boot-disk',
+                       'source': 'projects/proj/zones/us-central1-a/disks/boot-disk'}],
+            'metadata': {'items': [], 'fingerprint': 'abc'},
+        }
+        compute = Mock()
+        compute.instances.return_value.get.return_value.execute.return_value = vm_info
+
+        orch = Mock()
+        orch.config = RescueConfig()
+        orch.validate.return_value = True
+        orch.diagnose.return_value = {
+            'vm_name': 'vm-1', 'zone': 'us-central1-a', 'status': 'RUNNING',
+            'diagnosis_status': 'boot_errors_detected',
+            'boot_errors': list(boot_errors),
+        }
+        orch.get_fixable_categories.return_value = list(fixable)
+        orch.get_unfixable_categories.return_value = [
+            e['category'] for e in boot_errors if e['category'] not in fixable]
+        orch._extract_fstab_targets.return_value = []
+        orch.oom_resize_blocker.return_value = blocker
+        orch.propose_machine_type.return_value = {
+            'current': 'e2-small', 'proposed': proposed,
+            'machine_types': {
+                mt['name']: mt for mt in (MICRO, SMALL, MEDIUM, STANDARD_2)},
+        }
+        orch.execute.return_value = repair_result
+        orch.execute_machine_type_change.return_value = dict(
+            SUCCESS, fix_lines=['Machine type changed e2-small -> e2-medium'],
+            new_machine_type='e2-medium', previous_machine_type='e2-small')
+
+        auth = Mock()
+        auth.get_client.return_value = (compute, 'proj')
+        self.input = Mock(side_effect=list(inputs))
+        with patch('gce_rescue_v2.core.auth.AuthManager', return_value=auth), \
+                patch('gce_rescue_v2.cli.repair._create_tracked_client',
+                      return_value=compute), \
+                patch('gce_rescue_v2.cli.preflight.check_image_org_policy',
+                      return_value=None), \
+                patch('gce_rescue_v2.orchestration.repair.RepairOrchestrator',
+                      return_value=orch), \
+                patch('gce_rescue_v2.cli.repair._Spinner'), \
+                patch('builtins.input', self.input):
+            rc = handle_repair(args)
+        return rc, orch
+
+    def test_flag_parsed_into_config(self):
+        from gce_rescue_v2.cli import args_to_rescue_config, create_parser
+
+        args = create_parser().parse_args([
+            'repair', 'vm-1', '--zone=us-central1-a', '--machine-type=e2-medium'])
+
+        assert args.machine_type == 'e2-medium'
+        assert args_to_rescue_config(args).machine_type == 'e2-medium'
+
+    def test_interactive_accepts_proposal(self):
+        rc, orch = self._run(_cli_args(), inputs=['y', 'y'])
+
+        assert rc == 0
+        orch.execute_machine_type_change.assert_called_once_with('e2-medium')
+        orch.execute.assert_not_called()
+
+    def test_interactive_typed_type(self):
+        rc, orch = self._run(_cli_args(), inputs=['e2-standard-2', 'y'])
+
+        assert rc == 0
+        orch.execute_machine_type_change.assert_called_once_with('e2-standard-2')
+
+    def test_interactive_unknown_type_asks_again(self, capsys):
+        rc, orch = self._run(_cli_args(), inputs=['e2-huge', '', 'y'])
+
+        assert rc == 0
+        assert 'not available in zone' in capsys.readouterr().out
+        orch.execute_machine_type_change.assert_called_once_with('e2-medium')
+
+    def test_interactive_no_proposal_requires_a_type(self, capsys):
+        rc, orch = self._run(_cli_args(), proposed=None,
+                             inputs=['', 'e2-medium', 'y'])
+
+        assert rc == 0
+        assert 'No larger machine type' in capsys.readouterr().out
+        orch.execute_machine_type_change.assert_called_once_with('e2-medium')
+
+    def test_interactive_skip(self):
+        rc, orch = self._run(_cli_args(), inputs=['n'])
+
+        assert rc == 0
+        orch.execute_machine_type_change.assert_not_called()
+
+    def test_interactive_declined_plan(self):
+        rc, orch = self._run(_cli_args(), inputs=['y', 'n'])
+
+        assert rc == 0
+        orch.execute_machine_type_change.assert_not_called()
+
+    def test_quiet_without_flag_exits_non_zero(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True))
+
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert 'requires explicit --machine-type' in out
+        assert '--quiet --machine-type=e2-medium' in out
+        orch.execute_machine_type_change.assert_not_called()
+        self.input.assert_not_called()
+
+    def test_quiet_with_flag(self):
+        rc, orch = self._run(_cli_args(quiet=True, machine_type='e2-medium'))
+
+        assert rc == 0
+        orch.execute_machine_type_change.assert_called_once_with('e2-medium')
+        self.input.assert_not_called()
+
+    def test_unknown_flag_type_stops_before_any_change(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True, machine_type='e2-huge'))
+
+        assert rc == 1
+        assert 'not available in zone' in capsys.readouterr().err
+        orch.execute_machine_type_change.assert_not_called()
+
+    def test_same_type_is_refused(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True, machine_type='e2-small'))
+
+        assert rc == 1
+        assert 'already uses' in capsys.readouterr().err
+        orch.execute_machine_type_change.assert_not_called()
+
+    def test_smaller_type_warns_but_proceeds(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True, machine_type='e2-micro'))
+
+        assert rc == 0
+        assert 'has no more memory' in capsys.readouterr().out
+        orch.execute_machine_type_change.assert_called_once_with('e2-micro')
+
+    def test_blocker_reason_shown(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True, machine_type='e2-medium'),
+                             blocker='the VM belongs to a managed instance group')
+
+        assert 'managed instance group' in capsys.readouterr().out
+        orch.propose_machine_type.assert_not_called()
+        orch.execute_machine_type_change.assert_not_called()
+
+    def test_blocked_oom_alone_does_not_suggest_rescue_mode(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True),
+                             blocker='every kill hit a memory cgroup limit')
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert 'memory cgroup limit' in out
+        assert 'not yet available' not in out
+        assert 'gce-rescue rescue' not in out
+        orch.execute.assert_not_called()
+
+    def test_blocked_oom_with_other_repair_is_not_listed_as_manual(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True),
+                             boot_errors=[GRUB_ERROR, OOM_ERROR], fixable=['grub'],
+                             blocker='every kill hit a memory cgroup limit')
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert '[OOM] requires manual repair' not in out
+        orch.execute.assert_called_once()
+        orch.execute_machine_type_change.assert_not_called()
+
+    def test_blocked_oom_keeps_other_manual_findings(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True),
+                             boot_errors=[OOM_ERROR, GRUB_ERROR],
+                             blocker='every kill hit a memory cgroup limit')
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert 'Detected [GRUB] issue but automated fix is not yet available' in out
+        assert 'Detected [OOM]' not in out
+        assert 'gce-rescue rescue' in out
+
+    def test_flag_without_oom_is_ignored(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True, machine_type='e2-medium'),
+                             boot_errors=[GRUB_ERROR], fixable=['grub'])
+
+        assert rc == 0
+        assert '--machine-type ignored' in capsys.readouterr().out
+        orch.execute.assert_called_once()
+        orch.execute_machine_type_change.assert_not_called()
+
+    def test_with_other_repair_runs_it_first(self):
+        rc, orch = self._run(_cli_args(quiet=True, machine_type='e2-medium'),
+                             boot_errors=[GRUB_ERROR, OOM_ERROR], fixable=['grub'])
+
+        assert rc == 0
+        calls = [c[0] for c in orch.mock_calls
+                 if c[0] in ('execute', 'execute_machine_type_change')]
+        assert calls == ['execute', 'execute_machine_type_change']
+
+    def test_with_other_repair_interactive_plan(self, capsys):
+        rc, orch = self._run(_cli_args(), boot_errors=[GRUB_ERROR, OOM_ERROR],
+                             fixable=['grub'], inputs=['y', 'y'])
+
+        assert rc == 0
+        assert 'change machine type e2-small -> e2-medium' in capsys.readouterr().out
+        orch.execute.assert_called_once()
+        orch.execute_machine_type_change.assert_called_once_with('e2-medium')
+
+    def test_failed_other_repair_skips_type_change(self, capsys):
+        rc, orch = self._run(_cli_args(quiet=True, machine_type='e2-medium'),
+                             boot_errors=[GRUB_ERROR, OOM_ERROR], fixable=['grub'],
+                             repair_result=dict(SUCCESS, status='rescue_failed',
+                                                error='Rescue phase failed'))
+
+        assert rc == 1
+        assert 'not attempted' in capsys.readouterr().err
+        orch.execute_machine_type_change.assert_not_called()
+
+    def test_quiet_skip_with_other_repair_exits_non_zero(self):
+        rc, orch = self._run(_cli_args(quiet=True),
+                             boot_errors=[GRUB_ERROR, OOM_ERROR], fixable=['grub'])
+
+        assert rc == 1
+        orch.execute.assert_called_once()
+        orch.execute_machine_type_change.assert_not_called()
+
+
+class TestShowMachineTypeResults:
+
+    def _show(self, **result):
+        from gce_rescue_v2.cli.repair import _show_machine_type_results
+        base = {'new_machine_type': 'e2-medium', 'fix_lines': [],
+                'error': 'no capacity'}
+        return _show_machine_type_results(dict(base, **result), 'vm-1',
+                                          zone='zone-a', project='proj')
+
+    def test_success(self, capsys):
+        assert self._show(status='success', boot_verified=True,
+                          fix_lines=['Machine type changed e2-small -> e2-medium']) == 0
+        assert 'Machine type changed e2-small -> e2-medium' in capsys.readouterr().out
+
+    def test_oom_still_present(self, capsys):
+        assert self._show(status='success', boot_verified=False,
+                          boot_errors_after=['oom: killed']) == 0
+        assert 'Run repair again' in capsys.readouterr().out
+
+    def test_type_not_changed(self, capsys):
+        assert self._show(status='failed') == 1
+        assert 'was not changed' in capsys.readouterr().err
+
+    def test_original_type_restored(self, capsys):
+        assert self._show(status='failed', previous_machine_type='e2-small',
+                          restored=True) == 1
+        assert 'original machine type e2-small' in capsys.readouterr().err
+
+    def test_not_restored(self, capsys):
+        assert self._show(status='failed', previous_machine_type='e2-small',
+                          restored=False) == 1
+        assert 'gcloud compute instances describe vm-1' in capsys.readouterr().err
