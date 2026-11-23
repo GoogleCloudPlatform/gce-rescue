@@ -15,6 +15,7 @@ from ..core.fix_catalog import (
 )
 from ..utils.colors import error_prefix, warning_prefix, clear_lines, green, bold
 from ..utils.logger import setup_logging
+from ..utils.safe_text import safe_text
 from ..orchestration.checkpoint import CheckpointManager
 from .output import _Spinner, _format_duration
 from .preflight import (
@@ -22,6 +23,7 @@ from .preflight import (
 )
 from .checkpoint_ui import (
     _handle_checkpoint_rollback, _print_quiet_checkpoint_block,
+    _warn_ignored_checkpoint,
 )
 
 # Human-readable labels for fix categories, shared by the repair plan
@@ -129,7 +131,7 @@ def _show_boot_verification(boot_verified: Optional[bool],
         print("")
         print(f"{warning_prefix()} VM may still have boot issues:")
         for err in boot_errors:
-            print(f"  - {err}")
+            print(f"  - {safe_text(err)}")
         print("")
         print("Consider using rescue mode for manual investigation:")
         print(f"  $ gce-rescue rescue {vm_name} --zone={zone}")
@@ -177,13 +179,16 @@ def _show_repair_results(result: Dict[str, Any], vm_name: str,
                          zone: str = '', project: str = '') -> int:
     """Display repair results and return exit code."""
     status = result.get('status', 'unknown')
+    # Fix lines and errors come from the VM's serial console: escape them.
     fix_lines = [
-        _fill_command_placeholders(line, vm_name, zone, project)
+        safe_text(_fill_command_placeholders(line, vm_name, zone, project))
         for line in result.get('fix_lines', [])
     ]
     fixed_count = result.get('fixed_count', 0)
     error = _fill_command_placeholders(result.get('error'), vm_name, zone,
                                        project)
+    if error is not None:
+        error = safe_text(error)
     snapshot_name = result.get('snapshot_name')
     duration = result.get('duration_seconds', 0)
 
@@ -584,6 +589,7 @@ def handle_repair(args: argparse.Namespace) -> int:
             checkpoint = checkpoint_mgr.detect_incomplete(
                 operation_type='rescue'
             )
+            _warn_ignored_checkpoint(checkpoint_mgr, args.instance_name)
             if checkpoint and args.quiet:
                 logger.warning(
                     "Incomplete %s checkpoint found (step %s of %s, started "
