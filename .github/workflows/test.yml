@@ -4,17 +4,20 @@ on:
   push:
 env:
   PIPENV_VENV_IN_PROJECT: enabled
+permissions:
+  contents: read
+
 jobs:
   make-test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v7
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
     - name: Set up Python
       id: setup-python
-      uses: actions/setup-python@v7
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
       with:
         python-version: 3.13
 
@@ -23,7 +26,7 @@ jobs:
 
     - name: Restore pipenv cache
       id: cache-pipenv
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ./.venv
         key: test-${{ runner.os }}-python-${{ steps.setup-python.outputs.python-version }}-pipenv-${{ hashFiles('Pipfile.lock') }}
