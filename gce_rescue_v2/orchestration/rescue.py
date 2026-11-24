@@ -9,6 +9,7 @@ Coordinates the rescue workflow:
 5. Rolls back on failure
 """
 
+import secrets
 import time
 import uuid
 from typing import Optional
@@ -40,12 +41,17 @@ from ..operations import (
 )
 from ..operations.set_metadata import (
     RESCUE_BOOT_ATTACHMENT_KEY,
+    WINDOWS_KEYS_KEY,
     capture_boot_attachment,
     encode_boot_attachment,
 )
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
+from .ownership import (
+    RESCUE_DISK_NAME, OwnershipChecker, attach_disk_command,
+    rescue_disk_description, snapshot_description,
+)
 
 # User-Agent step of each rescue operation (the tracking_label passed to its
 # execute()), keyed by its operations_map name. Rollback calls are tagged
@@ -112,7 +118,7 @@ class RescueOrchestrator:
             vm_name: Name of VM to rescue
             config: Optional rescue configuration
             logger: Optional logger
-            log_file: Log file path (for checkpoint persistence)
+            log_file: Log file path of this session
             startup_script_override: Custom startup script (replaces default)
             suppress_progress: Suppress progress spinner (for embedding in repair)
             progress_callback: Optional callback(phase_label) invoked on each step
@@ -165,7 +171,6 @@ class RescueOrchestrator:
         self.original_disk_size_gb = None
 
         # Windows rescue credentials (generated for RDP access)
-        self.windows_rescue_password = None
 
         # Verification status (set after startup verification)
         self.verification_succeeded = None
@@ -195,6 +200,11 @@ class RescueOrchestrator:
         # Resume state (set when resuming from checkpoint)
         self._resume_from_step = 0  # 0 = fresh start, >0 = resume from this step
         self._resumed_context = None  # Context from checkpoint
+        # Asks the operator about a disk named in the checkpoint that
+        # cannot be shown to be this VM's (set by the CLI when resuming
+        # interactively). None: such a resume stops instead.
+        self.confirm_disk = None
+        self._original_unproven = False
 
     def _init_progress(self):
         """Initialize spinner with phases display."""
@@ -539,7 +549,6 @@ class RescueOrchestrator:
             'rescue_disk_name': self.rescue_disk_name,
             'os_type': self.os_type,
             'architecture': self.architecture,
-            'log_file': self.log_file
         }
         if self.original_disk_size_gb is not None:
             ctx['original_disk_size_gb'] = self.original_disk_size_gb
@@ -614,20 +623,35 @@ class RescueOrchestrator:
         self._log_debug(f"Rescuing instance '{self.vm_name}'...")
         self._log_debug(f"Config: {self.config}")
 
-        # Initialize progress display
-        self._init_progress()
-
         # Total internal steps for checkpoint tracking
         total_checkpoint_steps = 9  # Stop, Detach, Snapshot, CreateDisk, AttachRescue, SetMeta, Start, AttachOrig, Verify
 
         try:
-            # Get original disk info if not resuming (or if not already set)
-            if not self._resume_from_step or not self.original_disk_name:
+            # Get original disk info from the VM unless it was already
+            # detached in the interrupted run. The checkpoint copy is only
+            # used when the VM can no longer tell us.
+            if (not self._resume_from_step or not self.original_disk_name
+                    or not self._should_skip_step(2)):
                 self._get_original_disk_info()
 
+            # Names from a checkpoint must be shown to belong to this VM
+            # before anything is attached (see orchestration.ownership).
+            # Before the progress display starts: this may ask the operator.
+            if self._resume_from_step and not self._verify_resumed_disks():
+                return False
+
+            # Initialize progress display
+            self._init_progress()
+
             # Generate rescue disk name if not resuming
-            if not self._resume_from_step or not self.rescue_disk_name:
+            new_rescue_disk = not self._resume_from_step or not self.rescue_disk_name
+            if new_rescue_disk:
                 rescue_disk_name = f"rescue-disk-{int(time.time())}"
+                if self._disk_exists(rescue_disk_name):
+                    # Another rescue in this zone started in the same second,
+                    # or someone created a disk with this name. Never reuse it.
+                    rescue_disk_name = (f"rescue-disk-{int(time.time())}"
+                                        f"{secrets.randbelow(10**6):06d}")
                 self.rescue_disk_name = rescue_disk_name
             else:
                 rescue_disk_name = self.rescue_disk_name
@@ -716,7 +740,11 @@ class RescueOrchestrator:
                 result = create_snapshot.execute(
                     disk_name=self.original_disk_name,
                     snapshot_name=None,
-                    description=f"Pre-rescue safety snapshot of {self.vm_name}",
+                    description=snapshot_description(
+                        self.vm_name,
+                        None if self._original_unproven
+                        else self._instance_id(),
+                        self._original_auto_delete()),
                     timeout=self.config.snapshot_timeout,
                     wait=not self.config.async_snapshot,
                     tracking_label=self._ua('disk-snapshot')
@@ -747,8 +775,10 @@ class RescueOrchestrator:
             # Step 4: Create rescue disk
             if not self._should_skip_step(4):
                 self._update_progress("Creating rescue disk")
-                # Idempotency check: skip if rescue disk already exists
-                if self._disk_exists(rescue_disk_name):
+                # Idempotency check: skip if rescue disk already exists. Only
+                # when resuming: a disk this run did not create is never used
+                # (creating it then fails, and the rescue rolls back).
+                if not new_rescue_disk and self._disk_exists(rescue_disk_name):
                     self._log_debug("Skipping Step 4 (Create Rescue Disk) - disk already exists")
                     # Update checkpoint to record this step as done
                     self.checkpoint_manager.update_checkpoint(
@@ -816,7 +846,12 @@ class RescueOrchestrator:
                         disk_type=self.config.rescue_disk_type,
                         source_image=source_image,
                         timeout=self.config.disk_create_timeout,
-                        tracking_label=self._ua('disk-create-rescue')
+                        tracking_label=self._ua('disk-create-rescue'),
+                        description=rescue_disk_description(
+                            self._instance_id(),
+                            None if self._original_unproven
+                            else self.original_disk_name,
+                            self._original_auto_delete())
                     )
                     self.state_tracker.add_operation("Create Rescue Disk", result.success, result.message, result.rollback_data, step_number=4)
                     if not result.success:
@@ -902,27 +937,23 @@ class RescueOrchestrator:
                 result = set_metadata.execute(
                     vm_name=self.vm_name,
                     metadata_items=metadata_items,
-                    tracking_label=self._ua('meta-set-rescue-keys')
+                    tracking_label=self._ua('meta-set-rescue-keys'),
+                    # RDP access adds a rescue_admin key; restore must
+                    # put windows-keys back as it was before rescue.
+                    record_keys=([WINDOWS_KEYS_KEY]
+                                 if self.os_type == OS_TYPE_WINDOWS else ())
                 )
                 self.state_tracker.add_operation("Set Metadata", result.success, result.message, result.rollback_data, step_number=6)
                 if not result.success:
                     self._finish_progress(False, error=result.error)
                     self._rollback()
                     return False
-                # Update checkpoint - include Windows password if set
-                context_updates = {}
-                if self.os_type == OS_TYPE_WINDOWS and self.windows_rescue_password:
-                    context_updates['windows_rescue_password'] = self.windows_rescue_password
                 self.checkpoint_manager.update_checkpoint(
                     step=6, operation_name="Set Metadata",
-                    rollback_data=result.rollback_data,
-                    context_updates=context_updates if context_updates else None
+                    rollback_data=result.rollback_data
                 )
             else:
                 self._log_debug("Skipping Step 6 (Set Metadata) - already completed")
-                # Restore Windows password from checkpoint context if resuming
-                if self._resumed_context and self.os_type == OS_TYPE_WINDOWS:
-                    self.windows_rescue_password = self._resumed_context.get('windows_rescue_password')
 
             # Step 7: Start VM in rescue mode
             if not self._should_skip_step(7):
@@ -1110,6 +1141,84 @@ class RescueOrchestrator:
             self._rollback()
             return False
 
+    def _verify_resumed_disks(self) -> bool:
+        """Check the disks named in the checkpoint before resuming.
+
+        Returns:
+            True if every disk the remaining steps would attach belongs to
+            this VM. Otherwise explains what was found and returns False;
+            nothing has been changed at that point.
+        """
+        checker = OwnershipChecker(self.compute, self.project, self.zone,
+                                   self.vm_name, self.logger)
+        context = self._resumed_context or {}
+        flags = f"--zone={self.zone} --project={self.project}"
+        problems = []
+        commands = []
+
+        name = self.rescue_disk_name
+        if name and (not RESCUE_DISK_NAME.match(name)
+                     or (self._disk_exists(name)
+                         and not checker.is_rescue_disk(name))):
+            problems.append(f"rescue disk [{name}]")
+
+        if self._should_skip_step(2) and not checker.is_original_disk(
+                self.original_disk_name, rescue_disk=self.rescue_disk_name):
+            if checker.confirm_original_disk(
+                    self.original_disk_name, self.confirm_disk,
+                    "Continue the rescue with it",
+                    rescue_disk=self.rescue_disk_name,
+                    snapshot=context.get('snapshot_name')):
+                # Only the operator vouches for it: keep it out of the
+                # ownership markers, which later runs treat as proof.
+                self._original_unproven = True
+            else:
+                problems.append(f"boot disk [{self.original_disk_name}]")
+                commands.append(attach_disk_command(
+                    self.vm_name, self.zone, self.project,
+                    self.original_disk_name, boot=True))
+
+        if not problems:
+            return True
+        self._log_error(
+            f"Cannot resume: gce-rescue could not confirm that the "
+            f"{' and the '.join(problems)} named in the interrupted run "
+            f"belong to instance [{self.vm_name}]. Nothing was changed.")
+        self._log_error("Check the instance and its disks:")
+        self._log_error(f"  $ gcloud compute instances describe {self.vm_name} {flags}")
+        for command in commands:
+            self._log_error("If that disk is this instance's boot disk, re-attach it yourself:")
+            self._log_error(f"  $ {command}")
+        self._log_error("To undo the other completed steps, run the command again "
+                        "and choose Rollback.")
+        return False
+
+    def _original_auto_delete(self) -> Optional[bool]:
+        """Auto-delete of the boot disk before rescue, if read in this run.
+
+        Recorded in the ownership marker so that restore never has to take
+        it from metadata. Unknown (None) when the boot disk was already
+        detached before this run, since the checkpoint copy is metadata.
+        """
+        if self._resume_from_step and self._should_skip_step(2):
+            return None
+        value = (self.original_boot_attachment or {}).get('autoDelete')
+        return value if isinstance(value, bool) else None
+
+    def _instance_id(self) -> Optional[str]:
+        """Instance ID of the VM, for the ownership marker on new resources."""
+        vm_info = getattr(self, 'vm_info', None) or {}
+        if not vm_info.get('id'):
+            try:
+                vm_info = self.compute.instances().get(
+                    project=self.project, zone=self.zone,
+                    instance=self.vm_name).execute()
+            except Exception as e:  # pylint: disable=broad-except
+                self._log_debug(f"Could not read instance ID: {e}")
+                return None
+        value = vm_info.get('id') if isinstance(vm_info, dict) else None
+        return str(value) if value else None
+
     def _get_original_disk_info(self):
         """Get original boot disk information and detect OS type."""
         self.vm_info = self.compute.instances().get(
@@ -1211,8 +1320,6 @@ class RescueOrchestrator:
     def _generate_startup_script(self) -> str:
         """Generate startup script for rescue mode based on OS type."""
         import re
-        import secrets
-        import string
         from pathlib import Path
 
         # Use override if provided (e.g., repair command injects fix scripts)
@@ -1229,11 +1336,6 @@ class RescueOrchestrator:
         if self.os_type == OS_TYPE_WINDOWS:
             script_file = Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount_windows.ps1'
             fallback_script = self._get_windows_fallback_script()
-
-            # Generate secure password for Windows rescue admin account
-            # 16 chars: uppercase, lowercase, digits, special chars (Windows complexity)
-            alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-            self.windows_rescue_password = ''.join(secrets.choice(alphabet) for _ in range(16))
         else:
             script_file = Path(__file__).parent.parent / 'startup_scripts' / 'rescue_mount.sh'
             fallback_script = self._get_linux_fallback_script()
@@ -1243,9 +1345,6 @@ class RescueOrchestrator:
                 script = f.read()
                 # Replace disk name placeholder
                 script = script.replace('DISK_NAME_PLACEHOLDER', self.original_disk_name)
-                # Replace password placeholder for Windows
-                if self.os_type == OS_TYPE_WINDOWS and self.windows_rescue_password:
-                    script = script.replace('PASSWORD_PLACEHOLDER', self.windows_rescue_password)
                 # Combine with the custom fix script (--fix-script) so the
                 # fix runs after the mount part, and verification only
                 # succeeds after the fix has run.

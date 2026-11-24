@@ -1173,6 +1173,24 @@ class TestExtractFstabTargets:
         targets = orch._extract_fstab_targets(diagnosis)
         assert 'bad-uuid-12345' in targets
 
+    def test_extract_drops_targets_with_shell_characters(self):
+        """Serial output is guest-controlled; such targets reach a shell script."""
+        orch = self._make_orchestrator()
+        diagnosis = {
+            'boot_errors': [{
+                'category': 'fstab',
+                'severity': 'critical',
+                'detected_pattern': 'Dependency failed for /d',
+                'context_lines': [
+                    'Dependency failed for /data";reboot;".',
+                    'Dependency failed for /srv/ok.',
+                ],
+            }]
+        }
+        targets = orch._extract_fstab_targets(diagnosis)
+        assert '/srv/ok' in targets
+        assert not any('"' in t or ';' in t for t in targets)
+
     def test_extract_uuid_from_cant_find(self):
         """Should extract UUID from "can't find UUID=xxx" pattern."""
         orch = self._make_orchestrator()

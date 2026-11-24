@@ -1703,6 +1703,41 @@ class TestRescueRestoreQuietCheckpoint:
         assert calls['validate'] == 0
         assert calls['execute'] == 1
 
+    @pytest.mark.parametrize('command', ['rescue', 'restore'])
+    def test_resume_never_logs_to_a_path_from_the_checkpoint(self, monkeypatch,
+                                                             tmp_path, command):
+        """The checkpoint is VM metadata; it must not pick a local file path."""
+        checkpoint = self._checkpoint(command)
+        target = tmp_path / "operator" / ".bashrc"
+        checkpoint.context['log_file'] = str(target)
+        calls, _ = self._setup(monkeypatch, command, checkpoint)
+        log_files = []
+        monkeypatch.setattr(
+            f"gce_rescue_v2.cli.{command}.setup_logging",
+            lambda **kwargs: log_files.append(kwargs['log_file']) or Mock())
+        monkeypatch.setattr("builtins.input", lambda *a: '1')
+        args = _parse_args(command)
+        args.quiet = False
+
+        assert self._handler(command)(args) == 0
+        assert calls['resume'] == [3]
+        assert len(log_files) == 1
+        assert log_files[0].startswith(f"vm-1-{command}-")
+        assert not target.parent.exists()
+
+    @pytest.mark.parametrize('command', ['rescue', 'restore'])
+    def test_rejected_checkpoint_is_reported(self, monkeypatch, capsys, command):
+        calls, _ = self._setup(monkeypatch, command, None)
+        monkeypatch.setattr(
+            f"gce_rescue_v2.cli.{command}.CheckpointManager.invalid_reason",
+            "checkpoint belongs to a different instance", raising=False)
+
+        assert self._handler(command)(_parse_args(command)) == 0
+        err = capsys.readouterr().err
+        assert "Ignoring the gce-rescue checkpoint on instance [vm-1]" in err
+        assert "different instance" in err
+        assert calls['execute'] == 1
+
     def test_repair_quiet_block_names_rescue_for_resume(self, capsys):
         """repair's own block still points the resume at rescue (the checkpoint owner)."""
         from gce_rescue_v2.cli.checkpoint_ui import _print_quiet_checkpoint_block

@@ -48,7 +48,8 @@ from ..utils.os_detection import detect_boot_mode, detect_os_flavor
 # for backward compatibility; RESCUE_COMPLETE_MARKER is the marker used by
 # the rescue startup script).
 from .compose import (
-    RESCUE_COMPLETE_MARKER, compose_startup_script, strip_shebang,
+    RESCUE_COMPLETE_MARKER, compose_startup_script, is_safe_repair_target,
+    strip_shebang,
 )
 from .rescue import RescueOrchestrator
 from .restore import RestoreOrchestrator
@@ -1210,6 +1211,15 @@ class RepairOrchestrator:
                 if value not in seen:
                     seen.add(value)
                     targets.append(value)
+
+        unsafe = [t for t in targets if not is_safe_repair_target(t)]
+        if unsafe:
+            # Serial console text is guest-controlled; such a value would
+            # be written into the rescue VM's startup script.
+            self._log_debug(
+                f"Ignoring {len(unsafe)} repair target(s) with unexpected "
+                f"characters")
+            targets = [t for t in targets if is_safe_repair_target(t)]
 
         if not targets:
             self._log_debug(
