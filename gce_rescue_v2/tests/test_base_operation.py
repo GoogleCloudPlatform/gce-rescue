@@ -8,6 +8,8 @@ Tests:
 - Error handling
 """
 
+import socket
+import ssl
 import time
 from unittest.mock import Mock
 
@@ -133,6 +135,8 @@ class TestWaitForStatus:
         HttpError(Response({"status": "429"}), b"rate limited"),
         ConnectionResetError("connection reset"),
         TimeoutError("timed out"),
+        socket.timeout("socket timed out"),
+        ssl.SSLEOFError("unexpected EOF"),
     ])
     def test_status_polling_retries(self, error, monkeypatch):
         sleep = Mock()

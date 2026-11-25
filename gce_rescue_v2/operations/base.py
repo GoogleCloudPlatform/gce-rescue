@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import re
 import socket
+import ssl
 import time
 import json
 
@@ -334,6 +335,7 @@ class BaseOperation(ABC):
                     raise
                 self._log_debug(f"Error checking status: {e}")
             except (TimeoutError, ConnectionError, socket.gaierror,
+                    socket.timeout, ssl.SSLError,
                     httplib2.ServerNotFoundError) as e:
                 self._log_debug(f"Error checking status: {e}")
 
