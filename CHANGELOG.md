@@ -14,6 +14,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rescue` / `restore` / `repair`: `StartVMOperation` now re-issues `instances().start()` (up to 2 retries) when a VM transitions through a lingering `STOPPING` state to `TERMINATED` or remains `TERMINATED` across consecutive polls after a start request, and `StopVMOperation` now waits for `TERMINATED` when the VM is already in `STOPPING` state instead of failing (#243)
 - Windows: flush volume caches (`Write-VolumeCache`) on all mounted non-`C:` volumes after running `--fix-script` commands and before emitting `GCE-RESCUE-COMPLETE`, preventing cached NTFS writes on the target disk from being lost or leaving the volume dirty when the rescue VM is stopped (#244)
 
+## [2.7.1] - 2026-11-23
+
+### Security
+- `rescue` / `restore` / `repair`: the saved progress record used to resume or roll back an interrupted run is now checked before use. A record that is malformed, belongs to another VM, zone or project, or contains unexpected fields is ignored with a warning, and its text is never printed unescaped. The log file of a resumed run is always a new file in the current directory
+- `rescue` / `restore`: before resuming or rolling back, gce-rescue now confirms that each disk it would delete, attach or detach belongs to the rescue of this VM. Rescue disks and pre-rescue snapshots record the VM's instance ID, original boot disk and its auto-delete setting in their description for this. The boot disk counts as confirmed only through the record on the rescue disk attached to the VM. Otherwise (for example after the rescue disk was detached, or after `--no-snapshot`) you are shown the disk's details, including any gce-rescue snapshot of it, and must type its name before it is used. If the boot disk cannot be put back, a rollback detaches and deletes nothing, so the VM keeps the disk it boots from; a rollback never detaches the current boot disk unless it puts a boot disk back. Steps that cannot be confirmed are skipped and the command to check the disk is printed. A rollback no longer deletes the safety snapshot; the delete command is printed instead. A rescue disk attached as a data disk (for example one you kept and attached again) is never deleted. `restore` only detaches the rescue disk when it is a disk named `rescue-disk-<number>` attached as the boot disk, and turns auto-delete back on only when the rescue disk recorded it
+- Windows `rescue`: gce-rescue no longer creates the `rescue_admin` account or a password for it. After rescue, get a password with `gcloud compute reset-windows-password VM --user=rescue_admin` (printed in the rescue output). `restore` puts the VM's `windows-keys` metadata back to its state before rescue, so the account is not created on the restored OS
+- `diagnose` / `repair`: control characters from the serial console are escaped in the report and in the debug log instead of being passed to the terminal
+- `repair`: fstab repair targets read from the serial console are limited to plain device names, identifiers and paths before they are written into the rescue startup script
+- `rescue`: other startup and Sysprep scripts in metadata (`startup-script-url`, `windows-startup-script-cmd`/`-bat`/`-url`, `sysprep-specialize-script-*`) are paused while the VM is in rescue mode, so the rescue OS does not run them; `restore` puts them back. `restore` only brings back the metadata keys that rescue backed up or added
+- `rescue`: a new rescue never uses an existing disk as its rescue disk. If a disk with the generated `rescue-disk-<number>` name already exists (another rescue started in the same second, or a disk created in advance), a different name is used
+
+### Fixed
+- Rollback reports a failure when re-attaching or detaching a disk, or restoring metadata, does not complete, instead of reporting it as done
+
+### Upgrade notes
+- Disks and snapshots created by 2.7.0 or older carry no ownership record. Resuming or rolling back a run started by an older version may ask you to confirm the boot disk, keep the rescue disk for you to delete, and leave auto-delete off on the boot disk (the command to turn it back on is printed)
+- A resumed `restore` that was interrupted after detaching the rescue disk asks you to type the boot disk name, and keeps the rescue disk; the command to check it is printed
+- If you used Windows rescue with 2.7.0 or older, restore the VM with 2.7.1 and delete local `gce-rescue` log files from that rescue
+
 ## [2.7.0] - 2026-11-14
 
 ### Added

@@ -26,6 +26,17 @@ RESCUE_COMPLETE_MARKER = 'GCE-RESCUE-COMPLETE'
 # API (debian-12-bookworm, rhel-9-server, ...). Anything outside this shape
 # is replaced by 'unknown' before it is written into the shell script.
 _SAFE_OS_FLAVOR_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+
+# fstab repair targets (UUID=..., LABEL=..., /dev/..., mount points) come
+# from serial console text, which the guest controls, and are written into
+# a double-quoted shell variable. Only characters such identifiers use are
+# allowed: no quotes, $, backticks, spaces or control characters.
+_SAFE_REPAIR_TARGET_RE = re.compile(r'^[A-Za-z0-9/_.:@+=,-]{1,255}\Z')
+
+
+def is_safe_repair_target(value: object) -> bool:
+    """True if `value` may be written into the REPAIR_TARGETS variable."""
+    return isinstance(value, str) and bool(_SAFE_REPAIR_TARGET_RE.match(value))
 _VALID_BOOT_MODES = frozenset({BOOT_MODE_UEFI, BOOT_MODE_BIOS, BOOT_MODE_UNKNOWN})
 
 # Delimiters for an optional pre-mount block inside a fix script. Code between
@@ -284,6 +295,7 @@ def compose_startup_script(base_script: str, fix_scripts: List[str],
 
     # Inject REPAIR_TARGETS variable for targeted fstab fixing (diagnosis mode)
     if repair_targets is not None:
+        repair_targets = [t for t in repair_targets if is_safe_repair_target(t)]
         if repair_targets:
             targets_str = '\n'.join(repair_targets)
             combined += '# Repair targets extracted from diagnosis\n'

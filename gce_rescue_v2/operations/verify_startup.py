@@ -8,6 +8,7 @@ startup script executed successfully.
 import time
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
+from ..utils.safe_text import safe_text
 
 # Failure lines the base mount script prints right before exiting 1. Once one
 # of these is on the serial console the completion marker can never arrive,
@@ -86,10 +87,13 @@ class VerifyStartupOperation(BaseOperation):
                     )
                     if serial_tail:
                         # DEBUG so it always lands in the log file (file handler
-                        # is DEBUG) without spamming the console.
+                        # is DEBUG) without spamming the console. The guest
+                        # writes the serial console: escape control characters.
+                        shown = '\n'.join(safe_text(line, keep_tabs=True)
+                                          for line in serial_tail.splitlines())
                         self._log_debug(
                             f"Last serial console output (tail) at timeout:\n"
-                            f"{'-' * 60}\n{serial_tail}\n{'-' * 60}"
+                            f"{'-' * 60}\n{shown}\n{'-' * 60}"
                         )
                     else:
                         self._log_debug("No serial console output captured before timeout")

@@ -57,6 +57,7 @@ def handle_rescue(args: argparse.Namespace) -> int:
     resuming = False
     checkpoint_mgr = CheckpointManager(compute, project, args.zone, args.instance_name)
     checkpoint = checkpoint_mgr.detect_incomplete(operation_type='rescue')
+    checkpoint_ui._warn_ignored_checkpoint(checkpoint_mgr, args.instance_name)
     if checkpoint and args.quiet:
         checkpoint_ui._print_quiet_checkpoint_block(
             checkpoint, 'rescue', args.instance_name, args.zone, project,
@@ -187,10 +188,10 @@ def handle_rescue(args: argparse.Namespace) -> int:
 
     # Setup logging
     debug = args.verbosity == 'debug'
-    log_file = checkpoint.context.get('log_file') if checkpoint else None
-    if not log_file:
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        log_file = f"{args.instance_name}-rescue-{timestamp}.log"
+    # Always a new local file, also when resuming: the checkpoint comes
+    # from VM metadata and must not choose a path on this machine.
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_file = f"{args.instance_name}-rescue-{timestamp}.log"
     logger = setup_logging(
         level='DEBUG' if debug else 'INFO',
         log_file=log_file,
@@ -217,6 +218,8 @@ def handle_rescue(args: argparse.Namespace) -> int:
         # Set resume state if resuming from checkpoint
         if checkpoint:
             orchestrator.set_resume_state(checkpoint)
+            # Resume is interactive: ask about disks that cannot be confirmed.
+            orchestrator.confirm_disk = checkpoint_ui._confirm_disk
             logger.debug(f"Resuming from step {checkpoint.current_step + 1}")
 
         # Validate (skip if resuming)
@@ -293,10 +296,13 @@ def handle_rescue(args: argparse.Namespace) -> int:
                 logger.info(f"   Tunnel: gcloud compute start-iap-tunnel {vm_name}"
                             f" 3389 --local-host-port=localhost:3389"
                             f" --zone={zone} --project={project}")
-            logger.info(f"   User: rescue_admin")
-            logger.info(  # lgtm[py/clear-text-logging-sensitive-data]
-                f"   Password: {orchestrator.windows_rescue_password}"
-            )  # Intentional: user needs temporary rescue password for RDP access
+            logger.info("   User: rescue_admin")
+            # The guest agent creates the account and returns its password
+            # encrypted to this command, so it never passes through metadata,
+            # serial output or this log.
+            logger.info("   Password: run this, then sign in with the password it shows:")
+            logger.info(f"   $ gcloud compute reset-windows-password {vm_name}"
+                        f" --user=rescue_admin --zone={zone} --project={project}")
             logger.info("")
             logger.info(
                 "2. Fix the issue (affected boot disk partitions are"
