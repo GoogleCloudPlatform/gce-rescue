@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional
 from ..core.diagnosis import SEVERITY_ORDER
 from ..core.fix_catalog import CATEGORY_FIX_GUIDANCE
 from .colors import red, yellow, green, bold, dim
+from .safe_text import safe_text
 
 
 class DiagnosisReportFormatter:
@@ -170,9 +171,8 @@ class DiagnosisReportFormatter:
             for i, ctx_line in enumerate(context):
                 if not ctx_line.strip():
                     continue
-                ctx_line = _decode_systemd_escapes(ctx_line)
-                if len(ctx_line) > max_width:
-                    ctx_line = ctx_line[:max_width] + "..."
+                ctx_line = safe_text(_decode_systemd_escapes(ctx_line),
+                                     max_len=max_width, keep_tabs=True)
                 if i == matched_idx:
                     lines.append(f"{indent}  {dim(ctx_line)}  {red('<--')}")
                 else:
@@ -433,9 +433,19 @@ class DiagnosisReportFormatter:
 
 
 def _decode_systemd_escapes(text: str) -> str:
-    """Decode systemd hex escape sequences (e.g. \\x2d -> '-') for readability."""
-    import re
-    return re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), text)
+    """Decode systemd hex escape sequences (e.g. \\x2d -> '-') for readability.
+
+    Only printable ASCII (0x20-0x7e) is decoded. Any other escape, such as
+    \\x1b, stays as literal text: serial output is untrusted, and decoding
+    it would turn plain text back into a live terminal control character.
+    """
+    def _decode(match: 're.Match[str]') -> str:
+        code = int(match.group(1), 16)
+        if 0x20 <= code <= 0x7e:
+            return chr(code)
+        return match.group(0)
+
+    return re.sub(r'\\x([0-9a-fA-F]{2})', _decode, text)
 
 
 def _extract_identifier(detected_pattern: str) -> Optional[str]:

@@ -97,6 +97,15 @@ class TestComposeStartupScript:
         script = compose_startup_script(BASE_SCRIPT, ['fix'], repair_targets=[])
         assert 'REPAIR_TARGETS=""' in script
 
+    def test_unsafe_targets_are_never_written(self):
+        """Targets come from guest serial output: no shell characters pass."""
+        script = compose_startup_script(
+            BASE_SCRIPT, ['fix'],
+            repair_targets=['/data"; touch /pwned; echo "', '/x$(id)', '/y`id`',
+                            'UUID=abc-123', '/mnt/data'])
+        assert 'REPAIR_TARGETS="UUID=abc-123\n/mnt/data"' in script
+        assert 'pwned' not in script and '$(id)' not in script and '`id`' not in script
+
     def test_targets_injected_newline_separated(self):
         """Diagnosis-extracted targets are newline-joined into the variable."""
         script = compose_startup_script(

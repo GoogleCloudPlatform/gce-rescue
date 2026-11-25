@@ -37,6 +37,10 @@ from ..operations.set_metadata import find_boot_attachment, restore_pre_rescue_i
 from .state import StateTracker
 from .rollback import RollbackHandler
 from .checkpoint import CheckpointManager, CheckpointData
+from .ownership import (
+    RESCUE_DISK_NAME, OwnershipChecker, attach_disk_command,
+    auto_delete_command, describe_disk_command,
+)
 
 # User-Agent step of each restore operation (the tracking_label passed to its
 # execute()), keyed by its operations_map name. Rollback calls are tagged
@@ -95,7 +99,7 @@ class RestoreOrchestrator:
             vm_name: Name of VM to restore
             config: Optional restore configuration
             logger: Optional logger
-            log_file: Log file path (for checkpoint persistence)
+            log_file: Log file path of this session
             suppress_progress: Suppress progress spinner (for embedding in repair)
             progress_callback: Optional callback(phase_label) invoked on each step
             fix_label: Fix set of the repair run this restore belongs to
@@ -127,11 +131,22 @@ class RestoreOrchestrator:
         # Store disk info
         self.rescue_disk_name = None
         self.rescue_device_name = None
+        # Set once the rescue disk is shown to be gce-rescue's for this VM;
+        # it is only deleted then (see orchestration.ownership).
+        self._rescue_disk_owned = False
         self.original_disk_name = None
         self.original_device_name = None
         # Pre-rescue boot attachment recorded by rescue (#170); None when the
         # VM was rescued by a version that did not record it
         self.original_boot_attachment = None
+        # Asks the operator about a disk named in the checkpoint that
+        # cannot be shown to be this VM's (set by the CLI when resuming
+        # interactively). None: such a resume stops instead.
+        self.confirm_disk = None
+        self._checker = None
+        # Auto-delete of the boot disk before rescue, from an ownership
+        # marker (never from metadata); None when no marker records it.
+        self._marker_auto_delete = None
 
         # Progress tracking for spinner with phases
         import threading
@@ -385,7 +400,6 @@ class RestoreOrchestrator:
             'original_disk_name': self.original_disk_name,
             'original_device_name': self.original_device_name,
             'original_boot_attachment': self.original_boot_attachment,
-            'log_file': self.log_file
         }
 
     def validate(self) -> bool:
@@ -428,9 +442,6 @@ class RestoreOrchestrator:
 
         self._log_debug(f"Restoring instance '{self.vm_name}'...")
 
-        # Initialize progress display
-        self._init_progress()
-
         # Total internal steps for checkpoint tracking
         total_checkpoint_steps = 7  # Stop, DetachRescue, DetachOrig, AttachOrig, SetMeta, Start, DeleteRescue
 
@@ -438,6 +449,12 @@ class RestoreOrchestrator:
             # Get disk info (before progress display) if not resuming
             if not self._resume_from_step or not self.rescue_disk_name:
                 self._get_disk_info()
+            elif not self._verify_resumed_disks():
+                # Before the progress display starts: this may ask the operator.
+                return False
+
+            # Initialize progress display
+            self._init_progress()
 
             # Checkpoint from a version that did not carry the boot
             # attachment: read it from rescue metadata while it still exists.
@@ -661,6 +678,13 @@ class RestoreOrchestrator:
                 # Idempotency check: skip if rescue disk doesn't exist
                 if not self._disk_exists(self.rescue_disk_name):
                     self._log_debug("Skipping Step 7 (Delete Rescue Disk) - disk already deleted")
+                elif not self._rescue_disk_owned:
+                    self._log_info(
+                        f"Kept disk [{self.rescue_disk_name}]: gce-rescue could not "
+                        f"confirm it is the rescue disk of [{self.vm_name}] from this "
+                        f"run. Check it, and if it is, delete it yourself:")
+                    self._log_info("  $ " + describe_disk_command(
+                        self.rescue_disk_name, self.zone, self.project))
                 else:
                     self._log_debug("Deleting rescue disk...")
                     result = delete_rescue.execute(
@@ -740,6 +764,25 @@ class RestoreOrchestrator:
             self._log_error("Look for a disk that is NOT the rescue disk (doesn't contain 'rescue-disk' in name)")
             raise ValueError("Missing 'rescue-original-disk' metadata - cannot identify original boot disk")
 
+        # The attached rescue disk records the original disk and its
+        # auto-delete setting when gce-rescue made it; that record cannot
+        # be changed, unlike 'rescue-original-disk'. Same disk as the loop
+        # below picks (the last one named like a rescue disk).
+        rescue_names = [
+            (d.get('source') or '').split('/')[-1] for d in vm.get('disks', [])
+            if d.get('type') != 'SCRATCH'
+            and RESCUE_DISK_NAME.match((d.get('source') or '').split('/')[-1])]
+        if rescue_names:
+            match = self._ownership().rescue_disk_marker(rescue_names[-1])
+            recorded = match.group('original') if match else None
+            if recorded and recorded != self.original_disk_name:
+                self._log_debug(
+                    "Original disk in metadata does not match the rescue "
+                    "disk's record; using the record")
+                self.original_disk_name = recorded
+            if match and match.group('auto_delete') is not None:
+                self._marker_auto_delete = match.group('auto_delete') == '1'
+
         # Find rescue and original disks
         for disk in vm.get('disks', []):
             # Skip Local SSDs (type='SCRATCH') - they don't have a 'source' field
@@ -751,9 +794,11 @@ class RestoreOrchestrator:
             disk_name = source.split('/')[-1]
             device_name = disk['deviceName']
 
-            if 'rescue-disk' in disk_name:
+            if RESCUE_DISK_NAME.match(disk_name):
                 self.rescue_disk_name = disk_name
                 self.rescue_device_name = device_name
+                # Attached to this VM, so it is this VM's rescue disk.
+                self._rescue_disk_owned = True
                 self._log_debug(f"Rescue disk: {disk_name}")
             elif disk_name == self.original_disk_name:
                 self.original_device_name = device_name
@@ -772,6 +817,88 @@ class RestoreOrchestrator:
             self._log_error("Check attached disks:")
             self._log_error(f"  gcloud compute instances describe {self.vm_name} --zone={self.zone} --format='value(disks)'")
             raise ValueError(f"Original disk '{self.original_disk_name}' not found on VM")
+
+    def _verify_resumed_disks(self) -> bool:
+        """Check the disks named in the checkpoint before resuming.
+
+        Device names come from the VM for disks that are still attached.
+        The original disk must be shown to be this VM's before it is
+        attached as the boot disk; the rescue disk is only deleted if it
+        is shown to be gce-rescue's (otherwise it is kept and the delete
+        command is printed at the end).
+
+        Returns:
+            True to continue. False (nothing changed) if the original disk
+            could not be confirmed.
+        """
+        checker = self._ownership()
+        try:
+            vm = self.compute.instances().get(
+                project=self.project, zone=self.zone, instance=self.vm_name
+            ).execute()
+        except HttpError as e:
+            self._log_error(f"Could not read instance [{self.vm_name}]: {e}")
+            return False
+        rescue_attachment = None
+        for disk in vm.get('disks', []):
+            name = disk.get('source', '').split('/')[-1]
+            if name and name == self.rescue_disk_name:
+                self.rescue_device_name = disk.get('deviceName')
+                rescue_attachment = disk
+            elif name and name == self.original_disk_name:
+                self.original_device_name = disk.get('deviceName')
+
+        # Step 2 detaches the rescue disk while it is attached. Only this
+        # VM's rescue disk, attached as its boot disk, may be detached; the
+        # name comes from the checkpoint.
+        if (not self._should_skip_step(2) and rescue_attachment is not None
+                and not (rescue_attachment.get('boot') is True
+                         and checker.is_rescue_disk(self.rescue_disk_name))):
+            flags = f"--zone={self.zone} --project={self.project}"
+            self._log_error(
+                f"Cannot resume: disk [{self.rescue_disk_name}] named as the "
+                f"rescue disk in the interrupted run is not the rescue disk "
+                f"attached to instance [{self.vm_name}] as its boot disk. "
+                f"Nothing was changed.")
+            self._log_error("Check the instance and its disks:")
+            self._log_error(
+                f"  $ gcloud compute instances describe {self.vm_name} {flags}")
+            return False
+
+        # Deleted at the end only if it is attached now or was never
+        # attached: a detached rescue disk may be one the user kept.
+        self._rescue_disk_owned = checker.is_disposable_rescue_disk(
+            self.rescue_disk_name)
+        if not self._rescue_disk_owned:
+            self._log_debug(f"Rescue disk {self.rescue_disk_name} not confirmed")
+
+        if self._should_skip_step(4):
+            return True
+        proof = checker.original_disk_proof(
+            self.original_disk_name, rescue_disk=self.rescue_disk_name)
+        if proof:
+            self._marker_auto_delete = proof.auto_delete
+            return True
+        if checker.confirm_original_disk(
+                self.original_disk_name, self.confirm_disk,
+                "Attach it as the boot disk",
+                rescue_disk=self.rescue_disk_name):
+            return True
+
+        flags = f"--zone={self.zone} --project={self.project}"
+        self._log_error(
+            f"Cannot resume: gce-rescue could not confirm that boot disk "
+            f"[{self.original_disk_name}] named in the interrupted run belongs "
+            f"to instance [{self.vm_name}]. Nothing was changed.")
+        self._log_error("Check the instance and its disks:")
+        self._log_error(f"  $ gcloud compute instances describe {self.vm_name} {flags}")
+        self._log_error("If that disk is this instance's boot disk, re-attach it yourself:")
+        self._log_error("  $ " + attach_disk_command(
+            self.vm_name, self.zone, self.project, self.original_disk_name,
+            boot=True))
+        self._log_error("To undo the other completed steps, run the command again "
+                        "and choose Rollback.")
+        return False
 
     def _load_boot_attachment(self) -> None:
         """Read the pre-rescue boot attachment record from VM metadata."""
@@ -801,13 +928,31 @@ class RestoreOrchestrator:
         kwargs: Dict[str, Any] = {}
         if attachment.get('deviceName'):
             kwargs['device_name'] = attachment['deviceName']
-        if 'autoDelete' in attachment:
-            kwargs['auto_delete'] = attachment['autoDelete']
-        if attachment.get('mode'):
-            kwargs['read_only'] = attachment['mode'] == 'READ_ONLY'
-        if attachment.get('interface'):
+        # The record is in metadata, which others can write: auto-delete is
+        # only turned on when the rescue disk's ownership marker recorded
+        # it, and a boot disk is always attached read-write.
+        if attachment.get('autoDelete') is True:
+            if self._marker_auto_delete is True:
+                kwargs['auto_delete'] = True
+            else:
+                self._log_info(
+                    f"Auto-delete was not turned back on for disk "
+                    f"[{self.original_disk_name}]. If it was on before the "
+                    f"rescue, run:")
+                self._log_info("  $ " + auto_delete_command(
+                    self.vm_name, self.zone, self.project,
+                    self.original_disk_name))
+        if attachment.get('interface') in ('SCSI', 'NVME'):
             kwargs['interface'] = attachment['interface']
         return kwargs
+
+    def _ownership(self) -> OwnershipChecker:
+        """Ownership checker for this VM (see orchestration.ownership)."""
+        if self._checker is None:
+            self._checker = OwnershipChecker(self.compute, self.project,
+                                             self.zone, self.vm_name,
+                                             self.logger)
+        return self._checker
 
     def _get_clean_metadata(self) -> list:
         """Get metadata with rescue items removed and backed up items restored.
