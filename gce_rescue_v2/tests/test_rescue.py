@@ -711,9 +711,19 @@ class TestFixScriptComposition:
         assert fix in script
         marker_pos = script.index('Write-Log "GCE-RESCUE-COMPLETE"')
         assert script.index(fix) < marker_pos
-        # Post-marker content (RDP credentials) is preserved
-        assert 'RDP CONNECTION CREDENTIALS' in script
-        assert script.index('RDP CONNECTION CREDENTIALS') > marker_pos
+        # Post-marker content (RDP access instructions) is preserved
+        assert 'RDP ACCESS' in script
+        assert script.index('RDP ACCESS') > marker_pos
+
+    def test_windows_script_carries_no_password(self):
+        """The RDP password comes from reset-windows-password, never the script."""
+        orch = self._make_orchestrator(fix_script=None, os_type='windows')
+        script = orch._generate_startup_script()
+        assert 'Password' not in script
+        assert 'rescue_credentials' not in script
+        assert 'New-LocalUser' not in script
+        assert 'reset-windows-password' in script
+        assert not hasattr(orch, 'windows_rescue_password')
 
     def test_windows_fix_script_placeholders_resolved(self):
         """Windows composition still resolves disk + password placeholders."""

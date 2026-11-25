@@ -32,7 +32,8 @@ class CreateDiskOperation(BaseOperation):
     def execute(self, disk_name: str, size_gb: int = 10,
                 disk_type: str = 'pd-standard',
                 source_image: str = 'projects/debian-cloud/global/images/family/debian-12',
-                timeout: int = 600, tracking_label: str = None) -> OperationResult:
+                timeout: int = 600, tracking_label: str = None,
+                description: str = None) -> OperationResult:
         """
         Create a new persistent disk from the specified image.
 
@@ -48,6 +49,8 @@ class CreateDiskOperation(BaseOperation):
             tracking_label (str): Tracking label for usage analytics.
                 Format: '{operation_type}-{action_group}-{action_detail}'
                 Example: 'rescue-disk-create-rescue'
+            description (str, optional): Disk description. Rescue disks
+                carry an ownership marker here (see orchestration.ownership).
 
         Returns:
             OperationResult: Result containing success flag, message, and
@@ -71,6 +74,8 @@ class CreateDiskOperation(BaseOperation):
                 'type': f'projects/{self.project}/zones/{self.zone}/diskTypes/{disk_type}',
                 'sourceImage': source_image
             }
+            if description:
+                disk_body['description'] = description
 
             self._log_debug(f"Creating disk with config: {disk_body}")
 

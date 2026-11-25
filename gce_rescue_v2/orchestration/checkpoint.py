@@ -12,6 +12,12 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
+from .checkpoint_validation import (
+    InvalidCheckpointError,
+    check_checkpoint_scope,
+    validate_checkpoint_dict,
+)
+
 # Metadata key for checkpoint data
 CHECKPOINT_KEY = 'gce-rescue-checkpoint'
 
@@ -81,7 +87,16 @@ class CheckpointData:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'CheckpointData':
-        """Create from dictionary."""
+        """Create from dictionary, after validating it.
+
+        The data comes from VM metadata, which people other than the
+        operator can write, so it is checked before use (see
+        checkpoint_validation).
+
+        Raises:
+            InvalidCheckpointError: The data is not a valid checkpoint.
+        """
+        data = validate_checkpoint_dict(data)
         return cls(
             version=data.get('version', 1),
             operation=data['operation'],
@@ -185,6 +200,9 @@ class CheckpointManager:
         self.vm_name = vm_name
         self.logger = logger
         self._current_session_id: Optional[str] = None
+        # Why the last checkpoint found in metadata was not used, if it
+        # was rejected; callers show this to the user.
+        self.invalid_reason: Optional[str] = None
 
     def _log_debug(self, message: str):
         """Log debug message with component prefix."""
@@ -397,6 +415,7 @@ class CheckpointManager:
         Returns:
             CheckpointData if checkpoint exists, None otherwise
         """
+        self.invalid_reason = None
         try:
             metadata_dict, _ = self._get_vm_metadata()
             checkpoint_json = metadata_dict.get(CHECKPOINT_KEY)
@@ -404,10 +423,18 @@ class CheckpointManager:
             if not checkpoint_json:
                 return None
 
-            return CheckpointData.from_json(checkpoint_json)
+            checkpoint = CheckpointData.from_json(checkpoint_json)
+            check_checkpoint_scope(checkpoint, self.project, self.zone,
+                                   self.vm_name)
+            return checkpoint
 
-        except json.JSONDecodeError as e:
-            self._log_error(f"Warning: Corrupted checkpoint data: {e}")
+        except json.JSONDecodeError:
+            self.invalid_reason = "it is not valid JSON"
+            self._log_error("Warning: Ignoring checkpoint: not valid JSON")
+            return None
+        except InvalidCheckpointError as e:
+            self.invalid_reason = str(e)
+            self._log_error(f"Warning: Ignoring checkpoint: {e}")
             return None
         except Exception as e:
             self._log_debug(f"Error loading checkpoint: {e}")

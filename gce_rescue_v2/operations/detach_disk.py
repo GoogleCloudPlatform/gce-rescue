@@ -188,8 +188,11 @@ class DetachDiskOperation(BaseOperation):
                 body=attach_body
             ).execute()
 
-            # Wait for operation to complete
-            self._wait_for_operation(operation)
+            # Wait for operation to complete; a failed operation must not
+            # be reported as rolled back.
+            if not self._wait_for_operation(operation):
+                self._log_error(f"Rollback failed: {self.name} did not complete")
+                return False
 
             self._log_info(f"  [OK] Disk re-attached")
             return True
