@@ -927,6 +927,70 @@ class TestDiagnoseDiskFull:
         assert data['diagnosis_status'] == 'healthy'
         assert data['boot_errors'] == []
 
+    def test_enospc_followed_by_closing_quote_detected(self):
+        """Go agents wrap the OS error in a quoted message ending in '"'."""
+        serial = (
+            "[  241.693421] EXT4-fs (sda1): mounted filesystem with ordered data mode\n"
+            'OSConfigAgent Error: write /var/lib/google_osconfig/state.tmp: '
+            'no space left on device"\n'
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'disk_full_no_space' in names
+
+    def test_enospc_followed_by_period_detected(self):
+        """A message terminated with a period is still an ENOSPC report."""
+        serial = (
+            "[  241.693421] EXT4-fs (sda1): mounted filesystem with ordered data mode\n"
+            "systemd-journald[312]: Failed to write entry: "
+            "No space left on device.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'disk_full_no_space' in names
+
+    def test_enospc_followed_by_closing_paren_detected(self):
+        """Python OSError text ends with ')' after the phrase."""
+        serial = (
+            "[  241.693421] EXT4-fs (sda1): mounted filesystem with ordered data mode\n"
+            "OSError: [Errno 28] (28, No space left on device)\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'boot_errors_detected'
+        names = [e['name'] for e in data['boot_errors']]
+        assert 'disk_full_no_space' in names
+
+    def test_enospc_inotify_with_trailing_punctuation_not_flagged(self):
+        """The inotify/cgroup exclusions still apply to punctuated lines."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[   12.000000] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            'tail: inotify cannot be used, reverting to polling: '
+            'no space left on device"\n'
+            "kubelet[1543]: mkdir /sys/fs/cgroup/memory/kubepods/pod9f3: "
+            "no space left on device.\n"
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
+    def test_enospc_followed_by_text_not_flagged(self):
+        """The phrase followed by more words (or a long run) must not match."""
+        serial = (
+            "[    0.000000] Linux version 6.1.0-18-cloud-amd64 (debian-kernel)\n"
+            "[   12.000000] systemd[1]: Startup finished in 4.2s (kernel) "
+            "+ 8.1s (userspace) = 12.3s.\n"
+            'startup-script[900]: INFO: alert on "No space left on device", '
+            'then page oncall\n'
+            'startup-script[900]: INFO: grep for No space left on device"""".\n'
+        )
+        data = _diagnose(serial)
+        assert data['diagnosis_status'] == 'healthy'
+        assert data['boot_errors'] == []
+
     def test_enospc_noise_does_not_mask_fstab_finding(self):
         """inotify ENOSPC noise must not dedupe away a real fstab failure.
 
