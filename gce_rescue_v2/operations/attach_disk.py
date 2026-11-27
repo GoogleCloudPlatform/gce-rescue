@@ -5,6 +5,7 @@ Attaches a Compute Engine persistent disk to a VM instance. Rollback detaches
 the disk using the provided rollback metadata.
 """
 
+from uuid import uuid4
 import time
 from typing import Optional
 
@@ -87,6 +88,7 @@ class AttachDiskOperation(BaseOperation):
             compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
             # Attach the disk
             operation = compute.instances().attachDisk(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
@@ -168,6 +170,7 @@ class AttachDiskOperation(BaseOperation):
 
             compute = self._rollback_client(tracking_label)
             operation = compute.instances().detachDisk(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,

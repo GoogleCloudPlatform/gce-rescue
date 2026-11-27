@@ -7,6 +7,7 @@ stops the VM only if it was previously stopped (TERMINATED) before execution.
 
 from dataclasses import dataclass
 import time
+from uuid import uuid4
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, VM_START_TIMEOUT
@@ -136,6 +137,7 @@ class StartVMOperation(BaseOperation):
                 while True:
                     reached = False
                     operation = compute.instances().start(
+                        requestId=str(uuid4()),
                         project=self.project, zone=self.zone, instance=vm_name
                     ).execute()
                     self._last_operation_error = None
@@ -286,6 +288,7 @@ class StartVMOperation(BaseOperation):
 
                 compute = self._rollback_client(tracking_label)
                 compute.instances().stop(
+                    requestId=str(uuid4()),
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name

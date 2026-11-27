@@ -260,6 +260,7 @@ class CheckpointManager:
         for attempt in range(self.MAX_RETRIES):
             try:
                 operation = self.compute.instances().setMetadata(
+                    requestId=str(uuid.uuid4()),
                     project=self.project,
                     zone=self.zone,
                     instance=self.vm_name,

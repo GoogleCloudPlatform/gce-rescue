@@ -9,6 +9,8 @@ Tests:
 - test_start_vm_rollback: Rollback (stop) works correctly
 """
 
+from uuid import UUID
+from unittest.mock import ANY
 import pytest
 from unittest.mock import Mock, patch
 from gce_rescue_v2.operations.start_vm import StartVMOperation
@@ -93,6 +95,7 @@ class TestStartVMOperation:
         # Assert
         assert success is True
         self.mock_compute.instances().stop.assert_called_with(
+            requestId=ANY,
             project=self.project, zone=self.zone, instance='test-vm'
         )
 
@@ -123,7 +126,10 @@ class TestStartVMOperation:
         result = self.operation.execute(vm_name='test-vm', timeout=30)
 
         assert result.success is True
-        assert self.mock_compute.instances().start.call_count == 2
+        calls = self.mock_compute.instances().start.call_args_list
+        assert len(calls) == 2
+        first_id, second_id = (UUID(call.kwargs["requestId"]) for call in calls)
+        assert first_id != second_id
 
     def test_start_vm_retries_after_consecutive_terminated_polls_up_to_cap(self, monkeypatch):
         """Test consecutive TERMINATED polls trigger at most 2 retries (3 start calls total)."""

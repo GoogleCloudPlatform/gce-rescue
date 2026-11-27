@@ -7,6 +7,7 @@ cannot be shrunk during rollback; the pre-rescue snapshot preserves the
 original disk state.
 """
 
+from uuid import uuid4
 import time
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
@@ -105,6 +106,7 @@ class ResizeDiskOperation(BaseOperation):
             )
             start_time = time.time()
             operation = compute.disks().resize(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 disk=disk_name,

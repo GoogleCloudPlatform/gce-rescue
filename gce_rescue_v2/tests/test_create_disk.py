@@ -8,6 +8,7 @@ Tests:
 - test_create_disk_rollback: Rollback (delete) works correctly
 """
 
+from unittest.mock import ANY
 import pytest
 from unittest.mock import Mock, patch
 from gce_rescue_v2.operations.create_disk import CreateDiskOperation
@@ -94,5 +95,6 @@ class TestCreateDiskOperation:
         # Assert
         assert success is True
         self.mock_compute.disks().delete.assert_called_with(
+            requestId=ANY,
             project=self.project, zone=self.zone, disk='rescue-disk'
         )
