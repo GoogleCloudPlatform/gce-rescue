@@ -5,9 +5,9 @@ Starts a Compute Engine VM instance, waiting until it reaches RUNNING. Rollback
 stops the VM only if it was previously stopped (TERMINATED) before execution.
 """
 
-from uuid import uuid4
 from dataclasses import dataclass
 import time
+from uuid import uuid4
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
 from ..core.error_messages import get_error_suggestion, VM_START_TIMEOUT
@@ -96,44 +96,61 @@ class StartVMOperation(BaseOperation):
             original_status = vm['status']
             self._log_debug(f"Current VM status: {original_status}")
 
-            if original_status == 'TERMINATED':
-                self._log_debug("VM is TERMINATED, starting...")
+            if original_status == 'STOPPING':
+                # VM is stopping, wait for TERMINATED then start
+                self._log_debug("VM is STOPPING, waiting for TERMINATED...")
 
-                # Use tracked client if tracking_label provided
-                compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
-                compute.instances().start(
-                    requestId=str(uuid4()),
-                    project=self.project,
-                    zone=self.zone,
-                    instance=vm_name
-                ).execute()
-
-                # Wait for VM to start
-                start_time = time.time()
-                retry_state = _StartRetryState()
-
-                def get_status():
+                def get_stopping_status():
                     vm = self.compute.instances().get(
                         project=self.project,
                         zone=self.zone,
                         instance=vm_name
                     ).execute()
-                    status = vm['status']
-                    if retry_state.should_retry(status):
-                        self._log_debug(
-                            f"VM is TERMINATED after start request "
-                            f"(retry {retry_state.retries}/{_MAX_START_RETRIES}), "
-                            f"re-issuing start..."
-                        )
-                        compute.instances().start(
-                            requestId=str(uuid4()),
-                            project=self.project,
-                            zone=self.zone,
-                            instance=vm_name
-                        ).execute()
-                    return status
+                    return vm['status']
 
-                if not self._wait_for_status(get_status, 'RUNNING', timeout):
+                if not self._wait_for_status(get_stopping_status, 'TERMINATED', timeout // 2):
+                    return OperationResult(
+                        operation_name=self.name,
+                        success=False,
+                        message="Timeout waiting for VM to stop",
+                        error="VM stuck in STOPPING state"
+                    )
+
+                original_status = 'TERMINATED'
+                timeout /= 2
+
+            if original_status == 'TERMINATED':
+                compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
+                start_time = time.time()
+                deadline = start_time + timeout
+                retry_state = _StartRetryState()
+                retry = False
+
+                def get_start_progress():
+                    nonlocal retry
+                    status = self.compute.instances().get(
+                        project=self.project, zone=self.zone, instance=vm_name
+                    ).execute()['status']
+                    retry = retry_state.should_retry(status)
+                    return 'settled' if retry or status == 'RUNNING' else status
+
+                while True:
+                    reached = False
+                    operation = compute.instances().start(
+                        requestId=str(uuid4()),
+                        project=self.project, zone=self.zone, instance=vm_name
+                    ).execute()
+                    self._last_operation_error = None
+                    if not self._wait_for_operation(operation, deadline - time.time()):
+                        if self._last_operation_error:
+                            raise RuntimeError(self._last_operation_error)
+                        break
+                    reached = self._wait_for_status(get_start_progress, 'settled', deadline - time.time())
+                    if not reached or not retry:
+                        break
+                    self._log_debug(f"VM still TERMINATED; re-issuing start ({retry_state.retries}/{_MAX_START_RETRIES})")
+
+                if not reached:
                     error_detail = VM_START_TIMEOUT.format(
                         vm_name=vm_name,
                         zone=self.zone,
@@ -210,62 +227,6 @@ class StartVMOperation(BaseOperation):
                     rollback_data={
                         'vm_name': vm_name,
                         'original_status': 'TERMINATED'  # Treat as if it was terminated
-                    }
-                )
-
-            elif original_status == 'STOPPING':
-                # VM is stopping, wait for TERMINATED then start
-                self._log_debug("VM is STOPPING, waiting for TERMINATED...")
-
-                def get_status():
-                    vm = self.compute.instances().get(
-                        project=self.project,
-                        zone=self.zone,
-                        instance=vm_name
-                    ).execute()
-                    return vm['status']
-
-                if not self._wait_for_status(get_status, 'TERMINATED', timeout // 2):
-                    return OperationResult(
-                        operation_name=self.name,
-                        success=False,
-                        message="Timeout waiting for VM to stop",
-                        error="VM stuck in STOPPING state"
-                    )
-
-                # Now start it
-                self._log_debug("VM stopped, now starting...")
-                compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
-                compute.instances().start(
-                    requestId=str(uuid4()),
-                    project=self.project,
-                    zone=self.zone,
-                    instance=vm_name
-                ).execute()
-
-                start_time = time.time()
-                if not self._wait_for_status(get_status, 'RUNNING', timeout // 2):
-                    error_detail = VM_START_TIMEOUT.format(
-                        vm_name=vm_name,
-                        zone=self.zone,
-                        project=self.project
-                    )
-                    self._log_debug(error_detail)
-                    return OperationResult(
-                        operation_name=self.name,
-                        success=False,
-                        message=f"Timeout waiting for VM to start (>{timeout}s)",
-                        error=error_detail
-                    )
-
-                duration = time.time() - start_time
-                return OperationResult(
-                    operation_name=self.name,
-                    success=True,
-                    message=f"VM started ({duration:.0f}s)",
-                    rollback_data={
-                        'vm_name': vm_name,
-                        'original_status': 'TERMINATED'
                     }
                 )
 
