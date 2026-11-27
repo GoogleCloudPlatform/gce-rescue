@@ -9,6 +9,8 @@ Tests:
 - test_start_vm_rollback: Rollback (stop) works correctly
 """
 
+from uuid import UUID
+from unittest.mock import ANY
 import pytest
 from unittest.mock import Mock, patch
 from gce_rescue_v2.operations.start_vm import StartVMOperation
@@ -28,6 +30,30 @@ class TestStartVMOperation:
             self.zone,
             self.logger
         )
+
+        self.mock_compute.instances().start.return_value.execute.return_value = {'name': 'start-op'}
+        self.mock_compute.zoneOperations().get.return_value.execute.return_value = {'status': 'DONE'}
+
+    @pytest.mark.parametrize("statuses, operation_results", [
+        (['TERMINATED'], ['error']),
+        (['STOPPING', 'TERMINATED'], ['error']),
+        (['TERMINATED', 'STOPPING', 'TERMINATED'], ['ok', 'error']),
+    ])
+    def test_failed_start_reports_operation_error(self, statuses, operation_results, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        self.mock_compute.instances().get.return_value.execute.side_effect = [
+            {'status': status} for status in statuses + ['RUNNING']
+        ]
+        self.mock_compute.zoneOperations().get.return_value.execute.side_effect = [
+            {'status': 'DONE'} if outcome == 'ok' else
+            {'status': 'DONE', 'error': {'errors': [{'message': 'Insufficient zone capacity'}]}}
+            for outcome in operation_results
+        ]
+        result = self.operation.execute('test-vm', timeout=5)
+        assert not result.success
+        assert 'Insufficient zone capacity' in result.message
+        assert self.mock_compute.instances().start.call_count == len(operation_results)
+        assert self.mock_compute.instances().get.return_value.execute.call_count == len(statuses)
 
     def test_start_vm_success(self):
         """Test successful start VM."""
@@ -69,6 +95,7 @@ class TestStartVMOperation:
         # Assert
         assert success is True
         self.mock_compute.instances().stop.assert_called_with(
+            requestId=ANY,
             project=self.project, zone=self.zone, instance='test-vm'
         )
 
@@ -99,7 +126,10 @@ class TestStartVMOperation:
         result = self.operation.execute(vm_name='test-vm', timeout=30)
 
         assert result.success is True
-        assert self.mock_compute.instances().start.call_count == 2
+        calls = self.mock_compute.instances().start.call_args_list
+        assert len(calls) == 2
+        first_id, second_id = (UUID(call.kwargs["requestId"]) for call in calls)
+        assert first_id != second_id
 
     def test_start_vm_retries_after_consecutive_terminated_polls_up_to_cap(self, monkeypatch):
         """Test consecutive TERMINATED polls trigger at most 2 retries (3 start calls total)."""

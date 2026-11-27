@@ -7,6 +7,7 @@ Tests:
 - test_attach_disk_rollback: Rollback (detach) works correctly
 """
 
+from unittest.mock import ANY
 import pytest
 from unittest.mock import Mock, patch
 from gce_rescue_v2.operations.attach_disk import AttachDiskOperation
@@ -71,6 +72,7 @@ class TestAttachDiskOperation:
         # Assert
         assert success is True
         self.mock_compute.instances().detachDisk.assert_called_with(
+            requestId=ANY,
             project=self.project,
             zone=self.zone,
             instance='test-vm',
@@ -112,6 +114,7 @@ class TestAttachDiskOperation:
             assert self.operation.rollback(result.rollback_data) is True
 
         self.mock_compute.instances().detachDisk.assert_called_with(
+            requestId=ANY,
             project=self.project,
             zone=self.zone,
             instance='test-vm',

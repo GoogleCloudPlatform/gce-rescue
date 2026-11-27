@@ -33,24 +33,24 @@ class FakeInstances:
         value = self._get_responses.pop(0) if self._get_responses else {}
         return _Exec(value)
 
-    def stop(self, project=None, zone=None, instance=None):
+    def stop(self, project=None, zone=None, instance=None, requestId=None):
         return _Exec({})
 
-    def start(self, project=None, zone=None, instance=None):
+    def start(self, project=None, zone=None, instance=None, requestId=None):
         return _Exec({})
 
-    def detachDisk(self, project=None, zone=None, instance=None, deviceName=None):
+    def detachDisk(self, project=None, zone=None, instance=None, deviceName=None, requestId=None):
         return _Exec({})
 
-    def attachDisk(self, project=None, zone=None, instance=None, body=None):
+    def attachDisk(self, project=None, zone=None, instance=None, body=None, requestId=None):
         return _Exec({})
 
-    def setMetadata(self, project=None, zone=None, instance=None, body=None):
+    def setMetadata(self, project=None, zone=None, instance=None, body=None, requestId=None):
         return _Exec({})
 
 
 class FakeDisks:
-    def delete(self, project=None, zone=None, disk=None):
+    def delete(self, project=None, zone=None, disk=None, requestId=None):
         return _Exec({})
 
 
@@ -834,7 +834,7 @@ def test_restore_attach_rollback_detaches_original_device_name(monkeypatch):
     detached = []
 
     class _Instances(FakeInstances):
-        def detachDisk(self, project=None, zone=None, instance=None, deviceName=None):
+        def detachDisk(self, project=None, zone=None, instance=None, deviceName=None, requestId=None):
             detached.append(deviceName)
             return _Exec({})
 

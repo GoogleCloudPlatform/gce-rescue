@@ -5,6 +5,7 @@ Permanently deletes a Compute Engine persistent disk. This operation is
 irreversible and should only be used after completing the rescue workflow.
 """
 
+from uuid import uuid4
 import time
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
@@ -55,6 +56,7 @@ class DeleteDiskOperation(BaseOperation):
             compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
             # Delete the disk
             operation = compute.disks().delete(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 disk=disk_name

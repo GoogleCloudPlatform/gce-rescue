@@ -9,6 +9,7 @@ Tests:
 - test_stop_vm_rollback: Rollback (restart) works correctly
 """
 
+from unittest.mock import ANY
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 from gce_rescue_v2.operations.stop_vm import StopVMOperation
@@ -99,6 +100,7 @@ class TestStopVMOperation:
         # Assert
         assert success is True
         self.mock_compute.instances().start.assert_called_with(
+            requestId=ANY,
             project=self.project, zone=self.zone, instance='test-vm'
         )
 

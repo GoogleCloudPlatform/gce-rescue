@@ -5,6 +5,7 @@ Stops a Compute Engine VM instance, waiting until it reaches TERMINATED.
 Rollback restarts the VM only if it was originally running prior to execution.
 """
 
+from uuid import uuid4
 import time
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
@@ -83,7 +84,7 @@ class StopVMOperation(BaseOperation):
 
                 # Use tracked client if tracking_label provided
                 compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
-                compute.instances().stop(**stop_params).execute()
+                compute.instances().stop(requestId=str(uuid4()), **stop_params).execute()
 
                 # Step 3: Wait for VM to stop
                 self._log_debug("Waiting for VM to stop...")
@@ -238,6 +239,7 @@ class StopVMOperation(BaseOperation):
 
                 compute = self._rollback_client(tracking_label)
                 compute.instances().start(
+                    requestId=str(uuid4()),
                     project=self.project,
                     zone=self.zone,
                     instance=vm_name

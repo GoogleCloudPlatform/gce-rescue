@@ -5,6 +5,7 @@ Creates a safety snapshot of a Compute Engine disk prior to rescue
 operations. Rollback removes only snapshots created by this operation.
 """
 
+from uuid import uuid4
 import time
 from typing import Optional
 from .base import BaseOperation, OperationResult, extract_error_message
@@ -88,6 +89,7 @@ class CreateSnapshotOperation(BaseOperation):
             # Use tracked client if tracking_label provided
             compute = self._create_tracked_client(tracking_label) if tracking_label else self.compute
             compute.disks().createSnapshot(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 disk=disk_name,
@@ -233,6 +235,7 @@ class CreateSnapshotOperation(BaseOperation):
         try:
             compute = self._rollback_client(tracking_label)
             compute.snapshots().delete(
+                requestId=str(uuid4()),
                 project=self.project,
                 snapshot=snapshot_name
             ).execute()

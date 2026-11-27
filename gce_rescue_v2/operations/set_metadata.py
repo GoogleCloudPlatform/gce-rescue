@@ -5,6 +5,7 @@ Manages instance metadata for rescue operations. Preserves existing metadata
 by backing up conflicting keys with a prefix, and supports full restoration.
 """
 
+from uuid import uuid4
 import json
 import re
 import logging
@@ -327,6 +328,7 @@ class SetMetadataOperation(BaseOperation):
                 compute = self.compute
 
             operation = compute.instances().setMetadata(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
@@ -529,6 +531,7 @@ class SetMetadataOperation(BaseOperation):
 
             compute = self._rollback_client(tracking_label)
             operation = compute.instances().setMetadata(
+                requestId=str(uuid4()),
                 project=self.project,
                 zone=self.zone,
                 instance=vm_name,
