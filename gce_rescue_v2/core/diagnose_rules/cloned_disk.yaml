@@ -1,0 +1,20 @@
+# A copy of the boot disk is attached to the VM (#194).
+#
+# Found by an API check (core/cloned_disks.py), not by a serial pattern: a
+# disk created from the boot disk, from a snapshot or image of it, or from
+# the same snapshot or image carries the same partition and filesystem
+# UUIDs. Linux finds root, /boot and /boot/efi by those UUIDs, so it can
+# boot from or mount the copy - silently: on a Debian 12 VM with a snapshot
+# copy attached, root and /boot/efi came from the copy with nothing in the
+# serial console to say so, and which disk won changed between reboots.
+category: cloned_disk
+os: linux
+# source: api - findings come from the Compute API, so there are no serial
+# patterns to match.
+source: api
+fix_guidance: "First check which disk the VM runs from (findmnt -no SOURCE /, and ls -l /dev/disk/by-id/google-* to map devices to disks): it may already be running from the copy, with recent changes on it. Stop the VM before detaching the disk it should not use (detaching the disk a running VM booted from pulls its root filesystem away), then start it; or give the copy's filesystems new UUIDs before attaching it again"
+auto_repair: false
+# detect_only: nothing on the boot disk is wrong, so rescue mode does not
+# help; repair stops instead (it would fix one disk and boot the other).
+detect_only: true
+patterns: []

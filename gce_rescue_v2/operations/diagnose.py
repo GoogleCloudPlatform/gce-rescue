@@ -9,6 +9,7 @@ import logging
 
 from googleapiclient.errors import HttpError
 
+from ..core.cloned_disks import LineageReader, clone_finding, find_boot_disk_clones
 from ..core.diagnosis import analyze_serial_output, DiagnosisResult
 from ..utils.os_detection import (
     detect_os_type, detect_os_flavor, detect_architecture, detect_license_type,
@@ -50,6 +51,7 @@ class DiagnoseOperation(BaseOperation):
             # Get VM status and OS info (non-fatal if 403 - user may only
             # have serial console read permission on this project)
             vm_status = 'UNKNOWN'
+            vm_instance = None
             os_type = 'unknown'
             os_flavor = 'unknown'
             architecture = 'unknown'
@@ -112,6 +114,9 @@ class DiagnoseOperation(BaseOperation):
             # (it returns an OperationResult directly in that case)
             if isinstance(diagnosis_dict, OperationResult):
                 return diagnosis_dict
+
+            if vm_instance is not None and os_type == 'linux':
+                self._add_cloned_disk_findings(compute, vm_instance, diagnosis_dict)
 
             # Determine success based on diagnosis status
             if diagnosis_dict['diagnosis_status'] == "boot_errors_detected":
@@ -313,6 +318,29 @@ class DiagnoseOperation(BaseOperation):
             ],
             'recommendations': diagnosis.recommendations
         }
+
+    def _add_cloned_disk_findings(self, compute, vm_instance: dict,
+                                  diagnosis_dict: dict) -> None:
+        """Add a warning for each attached copy of the boot disk (#194).
+
+        Duplicate UUIDs make Linux boot from or mount the copy without any
+        serial-console trace, so this reads disk lineage from the API. It is
+        best-effort: unreadable resources are skipped (see cloned_disks).
+        """
+        try:
+            clones = find_boot_disk_clones(
+                vm_instance, LineageReader(compute, log=self._log_debug))
+        except Exception as e:  # an extra check must never fail diagnosis
+            self._log_debug(f"Cloned-disk check skipped: {e}")
+            return
+        if not clones:
+            return
+        self._log_debug(f"Copies of the boot disk attached: {[c.name for c in clones]}")
+        diagnosis_dict['boot_errors'].extend(
+            clone_finding(clone, diagnosis_dict['vm_name'], self.zone)
+            for clone in clones)
+        if diagnosis_dict['diagnosis_status'] == 'healthy':
+            diagnosis_dict['diagnosis_status'] = 'boot_errors_detected'
 
     def _diagnosis_signature(self, diagnosis_dict: dict) -> tuple:
         """Extract a comparable signature from a diagnosis dict.
