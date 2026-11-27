@@ -64,6 +64,7 @@ setup(
           'startup_scripts/*.ps1',
           'startup_scripts/fixes/*.sh',
           'startup_scripts/fixes/*.ps1',
+          'startup_scripts/fixes/lib/*.sh',
           'core/diagnose_rules/*.yaml',
       ],
   },
