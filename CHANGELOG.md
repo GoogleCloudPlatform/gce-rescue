@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `repair`: out-of-memory kills (`oom`) are repaired by moving the VM to a larger machine type, through the Compute API only (stop, set machine type, start, boot verification on the new boot). The next size of the same series and shape is proposed (shared-core types move to the series' standard types) and only applied after confirmation; `--machine-type` picks another type. With `--quiet`, the change needs `--machine-type`, otherwise `repair` prints the suggestion and exits with code 1. If the VM does not start with the new type, its original type is set back. Not applied when every kill is a memory cgroup kill or when the VM belongs to a managed instance group. With another repair, that repair runs first (#204)
+
 ### Fixed
 - Tests: construct `YAML_PATH` in `test_windows_bugcheck.py` using `Path(__file__).parent.parent` without `.resolve()`, matching all other rule and test files (#240)
 - `rescue` / `repair`: increased default `disk_create_timeout` from 300s to 600s so creating large rescue disks (such as 50 GB Windows Server images) does not time out under load (#241)

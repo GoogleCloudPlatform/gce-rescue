@@ -231,6 +231,19 @@ def get_rescue_disk_type(vm: Dict[str, Any], default: str = 'pd-balanced') -> st
     return default
 
 
+def managed_by_mig(vm: Dict[str, Any]) -> bool:
+    """Whether the VM belongs to a managed instance group.
+
+    The MIG sets the 'created-by' metadata key to its instanceGroupManagers
+    URL, and recreates or reconfigures the VM from its instance template.
+    """
+    for item in vm.get('metadata', {}).get('items', []) or []:
+        if (item.get('key') == 'created-by'
+                and '/instanceGroupManagers/' in (item.get('value') or '')):
+            return True
+    return False
+
+
 def detect_architecture(vm: Dict[str, Any]) -> str:
     """
     Detect the CPU architecture of a VM.

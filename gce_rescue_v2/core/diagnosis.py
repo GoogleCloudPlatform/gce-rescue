@@ -242,6 +242,21 @@ BOOT_SUCCESS_MARKERS = [
 ]
 
 
+def latest_boot_output(serial_output: str) -> str:
+    """Return the part of serial_output that belongs to the most recent boot.
+
+    The serial buffer can hold several boots (a reboot or reset keeps the
+    earlier ones); the latest boot starts at the last 'Linux version'
+    banner. Without a banner the whole buffer is returned.
+    """
+    if not serial_output:
+        return ''
+    start = 0
+    for match in _LINUX_VERSION_RE.finditer(serial_output):
+        start = match.start()
+    return serial_output[start:]
+
+
 def latest_boot_completed(serial_output: str) -> bool:
     """Whether the most recent boot in serial_output reached userspace.
 
@@ -250,14 +265,32 @@ def latest_boot_completed(serial_output: str) -> bool:
     still hanging (for example in the dracut device-wait loop). Without a
     banner the whole buffer is searched.
     """
-    if not serial_output:
-        return False
-    start = 0
-    for match in _LINUX_VERSION_RE.finditer(serial_output):
-        start = match.start()
-    tail = serial_output[start:]
+    tail = latest_boot_output(serial_output)
     return any(re.search(marker, tail, re.IGNORECASE)
                for marker in BOOT_SUCCESS_MARKERS)
+
+
+# OOM kill evidence: the kill line ('Memory cgroup out of memory: Killed
+# process' for a cgroup kill) and, on 4.19+ kernels, the oom-kill summary
+# line with its constraint (CONSTRAINT_MEMCG for a cgroup kill).
+_OOM_KILL_RE = re.compile(
+    r'(Memory cgroup )?out of memory: Kill(?:ed)? process \d+', re.IGNORECASE)
+_OOM_CONSTRAINT_RE = re.compile(r'oom-kill:constraint=(\w+)')
+
+
+def oom_kills_only_memcg(serial_output: str) -> bool:
+    """Whether every OOM kill in serial_output is a memory cgroup kill.
+
+    A cgroup kill means a container or service hit its own memory limit:
+    a larger machine type does not help. False when there is no kill
+    evidence or at least one kill was a global (VM-wide) OOM.
+    """
+    if not serial_output:
+        return False
+    evidence = [bool(m.group(1)) for m in _OOM_KILL_RE.finditer(serial_output)]
+    evidence += [m.group(1) == 'CONSTRAINT_MEMCG'
+                 for m in _OOM_CONSTRAINT_RE.finditer(serial_output)]
+    return bool(evidence) and all(evidence)
 
 # A kernel release string as printed by the kernel and used in /boot file
 # names, e.g. 6.1.0-18-cloud-amd64, 5.14.0-427.13.1.el9_4.x86_64,

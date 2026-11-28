@@ -17,6 +17,7 @@ from gce_rescue_v2.utils.os_detection import (
     get_shielded_config,
     is_confidential_vm,
     get_confidential_type,
+    managed_by_mig,
     ARCH_X86_64,
     ARCH_ARM64,
 )
@@ -341,3 +342,25 @@ class TestRescueDiskTypeDetection:
         """Custom default is overridden for Hyperdisk-only families."""
         vm = {'machineType': 'c4-standard-2'}
         assert get_rescue_disk_type(vm, default='pd-ssd') == 'hyperdisk-balanced'
+
+
+class TestManagedByMig:
+    """Tests for managed_by_mig (issue #204)."""
+
+    def _vm(self, *items):
+        return {'metadata': {'items': [{'key': k, 'value': v} for k, v in items]}}
+
+    def test_mig_member(self):
+        vm = self._vm(('created-by',
+                       'projects/123/zones/us-central1-a/instanceGroupManagers/web'))
+        assert managed_by_mig(vm) is True
+
+    def test_standalone_vm(self):
+        assert managed_by_mig(self._vm(('startup-script', 'echo hi'))) is False
+
+    def test_created_by_other_resource(self):
+        assert managed_by_mig(self._vm(('created-by', 'projects/123/foo'))) is False
+
+    def test_no_metadata(self):
+        assert managed_by_mig({}) is False
+        assert managed_by_mig({'metadata': {}}) is False

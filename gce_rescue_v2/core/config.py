@@ -106,6 +106,10 @@ class RescueConfig:
     # >0 = increase original boot disk capacity by this many GiB.
     resize_disk_gb: Optional[int] = None
 
+    # Machine type for the oom repair (--machine-type). None = not decided
+    # (CLI prompts interactively; --quiet skips the oom repair).
+    machine_type: Optional[str] = None
+
     # Custom rescue image (overrides all auto-selection when set)
     # Accepts full image URL: projects/PROJECT/global/images/IMAGE
     # or family URL: projects/PROJECT/global/images/family/FAMILY

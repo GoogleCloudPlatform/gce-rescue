@@ -162,6 +162,7 @@ More info: [Application Default Credentials](https://cloud.google.com/docs/authe
 | `--rescue-image` | Custom rescue disk image URL (must match VM's OS family + architecture). Useful for restricted-image org policies or hardened rescue environments. Available for `rescue` and `repair`. |
 | `--fix-script` | Path to a custom fix script (bash on Linux, PowerShell on Windows) to run against the affected disk after it is mounted — skips diagnosis. With `repair` the VM is restored and boot-verified afterwards; with `rescue` it stays in rescue mode for inspection. The affected disk is mounted at `/mnt/sysroot` on Linux; on Windows its partitions get drive letters from `D:` onward (iterate non-`C:` volumes rather than assuming `D:`). Linux scripts receive two exported environment variables describing the affected disk: `OS_FLAVOR` (the boot disk's license name, e.g. `debian-12-bookworm`, `rhel-9-server`, `ubuntu-2204-lts`; the disk name if it has no license, or `unknown`) and `BOOT_MODE` (`uefi`, `bios` or `unknown`, read from the VM's boot disk configuration before rescue, not from the rescue VM's firmware). |
 | `--verification-timeout` | Seconds to wait for the rescue VM startup script to complete (serial console marker). Overrides the OS-aware default (Linux: 300, Windows: 600). Raise it for slow-booting VMs. Available for `rescue` and `repair`. |
+| `--machine-type` | Machine type `repair` moves the VM to when it finds out-of-memory kills (e.g. `e2-medium`). Without it, `repair` proposes the next size of the same series and asks for confirmation; with `--quiet`, the change is skipped and `repair` exits with code 1. |
 | `--quiet` | No confirmation prompts (for automation) |
 | `--format` | Output format: `json`, `yaml`, `table` |
 
@@ -182,7 +183,7 @@ networks where outbound calls to pypi.org are unwanted.
 |---------|-------------|
 | **Linux + Windows** | Auto-detects OS, uses appropriate rescue environment |
 | **Boot Diagnostics** | Serial console analysis across 21 Linux boot-failure categories (fstab, GRUB, kernel, filesystem, network, storage) and Windows boot-manager / bugcheck errors |
-| **Auto-Repair** | Automated fixes on Linux for fstab and GRUB errors, missing or corrupt initramfs, full boot disks, and SELinux policy/relabel failures (more categories planned) |
+| **Auto-Repair** | Automated fixes on Linux for fstab and GRUB errors, missing or corrupt initramfs, full boot disks, SELinux policy/relabel failures, and out-of-memory kills (larger machine type) (more categories planned) |
 | **Custom Fix Scripts** | Bring your own fix (`--fix-script`) for known issues at scale — no diagnosis needed |
 | **Automatic Rollback** | Operations roll back on failure |
 | **Session Recovery** | Resume or rollback interrupted operations |

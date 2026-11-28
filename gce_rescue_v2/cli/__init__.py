@@ -312,6 +312,9 @@ EXAMPLES
     Repair in automation (no prompts):
         $ gce-rescue repair my-vm --zone=us-central1-a --quiet
 
+    Repair out-of-memory kills in automation:
+        $ gce-rescue repair my-vm --zone=us-central1-a --quiet --machine-type=e2-medium
+
 SUPPORTED FIXES
     - fstab: Comments out invalid UUID, device, or label entries (Linux)
     - grub: Reinstalls GRUB and regenerates its configuration (Linux)
@@ -325,6 +328,9 @@ SUPPORTED FIXES
       reports the largest directories (no files are deleted) (Linux)
     - windows_boot_manager: Rebuilds the Windows Boot Configuration Data (BCD)
       store (Windows)
+    - oom: Moves the VM to a larger machine type after confirmation
+      (--machine-type with --quiet); stop and start only, no rescue mode.
+      Not applied to memory cgroup kills or managed instance group VMs (Linux)
     - Custom fix scripts via --fix-script (Linux and Windows), e.g.
       --fix-script=windows_bcd_fix.ps1 (bare names resolve to bundled
       scripts; explicit file paths also work)
@@ -568,6 +574,18 @@ def _add_repair_args(parser: argparse.ArgumentParser):
     )
 
 
+    machine_type_group = parser.add_argument_group('MACHINE TYPE FLAGS')
+    machine_type_group.add_argument(
+        '--machine-type',
+        metavar='TYPE',
+        dest='machine_type',
+        default=None,
+        help=(
+            'Machine type to move the VM to when repairing out-of-memory'
+            ' kills (oom), e.g. e2-medium. Required with --quiet.'
+        )
+    )
+
     _add_verification_timeout_arg(parser)
 
 
@@ -700,6 +718,10 @@ def args_to_rescue_config(args: argparse.Namespace) -> RescueConfig:
     # Boot disk resize increment for disk_full auto-repair
     if getattr(args, 'resize_disk_gb', None) is not None:
         config.resize_disk_gb = args.resize_disk_gb
+
+    # Machine type for the oom repair
+    if getattr(args, 'machine_type', None):
+        config.machine_type = args.machine_type
 
     # Force setting (for Local SSD VMs)
     if hasattr(args, 'force'):

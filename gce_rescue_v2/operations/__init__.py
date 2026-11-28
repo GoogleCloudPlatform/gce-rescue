@@ -43,6 +43,7 @@ from .create_snapshot import CreateSnapshotOperation
 from .verify_startup import VerifyStartupOperation
 from .diagnose import DiagnoseOperation
 from .resize_disk import ResizeDiskOperation
+from .set_machine_type import SetMachineTypeOperation
 
 __all__ = [
     # Base classes
@@ -61,4 +62,5 @@ __all__ = [
     'VerifyStartupOperation',
     'DiagnoseOperation',
     'ResizeDiskOperation',
+    'SetMachineTypeOperation',
 ]
