@@ -178,7 +178,7 @@ class StopVMOperation(BaseOperation):
                 )
 
             else:
-                # VM is in some other state (STOPPING, SUSPENDING, etc.)
+                # VM is in some other state (SUSPENDING, etc.)
                 return OperationResult(
                     operation_name=self.name,
                     success=False,
